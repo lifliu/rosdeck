@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "net.ai-omni.rosdeck"
+      "bundleIdentifier": "net.aiomni.rosdeck"
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +24,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "net.ai-omni.rosdeck",
+      "package": "net.aiomni.rosdeck",
       "versionCode": 1
     },
     "web": {
