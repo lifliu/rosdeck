@@ -41,10 +41,8 @@ export class FoxgloveTransport implements Transport {
       }, 5000);
 
       // foxglove_bridge 3.x uses 'foxglove.sdk.v1' subprotocol.
-      // React Native on Android needs it passed as a custom header.
-      const ws = new (WebSocket as any)(url, undefined, {
-        headers: { 'Sec-WebSocket-Protocol': 'foxglove.sdk.v1' },
-      }) as WebSocket;
+      // Pass as standard WebSocket second argument (works on all platforms).
+      const ws = new (WebSocket as any)(url, ['foxglove.sdk.v1']) as WebSocket;
       this.ws = ws;
       ws.binaryType = 'arraybuffer';
 
@@ -54,10 +52,13 @@ export class FoxgloveTransport implements Transport {
         resolve();
       };
 
-      ws.onerror = () => {
+      ws.onerror = (event) => {
         clearTimeout(timeout);
-        this.setStatus('error', 'Connection error');
-        reject(new Error('Connection error'));
+        const reason = event?.reason || 'Connection error';
+        const code = event?.code || 0;
+        console.warn('[FoxgloveTransport] WS error:', code, reason);
+        this.setStatus('error', `${reason} (code: ${code})`);
+        reject(new Error(`Connection error: ${reason} (code: ${code})`));
       };
 
       ws.onclose = () => {
