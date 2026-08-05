@@ -1,4 +1,4 @@
-import { DEFAULTS } from '../constants/defaults';
+import { DEFAULTS, FOXGLOVE_WEBSOCKET_PROTOCOLS } from '../constants/defaults';
 import { probeWebSocket } from './ws-probe';
 
 export interface ServiceInfo {
@@ -44,7 +44,11 @@ export async function scanServices(host: string, skipPort?: number): Promise<Ser
       }
       const found =
         service.protocol === 'ws'
-          ? await probeWebSocket(host, service.port)
+          ? await probeWebSocket(host, service.port, {
+              protocols: service.name === 'Foxglove Bridge'
+                ? FOXGLOVE_WEBSOCKET_PROTOCOLS
+                : undefined,
+            })
           : await probeHttp(host, service.port);
       return { name: service.name, port: service.port, found };
     })

@@ -12,3 +12,10 @@ export const DEFAULTS = {
   reconnectBackoffBase: 1000,
   reconnectBackoffMax: 30000,
 } as const;
+
+// foxglove_bridge 3.2+ uses sdk.v1, while legacy 0.x bridges use websocket.v1.
+// Advertising both lets the server select the version it implements.
+export const FOXGLOVE_WEBSOCKET_PROTOCOLS = [
+  'foxglove.sdk.v1',
+  'foxglove.websocket.v1',
+] as const;

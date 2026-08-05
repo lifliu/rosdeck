@@ -1,10 +1,11 @@
 import { scanServices, type ServiceScanResult } from '../../lib/service-scan';
 
 // Mock WebSocket and fetch for controlled testing
-global.WebSocket = jest.fn().mockImplementation((url: string) => {
+global.WebSocket = jest.fn().mockImplementation((url: string, protocols?: string[]) => {
   const ws: any = {
     close: jest.fn(),
     readyState: 0,
+    protocol: protocols?.[0] ?? '',
     onopen: null,
     onerror: null,
     onclose: null,

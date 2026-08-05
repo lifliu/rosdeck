@@ -6,6 +6,7 @@ import { buildWebSocketUrl } from '../lib/ros';
 import { useRouter } from 'expo-router';
 import { theme } from '../constants/theme';
 import { autoDetect, parseInput, type DetectionResult } from '../lib/auto-detect';
+import type { TransportType } from '../lib/transport';
 
 export function ConnectionForm() {
   const [ipPort, setIpPort] = useState('');
@@ -24,61 +25,39 @@ export function ConnectionForm() {
   const router = useRouter();
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
       abortRef.current?.abort();
     };
   }, []);
 
   const handleConnect = () => {
-    const url = detection ? detection.url : buildWebSocketUrl(ipPort.trim());
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const selectedTransport = transportType === 'foxglove' ? 'foxglove' : 'rosbridge';
+    // Always rebuild from the current field + current selection. Detection only
+    // chooses a transport; its old URL must never override later user input.
+    const url = buildWebSocketUrl(ipPort, selectedTransport);
+    if (!url) return;
     useRosStore.getState().connectToUrl(url);
     router.push('/(tabs)/control');
   };
 
-  const handleIpPortChange = (value: string) => {
-    setIpPort(value);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    abortRef.current?.abort();
-    setDetection(null);
-    setDetectionFailed(false);
-    setTransportAutoSet(false);
+  const runDetection = (value: string) => {
+    const parsed = parseInput(value);
+    setDetectingHost(parsed.host);
+    if (parsed.kind !== 'valid') {
+      setDetecting(false);
+      return;
+    }
 
-    if (!value.trim()) return;
-
-    debounceRef.current = setTimeout(() => {
-      const controller = new AbortController();
-      abortRef.current = controller;
-      const { host } = parseInput(value.trim());
-      setDetectingHost(host);
-      setDetecting(true);
-      autoDetect(value.trim(), controller.signal)
-        .then((result) => {
-          if (!mountedRef.current || controller.signal.aborted) return;
-          if (result) {
-            setTransportType(result.transport);
-            setDetection(result);
-            setTransportAutoSet(true);
-          } else {
-            setDetectionFailed(true);
-          }
-        })
-        .finally(() => {
-          if (mountedRef.current) setDetecting(false);
-        });
-    }, 600);
-  };
-
-  const handleRetry = () => {
-    abortRef.current?.abort();
-    setDetection(null);
-    setDetectionFailed(false);
-    const { host } = parseInput(ipPort.trim());
-    setDetectingHost(host);
     const controller = new AbortController();
     abortRef.current = controller;
     setDetecting(true);
-    autoDetect(ipPort.trim(), controller.signal)
+    autoDetect(value, controller.signal)
       .then((result) => {
         if (!mountedRef.current || controller.signal.aborted) return;
         if (result) {
@@ -89,13 +68,65 @@ export function ConnectionForm() {
           setDetectionFailed(true);
         }
       })
+      .catch(() => {
+        if (!mountedRef.current || controller.signal.aborted) return;
+        setDetectionFailed(true);
+      })
       .finally(() => {
-        if (mountedRef.current) setDetecting(false);
+        if (mountedRef.current && abortRef.current === controller) {
+          setDetecting(false);
+        }
       });
   };
 
+  const handleIpPortChange = (value: string) => {
+    setIpPort(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setDetection(null);
+    setDetectionFailed(false);
+    setTransportAutoSet(false);
+
+    const parsed = parseInput(value);
+    setDetectingHost(parsed.host);
+    if (parsed.kind !== 'valid') {
+      setDetecting(false);
+      return;
+    }
+    // Include the debounce window in the probing state so Connect cannot race
+    // ahead using yesterday's/default transport selection.
+    setDetecting(true);
+
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      runDetection(value);
+    }, 600);
+  };
+
+  const handleRetry = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setDetection(null);
+    setDetectionFailed(false);
+    setTransportAutoSet(false);
+    runDetection(ipPort);
+  };
+
+  const handleTransportSelect = (type: Extract<TransportType, 'rosbridge' | 'foxglove'>) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setDetecting(false);
+    setTransportType(type);
+    setDetection(null);
+    setTransportAutoSet(false);
+    setDetectionFailed(false);
+  };
+
   const isConnecting = status === 'connecting';
-  const isDisabled = !ipPort.trim() || isConnecting;
+  const parsedInput = parseInput(ipPort);
+  const isDisabled = parsedInput.kind !== 'valid' || detecting || isConnecting;
 
   return (
     <View style={styles.container}>
@@ -113,7 +144,7 @@ export function ConnectionForm() {
       <View style={styles.transportRow}>
         <TouchableOpacity
           style={[styles.transportOption, transportType === 'rosbridge' && styles.transportActive]}
-          onPress={() => { setTransportType('rosbridge'); setTransportAutoSet(false); setDetectionFailed(false); }}
+          onPress={() => handleTransportSelect('rosbridge')}
         >
           <Text style={[styles.transportText, transportType === 'rosbridge' && styles.transportTextActive]}>
             ROSBRIDGE
@@ -124,7 +155,7 @@ export function ConnectionForm() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.transportOption, transportType === 'foxglove' && styles.transportActive]}
-          onPress={() => { setTransportType('foxglove'); setTransportAutoSet(false); setDetectionFailed(false); }}
+          onPress={() => handleTransportSelect('foxglove')}
         >
           <Text style={[styles.transportText, transportType === 'foxglove' && styles.transportTextActive]}>
             FOXGLOVE

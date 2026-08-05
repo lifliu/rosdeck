@@ -1,5 +1,6 @@
 import type { TwistMessage, TwistStampedMessage } from '../types/ros';
 import { DEFAULTS } from '../constants/defaults';
+import { canonicalizeConnectionUrl, parseConnectionInput } from './connection-url';
 
 // Lazy-load roslib to avoid crashing at module init time.
 // roslib eagerly imports fast-png which uses TextDecoder('latin1'),
@@ -52,21 +53,23 @@ export function buildTwistStampedMessage(twist: TwistMessage, frameId: string): 
 }
 
 export function parseRobotIp(input: string): string {
+  const parsed = parseConnectionInput(input);
+  if (parsed.kind === 'valid') return parsed.host;
+
   let cleaned = input.replace(/^wss?:\/\//, '');
   cleaned = cleaned.split(':')[0];
   cleaned = cleaned.replace(/\/+$/, '');
   return cleaned;
 }
 
-export function buildWebSocketUrl(ipPort: string): string {
-  const s = ipPort.replace(/\s/g, '');
-  if (s.startsWith('ws://') || s.startsWith('wss://')) {
-    return s;
-  }
-  if (!s.includes(':')) {
-    return `ws://${s}:${DEFAULTS.rosbridgePort}`;
-  }
-  return `ws://${s}`;
+export function buildWebSocketUrl(
+  ipPort: string,
+  transport: 'rosbridge' | 'foxglove' = 'rosbridge',
+): string | null {
+  const defaultPort = transport === 'foxglove'
+    ? DEFAULTS.foxglovePort
+    : DEFAULTS.rosbridgePort;
+  return canonicalizeConnectionUrl(ipPort, defaultPort);
 }
 
 export function buildMjpegUrl(robotIp: string, port: number, topic: string): string {
@@ -75,8 +78,10 @@ export function buildMjpegUrl(robotIp: string, port: number, topic: string): str
 }
 
 export function createRosConnection(url: string): any {
+  const canonicalUrl = canonicalizeConnectionUrl(url, DEFAULTS.rosbridgePort);
+  if (!canonicalUrl) throw new Error('Invalid WebSocket URL');
   const ROSLIB = getRoslib();
-  return new ROSLIB.Ros({ url });
+  return new ROSLIB.Ros({ url: canonicalUrl });
 }
 
 export function createCmdVelTopic(ros: any, topicName: string, stamped: boolean): any {
