@@ -66,6 +66,18 @@ describe('suggestLayout', () => {
     expect(result?.widgetConfigs.camera?.topic).toBe('/usb_cam/compressed');
   });
 
+  it('prefers the VBot Humble /vel_cmd Twist interface', () => {
+    const result = suggestLayout([
+      { name: '/navigation/cmd_vel', type: 'geometry_msgs/msg/Twist' },
+      { name: '/cmd_vel', type: 'geometry_msgs/msg/TwistStamped' },
+      { name: '/vel_cmd', type: 'geometry_msgs/msg/Twist' },
+    ]);
+    expect(result?.widgetConfigs.joystick).toEqual({
+      topic: '/vel_cmd',
+      useTwistStamped: false,
+    });
+  });
+
   it('includes detected topics in result', () => {
     const result = suggestLayout([
       { name: '/cmd_vel', type: 'geometry_msgs/msg/Twist' },

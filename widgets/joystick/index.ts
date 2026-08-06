@@ -10,7 +10,7 @@ export const joystickWidget: WidgetDefinition = {
   supportedMessageTypes: [],
   defaultConfig: {
     topic: DEFAULTS.cmdVelTopic,
-    useTwistStamped: true,
+    useTwistStamped: false,
     frameId: 'base_link',
     xAxisGroup: 'angular',
     xAxisComponent: 'z',
@@ -21,8 +21,8 @@ export const joystickWidget: WidgetDefinition = {
     gamepadStick: 'auto',
   },
   configSchema: [
-    { key: 'topic', label: 'cmd_vel Topic', type: 'text' },
-    { key: 'useTwistStamped', label: 'Use TwistStamped (Jazzy+)', type: 'boolean' },
+    { key: 'topic', label: 'Velocity Topic', type: 'text' },
+    { key: 'useTwistStamped', label: 'Use TwistStamped', type: 'boolean' },
     { key: 'frameId', label: 'Frame ID', type: 'text' },
     { key: 'axisMapping', label: 'Axis Mapping', type: 'axis-mapping' },
     { key: 'gamepadStick', label: 'Gamepad Stick', type: 'select',

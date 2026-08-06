@@ -7,7 +7,7 @@ import type {
 } from "./transport";
 
 const DEMO_TOPICS: TopicInfo[] = [
-  { name: "/cmd_vel", type: "geometry_msgs/msg/Twist" },
+  { name: "/vel_cmd", type: "geometry_msgs/msg/Twist" },
   { name: "/camera/image_raw/compressed", type: "sensor_msgs/msg/CompressedImage" },
   { name: "/map", type: "nav_msgs/msg/OccupancyGrid" },
   { name: "/diagnostics", type: "diagnostic_msgs/msg/DiagnosticArray" },

@@ -2,7 +2,8 @@ export const DEFAULTS = {
   rosbridgePort: 9090,
   foxglovePort: 8765,
   mjpegPort: 8080,
-  cmdVelTopic: '/cmd_vel',
+  // VBot Humble locomotion_exec subscribes to geometry_msgs/msg/Twist here.
+  cmdVelTopic: '/vel_cmd',
   cameraTopic: '/camera/image_raw/compressed',
   maxLinearVel: 0.5,
   maxAngularVel: 1.0,

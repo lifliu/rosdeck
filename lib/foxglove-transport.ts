@@ -12,7 +12,7 @@ export class FoxgloveTransport implements Transport {
   private nextSubId = 1;
   private serverChannels: Map<number, { topic: string; schemaName: string; encoding?: string }> = new Map();
   private topicToChannelId: Map<string, number> = new Map();
-  private clientChannels: Map<string, number> = new Map();
+  private clientChannels: Map<string, { id: number; messageType: string }> = new Map();
   private nextClientChannelId = 1;
   private messageReaders: Map<string, MessageReader> = new Map();
   private schemaDefinitions: Map<string, string> = new Map();
@@ -385,11 +385,21 @@ export class FoxgloveTransport implements Transport {
   }
 
   private advertiseClient(topic: string, messageType: string): number {
-    let channelId = this.clientChannels.get(topic);
-    if (channelId !== undefined) return channelId;
+    const existing = this.clientChannels.get(topic);
+    if (existing?.messageType === messageType) return existing.id;
 
-    channelId = this.nextClientChannelId++;
-    this.clientChannels.set(topic, channelId);
+    // A joystick can switch from TwistStamped to Twist while connected. The
+    // Foxglove protocol binds a schema to each advertised channel, so the old
+    // channel must be withdrawn before publishing the new message shape.
+    if (existing && this.ws) {
+      this.ws.send(JSON.stringify({
+        op: 'unadvertise',
+        channelIds: [existing.id],
+      }));
+    }
+
+    const channelId = this.nextClientChannelId++;
+    this.clientChannels.set(topic, { id: channelId, messageType });
 
     if (this.ws) {
       this.ws.send(JSON.stringify({

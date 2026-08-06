@@ -32,7 +32,7 @@ describe('DemoTransport', () => {
     const topics = await transport.getTopics();
     expect(topics.length).toBeGreaterThan(0);
     const names = topics.map((t) => t.name);
-    expect(names).toContain('/cmd_vel');
+    expect(names).toContain('/vel_cmd');
     expect(names).toContain('/camera/image_raw/compressed');
     expect(names).toContain('/map');
   });
@@ -40,7 +40,7 @@ describe('DemoTransport', () => {
   it('subscribe returns a Subscription with unsubscribe', async () => {
     await transport.connect('demo://localhost');
     const callback = jest.fn();
-    const sub = transport.subscribe('/cmd_vel', 'geometry_msgs/msg/Twist', callback);
+    const sub = transport.subscribe('/vel_cmd', 'geometry_msgs/msg/Twist', callback);
     expect(sub).toHaveProperty('unsubscribe');
     expect(typeof sub.unsubscribe).toBe('function');
     sub.unsubscribe();
@@ -60,7 +60,7 @@ describe('DemoTransport', () => {
   it('publish does not throw', async () => {
     await transport.connect('demo://localhost');
     expect(() => {
-      transport.publish('/cmd_vel', 'geometry_msgs/msg/Twist', { linear: { x: 0 } });
+      transport.publish('/vel_cmd', 'geometry_msgs/msg/Twist', { linear: { x: 0 } });
     }).not.toThrow();
   });
 

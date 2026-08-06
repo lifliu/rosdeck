@@ -10,9 +10,39 @@ import {
   removeNode,
 } from '../types/layout';
 import { buildDefaultLayouts } from '../constants/presets';
+import { DEFAULTS } from '../constants/defaults';
 import { getWidget } from '../widgets/registry';
 
 const STORAGE_KEY_PREFIX = 'ros2mobile_layouts_';
+const LAYOUT_SCHEMA_VERSION = 2;
+
+/** Upgrade layouts created with the upstream Jazzy /cmd_vel defaults to VBot Humble. */
+export function migrateLayoutsForVbotHumble(layouts: SavedLayout[]): SavedLayout[] {
+  const migrateNode = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      return {
+        ...node,
+        children: [migrateNode(node.children[0]), migrateNode(node.children[1])],
+      };
+    }
+    if (node.widgetType !== 'joystick') return node;
+
+    const topic = node.config?.topic;
+    const usesLegacyDefault = !topic || topic === '/cmd_vel' || topic === '/vel_cmd';
+    if (!usesLegacyDefault) return node;
+
+    return {
+      ...node,
+      config: {
+        ...node.config,
+        topic: DEFAULTS.cmdVelTopic,
+        useTwistStamped: false,
+      },
+    };
+  };
+
+  return layouts.map((layout) => ({ ...layout, tree: migrateNode(layout.tree) }));
+}
 
 interface LayoutState {
   robotUrl: string | null;
@@ -52,7 +82,12 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       const stored = await AsyncStorage.getItem(key);
       if (stored) {
         const data = JSON.parse(stored);
-        set({ robotUrl: url, layouts: data.layouts, activeLayoutId: data.activeLayoutId });
+        const needsMigration = data.schemaVersion !== LAYOUT_SCHEMA_VERSION;
+        const layouts = needsMigration
+          ? migrateLayoutsForVbotHumble(data.layouts ?? [])
+          : data.layouts;
+        set({ robotUrl: url, layouts, activeLayoutId: data.activeLayoutId });
+        if (needsMigration) await get().persist();
         return;
       }
     } catch {}
@@ -194,7 +229,10 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     const { robotUrl, layouts, activeLayoutId } = get();
     if (!robotUrl) return;
     const key = STORAGE_KEY_PREFIX + robotUrl;
-    await AsyncStorage.setItem(key, JSON.stringify({ layouts, activeLayoutId }));
+    await AsyncStorage.setItem(
+      key,
+      JSON.stringify({ schemaVersion: LAYOUT_SCHEMA_VERSION, layouts, activeLayoutId }),
+    );
   },
 
   reset: () => set({ robotUrl: null, layouts: [], activeLayoutId: '', editMode: false, layoutListOpen: false }),

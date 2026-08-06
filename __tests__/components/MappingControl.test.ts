@@ -13,6 +13,7 @@ import {
   START_MAPPING_MESSAGE,
   START_MAPPING_MESSAGE_TYPE,
   START_MAPPING_TOPIC,
+  STOP_MAPPING_MESSAGE,
 } from '../../components/MappingControl';
 
 describe('MappingControl protocol', () => {
@@ -21,6 +22,7 @@ describe('MappingControl protocol', () => {
     expect(MAPPING_STATUS_TOPIC).toBe('/rosdeck/mapping_status');
     expect(START_MAPPING_MESSAGE_TYPE).toBe('std_msgs/msg/Bool');
     expect(START_MAPPING_MESSAGE).toEqual({ data: true });
+    expect(STOP_MAPPING_MESSAGE).toEqual({ data: false });
   });
 
   it('extracts String messages and rejects malformed status payloads', () => {

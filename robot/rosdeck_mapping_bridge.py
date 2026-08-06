@@ -7,6 +7,7 @@ the robot's ``software_msgs/srv/LowlevelAction`` service.
 """
 
 import os
+import signal
 import subprocess
 import threading
 import uuid
@@ -36,15 +37,17 @@ class MappingBridge(Node):
         super().__init__('rosdeck_mapping_bridge')
         self._lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
-        self._mapping_started = False
+        self._stop_requested = False
         self._status = self.create_publisher(String, '/rosdeck/mapping_status', 10)
         self._posture_status = self.create_publisher(String, '/rosdeck/posture_status', 10)
         self._posture_busy = False
         self._lowlevel_action_client = None
-        self.create_subscription(Bool, '/rosdeck/start_3d_mapping', self._start_mapping, 10)
+        self.create_subscription(
+            Bool, '/rosdeck/start_3d_mapping', self._handle_mapping_command, 10
+        )
         self.create_subscription(String, '/rosdeck/posture_command', self._set_posture, 10)
         self.get_logger().info(
-            f'Ready: /rosdeck/start_3d_mapping launches {SCRIPT_PATH}'
+            f'Ready: /rosdeck/start_3d_mapping starts/stops {SCRIPT_PATH}'
         )
         self.get_logger().info(
             'Ready: /rosdeck/posture_command accepts stand or lie_down'
@@ -138,16 +141,20 @@ class MappingBridge(Node):
             self.get_logger().error(f'Posture {command} rejected: {reason}')
             self._publish_posture_status(f'error:{command}:{reason}')
 
-    def _start_mapping(self, message: Bool) -> None:
-        if not message.data:
-            self.get_logger().warning('Ignoring mapping request with data=false')
-            return
+    def _handle_mapping_command(self, message: Bool) -> None:
+        if message.data:
+            self._start_mapping()
+        else:
+            self._stop_mapping()
 
+    def _start_mapping(self) -> None:
         with self._lock:
-            if self._mapping_started:
+            if self._process is not None and self._process.poll() is None:
                 self.get_logger().warning('Mapping script is already running')
                 self._publish_status('already_running')
                 return
+
+            self._process = None
 
             if not SCRIPT_PATH.is_file():
                 error = f'script_not_found:{SCRIPT_PATH}'
@@ -156,16 +163,19 @@ class MappingBridge(Node):
                 return
 
             try:
-                log_file = LOG_PATH.open('ab', buffering=0)
-                self._process = subprocess.Popen(
-                    ['/bin/bash', str(SCRIPT_PATH)],
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    cwd=str(SCRIPT_PATH.parent),
-                    start_new_session=True,
-                    env=os.environ.copy(),
-                )
+                with LOG_PATH.open('ab', buffering=0) as log_file:
+                    self._process = subprocess.Popen(
+                        ['/bin/bash', str(SCRIPT_PATH)],
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        cwd=str(SCRIPT_PATH.parent),
+                        # Make the shell the leader of a new process group. A
+                        # later SIGINT then reaches ros2 launch and every child,
+                        # exactly like Ctrl+C in the original terminal.
+                        start_new_session=True,
+                        env=os.environ.copy(),
+                    )
             except OSError as exc:
                 error = f'launch_failed:{exc}'
                 self.get_logger().error(error)
@@ -173,18 +183,67 @@ class MappingBridge(Node):
                 return
 
             pid = self._process.pid
-            self._mapping_started = True
+            self._stop_requested = False
             self.get_logger().info(f'Started mapping script with PID {pid}')
             self._publish_status(f'started:{pid}')
             threading.Thread(target=self._wait_for_exit, args=(self._process,), daemon=True).start()
 
+    def _stop_mapping(self) -> None:
+        with self._lock:
+            process = self._process
+            if process is None or process.poll() is not None:
+                self._process = None
+                self._stop_requested = False
+                self.get_logger().warning('Mapping script is not running')
+                self._publish_status('not_running')
+                return
+
+            self._stop_requested = True
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except OSError as exc:
+                self._stop_requested = False
+                error = f'stop_failed:{exc}'
+                self.get_logger().error(error)
+                self._publish_status(f'error:{error}')
+                return
+
+            self.get_logger().info(
+                f'Sent SIGINT to mapping process group {process.pid}; waiting for map save'
+            )
+            self._publish_status(f'stopping:{process.pid}')
+
     def _wait_for_exit(self, process: subprocess.Popen[bytes]) -> None:
         return_code = process.wait()
-        if return_code != 0:
-            with self._lock:
-                self._mapping_started = False
+        with self._lock:
+            stop_requested = self._stop_requested
+            if self._process is process:
+                self._process = None
+                self._stop_requested = False
         self.get_logger().info(f'Mapping script PID {process.pid} exited with {return_code}')
-        self._publish_status(f'exited:{return_code}')
+        status = 'stopped' if stop_requested else 'exited'
+        self._publish_status(f'{status}:{return_code}')
+
+    def shutdown_mapping(self) -> None:
+        """Gracefully stop mapping when this bridge itself is shutting down."""
+        with self._lock:
+            process = self._process
+            if process is None or process.poll() is not None:
+                return
+            self._stop_requested = True
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except OSError as exc:
+                self.get_logger().error(f'Failed to stop mapping during shutdown: {exc}')
+                return
+
+        self.get_logger().info('Waiting for mapping process to save the map')
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.get_logger().warning(
+                'Mapping process is still saving after 30 seconds; it was not force-killed'
+            )
 
 
 def main() -> None:
@@ -193,6 +252,7 @@ def main() -> None:
     try:
         rclpy.spin(node)
     finally:
+        node.shutdown_mapping()
         node.destroy_node()
         rclpy.shutdown()
 

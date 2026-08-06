@@ -9,9 +9,10 @@ source /opt/ros/humble/setup.bash
 python3 rosdeck_mapping_bridge.py
 ```
 
-The bridge listens for `std_msgs/msg/Bool` with `data: true` on
-`/rosdeck/start_3d_mapping`, starts the fixed script
-`/userdata/2_slam/1_mapping.sh`, and reports status as
+The bridge listens for `std_msgs/msg/Bool` on `/rosdeck/start_3d_mapping`.
+`data: true` starts the fixed script `/userdata/2_slam/1_mapping.sh`;
+`data: false` sends `SIGINT` to the complete mapping process group, matching a
+terminal `Ctrl+C` so FAST-LIO can save `maps/map.pcd` before exiting. It reports status as
 `std_msgs/msg/String` on `/rosdeck/mapping_status`. Script output is written
 to `/tmp/rosdeck_3d_mapping.log`.
 

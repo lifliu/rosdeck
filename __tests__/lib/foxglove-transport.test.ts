@@ -84,4 +84,31 @@ describe('FoxgloveTransport connection', () => {
     socket.onopen?.({});
     await expect(connecting).resolves.toBeUndefined();
   });
+
+  it('re-advertises a topic when its message type changes', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+
+    transport.publish('/vel_cmd', 'geometry_msgs/msg/TwistStamped', { twist: {} });
+    transport.publish('/vel_cmd', 'geometry_msgs/msg/Twist', { linear: {}, angular: {} });
+
+    const controlMessages = socket.send.mock.calls
+      .map(([value]: [unknown]) => value)
+      .filter((value: unknown): value is string => typeof value === 'string')
+      .map((value: string) => JSON.parse(value));
+
+    expect(controlMessages).toEqual([
+      expect.objectContaining({
+        op: 'advertise',
+        channels: [expect.objectContaining({ topic: '/vel_cmd', schemaName: 'geometry_msgs/msg/TwistStamped' })],
+      }),
+      { op: 'unadvertise', channelIds: [1] },
+      expect.objectContaining({
+        op: 'advertise',
+        channels: [expect.objectContaining({ topic: '/vel_cmd', schemaName: 'geometry_msgs/msg/Twist' })],
+      }),
+    ]);
+  });
 });
