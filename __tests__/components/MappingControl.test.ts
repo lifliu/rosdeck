@@ -10,6 +10,8 @@ jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 import {
   extractMappingStatus,
   MAPPING_STATUS_TOPIC,
+  START_MAPPING_MESSAGE,
+  START_MAPPING_MESSAGE_TYPE,
   START_MAPPING_TOPIC,
 } from '../../components/MappingControl';
 
@@ -17,6 +19,8 @@ describe('MappingControl protocol', () => {
   it('uses fixed ROS topics for mapping commands and acknowledgements', () => {
     expect(START_MAPPING_TOPIC).toBe('/rosdeck/start_3d_mapping');
     expect(MAPPING_STATUS_TOPIC).toBe('/rosdeck/mapping_status');
+    expect(START_MAPPING_MESSAGE_TYPE).toBe('std_msgs/msg/Bool');
+    expect(START_MAPPING_MESSAGE).toEqual({ data: true });
   });
 
   it('extracts String messages and rejects malformed status payloads', () => {

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Bool, String
 
 
 SCRIPT_PATH = Path('/userdata/2_slam/1_mapping.sh')
@@ -26,7 +26,7 @@ class MappingBridge(Node):
         self._process: subprocess.Popen[bytes] | None = None
         self._mapping_started = False
         self._status = self.create_publisher(String, '/rosdeck/mapping_status', 10)
-        self.create_subscription(Empty, '/rosdeck/start_3d_mapping', self._start_mapping, 10)
+        self.create_subscription(Bool, '/rosdeck/start_3d_mapping', self._start_mapping, 10)
         self.get_logger().info(
             f'Ready: /rosdeck/start_3d_mapping launches {SCRIPT_PATH}'
         )
@@ -36,7 +36,11 @@ class MappingBridge(Node):
         message.data = value
         self._status.publish(message)
 
-    def _start_mapping(self, _message: Empty) -> None:
+    def _start_mapping(self, message: Bool) -> None:
+        if not message.data:
+            self.get_logger().warning('Ignoring mapping request with data=false')
+            return
+
         with self._lock:
             if self._mapping_started:
                 self.get_logger().warning('Mapping script is already running')

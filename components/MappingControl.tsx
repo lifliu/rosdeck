@@ -7,6 +7,8 @@ import { useRosStore } from '../stores/useRosStore';
 
 export const START_MAPPING_TOPIC = '/rosdeck/start_3d_mapping';
 export const MAPPING_STATUS_TOPIC = '/rosdeck/mapping_status';
+export const START_MAPPING_MESSAGE_TYPE = 'std_msgs/msg/Bool';
+export const START_MAPPING_MESSAGE = { data: true } as const;
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -70,7 +72,7 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
 
     setWaiting(true);
     waitingRef.current = true;
-    transport.publish(START_MAPPING_TOPIC, 'std_msgs/msg/Empty', {});
+    transport.publish(START_MAPPING_TOPIC, START_MAPPING_MESSAGE_TYPE, START_MAPPING_MESSAGE);
     clearAckTimeout();
     timeoutRef.current = setTimeout(() => {
       waitingRef.current = false;
