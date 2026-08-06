@@ -69,7 +69,7 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
   const sessionId = useMappingStore((state) => state.sessionId);
   const topic = props?.config?.topic || '/cloud_registered';
   const mapFrame = String(props?.config?.mapFrame || 'map_frame').replace(/^\//, '');
-  const robotFrame = String(props?.config?.robotFrame || 'base_link').replace(/^\//, '');
+  const robotFrame = String(props?.config?.robotFrame || 'lidar_frame').replace(/^\//, '');
   const odomTopic = props?.config?.odomTopic || '/Odometry';
   const viewMeters = Math.max(2, Number(props?.config?.viewMeters || DEFAULT_VIEW_METERS));
   const width = Math.max(1, props?.width || 300);
@@ -134,6 +134,13 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
 
   useEffect(() => {
     if (!mappingActive || connectionStatus !== 'connected' || !transport) return;
+    hasTfPositionRef.current = false;
+    const cachedPosition = tfTrackerRef.current.lookupPosition(mapFrame, robotFrame);
+    if (cachedPosition) {
+      robotPositionRef.current = cachedPosition;
+      hasTfPositionRef.current = true;
+      setRobotPosition(cachedPosition);
+    }
     const handleTf = (message: any) => {
       const tracker = tfTrackerRef.current;
       tracker.update(message);
@@ -166,6 +173,7 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
       tfSub.unsubscribe();
       staticTfSub.unsubscribe();
       odomSub.unsubscribe();
+      hasTfPositionRef.current = false;
     };
   }, [mappingActive, connectionStatus, transport, mapFrame, robotFrame, odomTopic]);
 

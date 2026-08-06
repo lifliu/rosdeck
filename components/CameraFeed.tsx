@@ -10,6 +10,10 @@ import { buildMjpegUrl, parseRobotIp } from "../lib/ros";
 import { useRosStore } from "../stores/useRosStore";
 import type { WidgetProps } from "../types/layout";
 import { WidgetEmptyState } from "./WidgetEmptyState";
+import {
+  CompressedVideoView,
+  type CompressedVideoViewRef,
+} from "../modules/expo-compressed-video/src";
 
 // Max compressed image size: 2MB. Anything larger is likely raw image data
 // that slipped through, or a corrupt message.
@@ -31,6 +35,33 @@ function isCameraImageTopic(topicName: string, topicType: string): boolean {
   if (/[Dd]epth|theora|zstd|h264|h265|hevc|avif|svt/.test(topicName)) return false;
   // Allow other CompressedImage topics (e.g., /camera/compressed_image)
   return true;
+}
+
+function isCompressedVideoTopic(topicType: string): boolean {
+  return topicType === 'foxglove_msgs/msg/CompressedVideo';
+}
+
+function bytesToBase64(data: unknown): string | null {
+  let bytes: Uint8Array;
+  if (data instanceof Uint8Array) {
+    bytes = data;
+  } else if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  } else if (Array.isArray(data)) {
+    bytes = Uint8Array.from(data);
+  } else if (typeof data === 'string') {
+    return data;
+  } else {
+    return null;
+  }
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 const DEBUG_CAMERA = __DEV__;
@@ -109,6 +140,7 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
   const [currentFrame, setCurrentFrame] = useState<SkImage | null>(null);
   const frameCount = useRef(0);
   const hasReceivedFrame = useRef(false);
+  const videoViewRef = useRef<CompressedVideoViewRef>(null);
 
   const robotIp = parseRobotIp(url);
 
@@ -146,7 +178,7 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
   // Subscribe to image topic via transport (throttled to ~10fps).
   // First verify the topic actually publishes CompressedImage — subscribing to a
   // raw Image topic would flood the websocket with multi-MB frames and freeze the app.
-  const [verifiedTopic, setVerifiedTopic] = useState<string | null>(null);
+  const [verifiedTopic, setVerifiedTopic] = useState<{ name: string; type: string } | null>(null);
 
   useEffect(() => {
     if (cameraSource === "mjpeg" || !transport || status !== "connected") {
@@ -159,9 +191,9 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
     transport.getTopics().then((topics) => {
       if (cancelled) return;
       const match = topics.find((t) => t.name === cameraTopic);
-      if (match && isCameraImageTopic(match.name, match.type)) {
+      if (match && (isCameraImageTopic(match.name, match.type) || isCompressedVideoTopic(match.type))) {
         cameraLog('Verified topic:', cameraTopic, '→', match.type);
-        setVerifiedTopic(cameraTopic);
+        setVerifiedTopic({ name: cameraTopic, type: match.type });
       } else {
         cameraLog('Rejected topic:', cameraTopic, match ? `(type: ${match.type})` : '(not found)');
         setVerifiedTopic(null);
@@ -171,7 +203,8 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
   }, [transport, cameraTopic, cameraSource, status, url]);
 
   useEffect(() => {
-    if (!verifiedTopic || cameraSource === "mjpeg" || !transport || status !== "connected")
+    if (!verifiedTopic || verifiedTopic.type !== 'sensor_msgs/msg/CompressedImage' ||
+        cameraSource === "mjpeg" || !transport || status !== "connected")
       return;
     if (url?.startsWith("demo://")) return;
 
@@ -215,13 +248,13 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
       }
     };
 
-    cameraLog('Subscribing to', verifiedTopic, 'at', maxFps, 'fps max');
+    cameraLog('Subscribing to', verifiedTopic.name, 'at', maxFps, 'fps max');
     let msgCount = 0;
     let dropCount = 0;
     let decodeFailCount = 0;
 
     const sub = transport.subscribe(
-      verifiedTopic,
+      verifiedTopic.name,
       "sensor_msgs/msg/CompressedImage",
       (msg: any) => {
         msgCount++;
@@ -260,7 +293,7 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
     }, 5000);
 
     return () => {
-      cameraLog('Unsubscribing from', verifiedTopic);
+      cameraLog('Unsubscribing from', verifiedTopic.name);
       sub.unsubscribe();
       clearInterval(statsInterval);
       if (rafId !== null) cancelAnimationFrame(rafId);
@@ -271,6 +304,40 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
       });
     };
   }, [verifiedTopic, transport, cameraSource, status, url, maxFps]);
+
+  // Foxglove CompressedVideo carries one Annex-B packet per encoded frame.
+  // Every delta frame is forwarded (no FPS dropping) so MediaCodec keeps a valid GOP.
+  useEffect(() => {
+    if (!verifiedTopic || verifiedTopic.type !== 'foxglove_msgs/msg/CompressedVideo' ||
+        cameraSource === 'mjpeg' || !transport || status !== 'connected') return;
+    let active = true;
+    const sub = transport.subscribe(
+      verifiedTopic.name,
+      'foxglove_msgs/msg/CompressedVideo',
+      (message: any) => {
+        if (!active || !message?.data) return;
+        const format = String(message.format || '').toLowerCase();
+        if (format !== 'h265' && format !== 'hevc' && format !== 'h264') return;
+        const encoded = bytesToBase64(message.data);
+        if (!encoded) return;
+        const stamp = message.timestamp || {};
+        const presentationTimeUs = Number(stamp.sec || 0) * 1_000_000 +
+          Number(stamp.nsec ?? stamp.nanosec ?? 0) / 1_000;
+        void videoViewRef.current?.pushFrame(encoded, presentationTimeUs || Date.now() * 1_000)
+          .catch((error) => cameraLog('Native video frame rejected:', error));
+        frameCount.current += 1;
+        if (!hasReceivedFrame.current) {
+          hasReceivedFrame.current = true;
+          setShowEmptyState(false);
+        }
+      },
+    );
+    return () => {
+      active = false;
+      sub.unsubscribe();
+      void videoViewRef.current?.reset();
+    };
+  }, [verifiedTopic, transport, cameraSource, status]);
 
   // --- Not connected ---
   if (status !== "connected") {
@@ -354,7 +421,7 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
         <WidgetEmptyState
           widgetType="camera"
           topicName={cameraTopic}
-          hint="Topic not found or not a CompressedImage topic. Use image_transport to republish as compressed."
+          hint="Topic not found or not a supported CompressedImage/CompressedVideo topic."
         />
       </View>
     );
@@ -366,7 +433,7 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
         <WidgetEmptyState
           widgetType="camera"
           topicName={cameraTopic}
-          hint="Is the topic publishing sensor_msgs/CompressedImage?"
+          hint="Is the topic publishing CompressedImage or foxglove_msgs/CompressedVideo?"
         />
       </View>
     );
@@ -374,6 +441,21 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
 
   const width = props?.width || 320;
   const height = props?.height || 240;
+
+  if (verifiedTopic?.type === 'foxglove_msgs/msg/CompressedVideo') {
+    return (
+      <View style={styles.container}>
+        <CompressedVideoView
+          ref={videoViewRef}
+          format="h265"
+          style={styles.video}
+        />
+        <View style={styles.fpsOverlay}>
+          <Text style={styles.fpsText}>{fps} FPS</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -403,6 +485,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   canvas: { flex: 1 },
+  video: { flex: 1, backgroundColor: '#000000' },
   webview: { flex: 1 },
   placeholderContent: {
     flex: 1,

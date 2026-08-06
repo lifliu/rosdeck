@@ -14,7 +14,7 @@ import { DEFAULTS } from '../constants/defaults';
 import { getWidget } from '../widgets/registry';
 
 const STORAGE_KEY_PREFIX = 'ros2mobile_layouts_';
-const LAYOUT_SCHEMA_VERSION = 3;
+const LAYOUT_SCHEMA_VERSION = 4;
 
 /** Upgrade layouts created with the upstream Jazzy /cmd_vel defaults to VBot Humble. */
 export function migrateLayoutsForVbotHumble(layouts: SavedLayout[]): SavedLayout[] {
@@ -24,6 +24,22 @@ export function migrateLayoutsForVbotHumble(layouts: SavedLayout[]): SavedLayout
         ...node,
         children: [migrateNode(node.children[0]), migrateNode(node.children[1])],
       };
+    }
+    if (node.widgetType === 'pointcloud3d') {
+      const robotFrame = node.config?.robotFrame;
+      if (!robotFrame || robotFrame === 'base_link') {
+        return {
+          ...node,
+          config: {
+            ...node.config,
+            mapFrame: node.config?.mapFrame || 'map_frame',
+            robotFrame: 'lidar_frame',
+            odomTopic: node.config?.odomTopic || '/Odometry',
+            viewMeters: node.config?.viewMeters || 20,
+          },
+        };
+      }
+      return node;
     }
     if (node.widgetType !== 'joystick') return node;
 

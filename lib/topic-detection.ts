@@ -43,9 +43,11 @@ export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
     }
   }
 
-  // Camera: only use CompressedImage topics, excluding depth/theora variants.
+  // Camera: prefer Foxglove encoded video, then CompressedImage.
   // Raw Image is never processed (multi-MB frames would freeze the app).
   const cameraTopic = topics.find((t) =>
+    t.type === 'foxglove_msgs/msg/CompressedVideo'
+  ) ?? topics.find((t) =>
     t.type === 'sensor_msgs/msg/CompressedImage' &&
     !/[Dd]epth|theora/.test(t.name)
   );

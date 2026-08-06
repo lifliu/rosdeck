@@ -10,7 +10,7 @@ export const pointCloud3DWidget: WidgetDefinition = {
   defaultConfig: {
     topic: '/cloud_registered',
     mapFrame: 'map_frame',
-    robotFrame: 'base_link',
+    robotFrame: 'lidar_frame',
     odomTopic: '/Odometry',
     viewMeters: 20,
   },
@@ -31,7 +31,7 @@ export const pointCloud3DWidget: WidgetDefinition = {
       key: 'robotFrame',
       label: 'Robot Frame',
       type: 'text',
-      placeholder: 'base_link',
+      placeholder: 'lidar_frame',
     },
     {
       key: 'odomTopic',

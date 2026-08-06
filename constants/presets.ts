@@ -16,7 +16,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
         createWidgetNode('pointcloud3d', {
           topic: '/cloud_registered',
           mapFrame: 'map_frame',
-          robotFrame: 'base_link',
+          robotFrame: 'lidar_frame',
           odomTopic: '/Odometry',
           viewMeters: 20,
         }),

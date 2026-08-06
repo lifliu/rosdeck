@@ -58,6 +58,23 @@ describe('useLayoutStore', () => {
       const [migrated] = migrateLayoutsForVbotHumble([custom]);
       expect(migrated.tree).toEqual(custom.tree);
     });
+
+    it('moves the old point-cloud reference frame to lidar_frame', () => {
+      const legacy = {
+        id: 'mapping-3d',
+        name: '3D Mapping',
+        tree: createWidgetNode('pointcloud3d', {
+          topic: '/cloud_registered',
+          robotFrame: 'base_link',
+        }),
+      };
+      const [migrated] = migrateLayoutsForVbotHumble([legacy]);
+      expect(migrated.tree.type).toBe('widget');
+      if (migrated.tree.type === 'widget') {
+        expect(migrated.tree.config.robotFrame).toBe('lidar_frame');
+        expect(migrated.tree.config.mapFrame).toBe('map_frame');
+      }
+    });
   });
 
   describe('initForRobot', () => {
