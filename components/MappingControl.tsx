@@ -6,7 +6,7 @@ import { useTranslation } from '../lib/i18n';
 import { useRosStore } from '../stores/useRosStore';
 
 export const START_MAPPING_TOPIC = '/rosdeck/start_3d_mapping';
-export const MAPPING_STATUS_TOPIC = '/rosdeck/3d_mapping_status';
+export const MAPPING_STATUS_TOPIC = '/rosdeck/mapping_status';
 
 const ACK_TIMEOUT_MS = 5000;
 

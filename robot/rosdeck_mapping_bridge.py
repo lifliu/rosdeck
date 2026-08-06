@@ -25,7 +25,7 @@ class MappingBridge(Node):
         self._lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
         self._mapping_started = False
-        self._status = self.create_publisher(String, '/rosdeck/3d_mapping_status', 10)
+        self._status = self.create_publisher(String, '/rosdeck/mapping_status', 10)
         self.create_subscription(Empty, '/rosdeck/start_3d_mapping', self._start_mapping, 10)
         self.get_logger().info(
             f'Ready: /rosdeck/start_3d_mapping launches {SCRIPT_PATH}'

@@ -16,7 +16,7 @@ import {
 describe('MappingControl protocol', () => {
   it('uses fixed ROS topics for mapping commands and acknowledgements', () => {
     expect(START_MAPPING_TOPIC).toBe('/rosdeck/start_3d_mapping');
-    expect(MAPPING_STATUS_TOPIC).toBe('/rosdeck/3d_mapping_status');
+    expect(MAPPING_STATUS_TOPIC).toBe('/rosdeck/mapping_status');
   });
 
   it('extracts String messages and rejects malformed status payloads', () => {
