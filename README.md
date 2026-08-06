@@ -39,6 +39,8 @@
 - **Customizable layouts** — tmux-style split panes, swap and resize widgets, save/load per robot
 - **Auto-layout** — detects available topics on connect and suggests a matching layout
 - **Demo mode** — try the full app without a robot
+- **English / 中文 UI** — switch languages instantly from Settings
+- **VBot 3D mapping** — start the robot's fixed SLAM mapping script from the control screen through a restricted ROS 2 bridge
 
 ### Widgets
 
@@ -85,6 +87,14 @@ cp eas.json.example eas.json
 npm install
 npm start
 ```
+
+### VBot 3D mapping button
+
+Foxglove cannot execute robot-side files directly. Copy
+[`robot/rosdeck_mapping_bridge.py`](robot/rosdeck_mapping_bridge.py) to the
+VBot and run it in the sourced ROS 2 Humble environment. The bridge only starts
+the fixed `/userdata/2_slam/1_mapping.sh` script; it does not expose arbitrary
+shell execution. See [`robot/README.md`](robot/README.md) for details.
 
 Edit `app.json` with your own `slug`, `bundleIdentifier`, `package`, and EAS `projectId` before building.
 

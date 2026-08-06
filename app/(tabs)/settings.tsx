@@ -20,6 +20,7 @@ import { useOnboardingStore } from '../../stores/useOnboardingStore';
 import { SetupGuide } from '../../components/SetupGuide';
 import { useOrientation } from '../../hooks/useOrientation';
 import { theme } from '../../constants/theme';
+import { useTranslation } from '../../lib/i18n';
 
 const PUBLISH_RATE_OPTIONS = [5, 10, 20, 30];
 const DEPTH_OPTIONS = [4, 6, 8, 12];
@@ -27,6 +28,9 @@ const ARRAY_LIMIT_OPTIONS = [8, 16, 32, 64];
 const DEADZONE_OPTIONS = [0.05, 0.1, 0.15, 0.2, 0.3];
 
 export default function SettingsScreen() {
+  const language = useSettingsStore((s) => s.language);
+  const setLanguage = useSettingsStore((s) => s.setLanguage);
+  const { t } = useTranslation();
   const hapticsEnabled = useSettingsStore((s) => s.hapticsEnabled);
   const keepAwake = useSettingsStore((s) => s.keepAwake);
   const publishRateHz = useSettingsStore((s) => s.publishRateHz);
@@ -52,12 +56,12 @@ export default function SettingsScreen() {
   const handleResetLayouts = () => {
     if (!robotUrl) return;
     Alert.alert(
-      'Reset Layouts',
-      'This will restore all layouts for the current robot to defaults. This cannot be undone.',
+      t('settings.resetLayoutsTitle'),
+      t('settings.resetLayoutsMessage'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('settings.cancel'), style: 'cancel' },
         {
-          text: 'Reset',
+          text: t('settings.reset'),
           style: 'destructive',
           onPress: async () => {
             await AsyncStorage.removeItem(`ros2mobile_layouts_${robotUrl}`);
@@ -70,12 +74,12 @@ export default function SettingsScreen() {
 
   const handleClearConnections = () => {
     Alert.alert(
-      'Clear Saved Connections',
-      'All saved robot connections will be removed.',
+      t('settings.clearConnectionsTitle'),
+      t('settings.clearConnectionsMessage'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('settings.cancel'), style: 'cancel' },
         {
-          text: 'Clear',
+          text: t('settings.clear'),
           style: 'destructive',
           onPress: async () => {
             useRosStore.getState().disconnect();
@@ -89,12 +93,12 @@ export default function SettingsScreen() {
 
   const handleResetAll = () => {
     Alert.alert(
-      'Reset All App Data',
-      'This will erase all saved connections, layouts, presets, and settings. The app will return to its initial state.',
+      t('settings.resetAllTitle'),
+      t('settings.resetAllMessage'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('settings.cancel'), style: 'cancel' },
         {
-          text: 'Reset Everything',
+          text: t('settings.resetEverything'),
           style: 'destructive',
           onPress: async () => {
             try {
@@ -115,7 +119,19 @@ export default function SettingsScreen() {
             useLayoutStore.getState().reset();
             usePresetsStore.setState({ presets: [], loaded: false });
             useOnboardingStore.getState().reset();
-            useSettingsStore.setState({ hapticsEnabled: true, keepAwake: true, publishRateHz: 10, autoDetectTopics: true, tabRailSide: 'left', loaded: false });
+            useSettingsStore.setState({
+              language: 'en',
+              hapticsEnabled: true,
+              keepAwake: true,
+              publishRateHz: 10,
+              autoDetectTopics: true,
+              fieldPickerDepth: 8,
+              fieldPickerArrayLimit: 32,
+              tabRailSide: 'left',
+              gamepadDeadzone: 0.1,
+              gamepadAutoLayout: 'left-drive',
+              loaded: false,
+            });
           },
         },
       ],
@@ -126,11 +142,38 @@ export default function SettingsScreen() {
 
   const preferencesSection = (
     <>
-      <Text style={styles.sectionTitle}>PREFERENCES</Text>
+      <Text style={styles.sectionTitle}>{t('settings.preferences')}</Text>
       <View style={styles.card}>
+        <Text style={styles.rowTitle}>{t('settings.language')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.languageHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {([
+            { value: 'en' as const, label: t('settings.english') },
+            { value: 'zh' as const, label: t('settings.chinese') },
+          ]).map(({ value, label }) => (
+            <TouchableOpacity
+              key={value}
+              style={[
+                styles.segmentButton,
+                language === value && styles.segmentButtonActive,
+              ]}
+              onPress={() => setLanguage(value)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  language === value && styles.segmentTextActive,
+                ]}
+              >
+                {label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={styles.divider} />
         <View style={styles.toggleRow}>
           <View style={styles.toggleLabel}>
-            <Text style={styles.rowTitle}>Haptics</Text>
+            <Text style={styles.rowTitle}>{t('settings.haptics')}</Text>
           </View>
           <Switch
             value={hapticsEnabled}
@@ -142,8 +185,8 @@ export default function SettingsScreen() {
         <View style={styles.divider} />
         <View style={styles.toggleRow}>
           <View style={styles.toggleLabel}>
-            <Text style={styles.rowTitle}>Keep Screen Awake</Text>
-            <Text style={styles.rowSubtitle}>Prevents dimming while connected</Text>
+            <Text style={styles.rowTitle}>{t('settings.keepAwake')}</Text>
+            <Text style={styles.rowSubtitle}>{t('settings.keepAwakeHint')}</Text>
           </View>
           <Switch
             value={keepAwake}
@@ -155,8 +198,8 @@ export default function SettingsScreen() {
         <View style={styles.divider} />
         <View style={styles.toggleRow}>
           <View style={styles.toggleLabel}>
-            <Text style={styles.rowTitle}>Auto-detect Topics</Text>
-            <Text style={styles.rowSubtitle}>Automatically discover and subscribe to topics</Text>
+            <Text style={styles.rowTitle}>{t('settings.autoDetect')}</Text>
+            <Text style={styles.rowSubtitle}>{t('settings.autoDetectHint')}</Text>
           </View>
           <Switch
             value={autoDetectTopics}
@@ -166,8 +209,8 @@ export default function SettingsScreen() {
           />
         </View>
         <View style={styles.divider} />
-        <Text style={styles.rowTitle}>Tab Bar Side (Landscape)</Text>
-        <Text style={styles.rowSubtitle}>Which side the tab rail appears on in landscape mode</Text>
+        <Text style={styles.rowTitle}>{t('settings.tabSide')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.tabSideHint')}</Text>
         <View style={styles.segmentedRow}>
           {(['left', 'right'] as const).map((side) => (
             <TouchableOpacity
@@ -184,17 +227,17 @@ export default function SettingsScreen() {
                   tabRailSide === side && styles.segmentTextActive,
                 ]}
               >
-                {side.charAt(0).toUpperCase() + side.slice(1)}
+                {t(side === 'left' ? 'settings.left' : 'settings.right')}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
       </View>
 
-      <Text style={styles.sectionTitle}>CONTROL</Text>
+      <Text style={styles.sectionTitle}>{t('settings.control')}</Text>
       <View style={styles.card}>
-        <Text style={styles.rowTitle}>Joystick Publish Rate</Text>
-        <Text style={styles.rowSubtitle}>How often commands are sent to the robot</Text>
+        <Text style={styles.rowTitle}>{t('settings.publishRate')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.publishRateHint')}</Text>
         <View style={styles.segmentedRow}>
           {PUBLISH_RATE_OPTIONS.map((rate) => (
             <TouchableOpacity
@@ -218,14 +261,14 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <Text style={styles.sectionTitle}>GAMEPAD</Text>
+      <Text style={styles.sectionTitle}>{t('settings.gamepad')}</Text>
       <View style={styles.card}>
-        <Text style={styles.rowTitle}>Auto Stick Layout</Text>
-        <Text style={styles.rowSubtitle}>Which stick does what when a single joystick widget is used</Text>
+        <Text style={styles.rowTitle}>{t('settings.autoStick')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.autoStickHint')}</Text>
         <View style={styles.segmentedRow}>
           {([
-            { value: 'left-drive' as const, label: 'L Drive · R Steer' },
-            { value: 'left-steer' as const, label: 'L Steer · R Drive' },
+            { value: 'left-drive' as const, label: t('settings.leftDrive') },
+            { value: 'left-steer' as const, label: t('settings.leftSteer') },
           ]).map(({ value, label }) => (
             <TouchableOpacity
               key={value}
@@ -247,8 +290,8 @@ export default function SettingsScreen() {
           ))}
         </View>
         <View style={styles.divider} />
-        <Text style={styles.rowTitle}>Stick Deadzone</Text>
-        <Text style={styles.rowSubtitle}>Ignore small stick movements (noise filtering)</Text>
+        <Text style={styles.rowTitle}>{t('settings.deadzone')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.deadzoneHint')}</Text>
         <View style={styles.segmentedRow}>
           {DEADZONE_OPTIONS.map((dz) => (
             <TouchableOpacity
@@ -276,10 +319,10 @@ export default function SettingsScreen() {
 
   const fieldPickerSection = (
     <>
-      <Text style={styles.sectionTitle}>FIELD PICKER</Text>
+      <Text style={styles.sectionTitle}>{t('settings.fieldPicker')}</Text>
       <View style={styles.card}>
-        <Text style={styles.rowTitle}>Max Nesting Depth</Text>
-        <Text style={styles.rowSubtitle}>How deep to traverse message fields</Text>
+        <Text style={styles.rowTitle}>{t('settings.maxDepth')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.maxDepthHint')}</Text>
         <View style={styles.segmentedRow}>
           {DEPTH_OPTIONS.map((d) => (
             <TouchableOpacity
@@ -302,8 +345,8 @@ export default function SettingsScreen() {
           ))}
         </View>
         <View style={styles.divider} />
-        <Text style={styles.rowTitle}>Array Element Limit</Text>
-        <Text style={styles.rowSubtitle}>Max array elements to scan per level</Text>
+        <Text style={styles.rowTitle}>{t('settings.arrayLimit')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.arrayLimitHint')}</Text>
         <View style={styles.segmentedRow}>
           {ARRAY_LIMIT_OPTIONS.map((n) => (
             <TouchableOpacity
@@ -331,7 +374,7 @@ export default function SettingsScreen() {
 
   const dataSection = (
     <>
-      <Text style={styles.sectionTitle}>DATA</Text>
+      <Text style={styles.sectionTitle}>{t('settings.data')}</Text>
       <View style={styles.card}>
         <TouchableOpacity
           style={[styles.actionRow, !robotUrl && styles.actionRowDisabled]}
@@ -344,29 +387,29 @@ export default function SettingsScreen() {
             color={robotUrl ? theme.colors.statusError : theme.colors.textMuted}
           />
           <Text style={[styles.actionText, styles.actionTextDestructive, !robotUrl && styles.actionTextDisabled]}>
-            Reset Layouts for This Robot
+            {t('settings.resetLayouts')}
           </Text>
         </TouchableOpacity>
         <View style={styles.divider} />
         <TouchableOpacity style={styles.actionRow} onPress={handleClearConnections}>
           <Ionicons name="wifi-outline" size={16} color={theme.colors.statusError} />
           <Text style={[styles.actionText, styles.actionTextDestructive]}>
-            Clear Saved Connections
+            {t('settings.clearConnections')}
           </Text>
         </TouchableOpacity>
         <View style={styles.divider} />
         <TouchableOpacity style={styles.actionRow} onPress={handleResetAll}>
           <Ionicons name="trash-outline" size={16} color={theme.colors.statusError} />
           <Text style={[styles.actionText, styles.actionTextDestructive]}>
-            Reset All App Data
+            {t('settings.resetAll')}
           </Text>
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.sectionTitle}>ABOUT</Text>
+      <Text style={styles.sectionTitle}>{t('settings.about')}</Text>
       <View style={styles.card}>
         <View style={styles.infoRow}>
-          <Text style={styles.label}>Version</Text>
+          <Text style={styles.label}>{t('settings.version')}</Text>
           <Text style={styles.value}>
             {Constants.expoConfig?.version || '1.0.0'}
             {' '}
@@ -377,7 +420,7 @@ export default function SettingsScreen() {
         </View>
         <TouchableOpacity style={styles.actionRow} onPress={() => setShowGuide(true)}>
           <Ionicons name="book-outline" size={16} color={theme.colors.accentPrimary} />
-          <Text style={styles.actionText}>Setup Guide</Text>
+          <Text style={styles.actionText}>{t('settings.setupGuide')}</Text>
         </TouchableOpacity>
       </View>
     </>

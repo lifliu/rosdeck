@@ -7,8 +7,10 @@ import { useRouter } from 'expo-router';
 import { theme } from '../constants/theme';
 import { autoDetect, parseInput, type DetectionResult } from '../lib/auto-detect';
 import type { TransportType } from '../lib/transport';
+import { useTranslation } from '../lib/i18n';
 
 export function ConnectionForm() {
+  const { t } = useTranslation();
   const [ipPort, setIpPort] = useState('');
   const [detecting, setDetecting] = useState(false);
   const [detectingHost, setDetectingHost] = useState('');
@@ -130,7 +132,7 @@ export function ConnectionForm() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.label}>ROBOT IP:PORT</Text>
+      <Text style={styles.label}>{t('connect.robotAddress')}</Text>
       <TextInput
         style={styles.input}
         value={ipPort}
@@ -150,7 +152,7 @@ export function ConnectionForm() {
             ROSBRIDGE
           </Text>
           {transportType === 'rosbridge' && transportAutoSet && (
-            <Text style={styles.autoTag}>·AUTO</Text>
+            <Text style={styles.autoTag}>{t('connect.auto')}</Text>
           )}
         </TouchableOpacity>
         <TouchableOpacity
@@ -161,21 +163,25 @@ export function ConnectionForm() {
             FOXGLOVE
           </Text>
           {transportType === 'foxglove' && transportAutoSet && (
-            <Text style={styles.autoTag}>·AUTO</Text>
+            <Text style={styles.autoTag}>{t('connect.auto')}</Text>
           )}
         </TouchableOpacity>
       </View>
       {detecting && (
         <View style={[styles.detectResult, styles.detectProbing]}>
           <ActivityIndicator size="small" color={theme.colors.textMuted} style={{ marginRight: 6 }} />
-          <Text style={styles.detectProbingText}>Probing {detectingHost}…</Text>
+          <Text style={styles.detectProbingText}>{t('connect.probing', { host: detectingHost })}</Text>
         </View>
       )}
       {!detecting && detection !== null && (
         <View style={[styles.detectResult, styles.detectSuccess]}>
           <View style={[styles.dot, { backgroundColor: theme.colors.statusConnected }]} />
           <Text style={styles.detectSuccessText}>
-            {detection.transport === 'rosbridge' ? 'Rosbridge' : 'Foxglove'} on {detection.host}:{detection.port}
+            {t('connect.detected', {
+              transport: detection.transport === 'rosbridge' ? 'Rosbridge' : 'Foxglove',
+              host: detection.host,
+              port: detection.port,
+            })}
           </Text>
           <TouchableOpacity onPress={handleRetry} style={styles.retryBtn}>
             <Ionicons name="refresh-outline" size={14} color={theme.colors.textSecondary} />
@@ -185,7 +191,7 @@ export function ConnectionForm() {
       {!detecting && detectionFailed && (
         <View style={[styles.detectResult, styles.detectFailure]}>
           <View style={[styles.dot, { backgroundColor: theme.colors.statusError }]} />
-          <Text style={styles.detectFailureText}>No bridge found — check IP and that rosbridge/foxglove is running</Text>
+          <Text style={styles.detectFailureText}>{t('connect.notFound')}</Text>
           <TouchableOpacity onPress={handleRetry} style={styles.retryBtn}>
             <Ionicons name="refresh-outline" size={14} color={theme.colors.textSecondary} />
           </TouchableOpacity>
@@ -200,7 +206,7 @@ export function ConnectionForm() {
           {isConnecting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.connectButtonText}>CONNECT</Text>
+            <Text style={styles.connectButtonText}>{t('connect.button')}</Text>
           )}
         </TouchableOpacity>
       </View>

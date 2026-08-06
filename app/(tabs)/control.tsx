@@ -21,6 +21,8 @@ import { useOrientation } from "../../hooks/useOrientation";
 import { useRosStore } from "../../stores/useRosStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useGamepadInput } from "../../hooks/useGamepadInput";
+import { MappingControl } from "../../components/MappingControl";
+import { useTranslation } from "../../lib/i18n";
 
 function ConnectionDot() {
   const status = useRosStore((s) => s.connection.status);
@@ -29,6 +31,7 @@ function ConnectionDot() {
   const transportType = useRosStore((s) => s.transportType);
   const disconnect = useRosStore((s) => s.disconnect);
   const [popupVisible, setPopupVisible] = useState(false);
+  const { t } = useTranslation();
   const isConnected = status === "connected";
 
   const dotColor =
@@ -76,7 +79,7 @@ function ConnectionDot() {
         >
           <View style={styles.popupContent}>
             <View style={styles.popupRow}>
-              <Text style={styles.popupLabel}>STATUS</Text>
+              <Text style={styles.popupLabel}>{t('control.status')}</Text>
               <Text style={[styles.popupValue, { color: dotColor }]}>
                 {status.toUpperCase()}
               </Text>
@@ -88,14 +91,14 @@ function ConnectionDot() {
               </View>
             ) : null}
             <View style={styles.popupRow}>
-              <Text style={styles.popupLabel}>TRANSPORT</Text>
+              <Text style={styles.popupLabel}>{t('control.transport')}</Text>
               <Text style={styles.popupValue}>
                 {transportType.toUpperCase()}
               </Text>
             </View>
             {error ? (
               <View style={styles.popupRow}>
-                <Text style={styles.popupLabel}>ERROR</Text>
+                <Text style={styles.popupLabel}>{t('control.error')}</Text>
                 <Text style={styles.popupError}>{error}</Text>
               </View>
             ) : null}
@@ -110,7 +113,7 @@ function ConnectionDot() {
                   }}
                 >
                   <Ionicons name="power-outline" size={14} color={theme.colors.statusError} />
-                  <Text style={styles.disconnectText}>Disconnect</Text>
+                  <Text style={styles.disconnectText}>{t('control.disconnect')}</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -130,6 +133,7 @@ export default function ControlScreen() {
   const { isLandscape } = useOrientation();
   const isDemo = url?.startsWith("demo://");
   useGamepadInput();
+  const { t } = useTranslation();
 
   const [suggestion, setSuggestion] = useState<TopicSuggestion | null>(null);
   const [showSuggestion, setShowSuggestion] = useState(false);
@@ -221,12 +225,19 @@ export default function ControlScreen() {
         <View style={styles.topBar}>
           <ConnectionDot />
           <LayoutManager />
+          <MappingControl />
+        </View>
+      )}
+
+      {isLandscape && (
+        <View style={styles.landscapeMapping}>
+          <MappingControl compact />
         </View>
       )}
 
       {isDemo && status === "connected" && (
         <TouchableOpacity style={styles.demoBanner} onPress={handleExitDemo}>
-          <Text style={styles.demoBannerText}>DEMO MODE</Text>
+          <Text style={styles.demoBannerText}>{t('control.demoMode')}</Text>
           <Ionicons
             name="close-circle-outline"
             size={14}
@@ -242,9 +253,9 @@ export default function ControlScreen() {
             size={48}
             color={theme.colors.textMuted}
           />
-          <Text style={styles.disconnectedTitle}>Not connected</Text>
+          <Text style={styles.disconnectedTitle}>{t('control.notConnected')}</Text>
           <Text style={styles.disconnectedSubtext}>
-            Go to Connect tab to connect to a robot.
+            {t('control.notConnectedHint')}
           </Text>
         </View>
       ) : (
@@ -274,6 +285,12 @@ const styles = StyleSheet.create({
     gap: 10,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.borderDefault,
+  },
+  landscapeMapping: {
+    position: 'absolute',
+    top: 8,
+    right: 10,
+    zIndex: 20,
   },
   dot: {
     width: 10,

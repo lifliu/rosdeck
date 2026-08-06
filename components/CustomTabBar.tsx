@@ -9,16 +9,17 @@ import { theme } from "../constants/theme";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useRosStore } from "../stores/useRosStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { useTranslation, type TranslationKey } from "../lib/i18n";
 
 export const RAIL_WIDTH = 48;
 
 const TAB_CONFIG: Record<
   string,
-  { label: string; icon: keyof typeof Ionicons.glyphMap }
+  { labelKey: TranslationKey; icon: keyof typeof Ionicons.glyphMap }
 > = {
-  index: { label: "Connect", icon: "link-outline" },
-  control: { label: "Control", icon: "grid-outline" },
-  settings: { label: "Settings", icon: "settings-sharp" },
+  index: { labelKey: "tabs.connect", icon: "link-outline" },
+  control: { labelKey: "tabs.control", icon: "grid-outline" },
+  settings: { labelKey: "tabs.settings", icon: "settings-sharp" },
 };
 
 const TAB_ROUTES = ["index", "control", "settings"];
@@ -34,6 +35,7 @@ export function CustomTabBar({
   const connectionStatus = useRosStore((s) => s.connection.status);
   const isConnected = connectionStatus === "connected";
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
@@ -41,7 +43,7 @@ export function CustomTabBar({
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
           const isFocused = state.index === index;
-          const config = TAB_CONFIG[route.name] || { label: route.name };
+          const config = TAB_CONFIG[route.name];
 
           const onPress = () => {
             const event = navigation.emit({
@@ -78,7 +80,7 @@ export function CustomTabBar({
             >
               <View style={styles.labelContainer}>
                 <Text style={[styles.label, { color }]} numberOfLines={1}>
-                  {config.label}
+                  {config ? t(config.labelKey) : route.name}
                 </Text>
                 {route.name === "index" && isConnected && (
                   <View style={styles.statusDot} />

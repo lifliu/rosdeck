@@ -10,12 +10,14 @@ import { useRosStore } from '../../stores/useRosStore';
 import { useOnboardingStore } from '../../stores/useOnboardingStore';
 import { useRouter } from 'expo-router';
 import { theme } from '../../constants/theme';
+import { useTranslation } from '../../lib/i18n';
 
 export default function ConnectScreen() {
   const loadSavedConnections = useRosStore((s) => s.loadSavedConnections);
   const savedConnections = useRosStore((s) => s.savedConnections);
   const router = useRouter();
   const [showGuide, setShowGuide] = useState(false);
+  const { t } = useTranslation();
 
   useEffect(() => {
     loadSavedConnections();
@@ -47,7 +49,7 @@ export default function ConnectScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>CONNECT</Text>
+        <Text style={styles.headerTitle}>{t('connect.title')}</Text>
         <TouchableOpacity onPress={() => setShowGuide(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Ionicons name="information-circle-outline" size={22} color={theme.colors.textMuted} />
         </TouchableOpacity>
@@ -59,7 +61,7 @@ export default function ConnectScreen() {
           <SavedConnections onSelect={handleSelectSaved} />
           <TouchableOpacity style={styles.demoRow} onPress={handleTryDemo}>
             <Ionicons name="play-circle-outline" size={18} color={theme.colors.statusConnecting} />
-            <Text style={styles.demoText}>Try Demo — no robot needed</Text>
+            <Text style={styles.demoText}>{t('connect.demo')}</Text>
           </TouchableOpacity>
         </ScrollView>
       </TouchableWithoutFeedback>
