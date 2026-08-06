@@ -3,12 +3,14 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRosStore } from '../stores/useRosStore';
 import { theme } from '../constants/theme';
+import { useTranslation } from '../lib/i18n';
 
 interface Props {
   onSelect: (url: string) => void;
 }
 
 export function SavedConnections({ onSelect }: Props) {
+  const { t } = useTranslation();
   const savedConnections = useRosStore((s) => s.savedConnections);
   const removeSavedConnection = useRosStore((s) => s.removeSavedConnection);
 
@@ -18,7 +20,7 @@ export function SavedConnections({ onSelect }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>RECENT CONNECTIONS</Text>
+      <Text style={styles.title}>{t('connect.recent')}</Text>
       {sorted.map((item) => (
         <TouchableOpacity key={item.url} style={styles.item} onPress={() => onSelect(item.url)}>
           <View style={styles.itemText}>

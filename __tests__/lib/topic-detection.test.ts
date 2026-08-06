@@ -1,6 +1,17 @@
 import { suggestLayout } from '../../lib/topic-detection';
 
 describe('suggestLayout', () => {
+  it('detects Foxglove CompressedVideo as a camera source', () => {
+    const result = suggestLayout([
+      { name: '/image_left_raw/h265_undistort', type: 'foxglove_msgs/msg/CompressedVideo' },
+    ]);
+    expect(result?.presetId).toBe('camera-only');
+    expect(result?.widgetConfigs.camera).toEqual({
+      topic: '/image_left_raw/h265_undistort',
+      source: 'transport',
+    });
+  });
+
   it('suggests drive-camera when CompressedImage and Twist topics exist', () => {
     const result = suggestLayout([
       { name: '/cmd_vel', type: 'geometry_msgs/msg/Twist' },
@@ -64,6 +75,18 @@ describe('suggestLayout', () => {
       { name: '/usb_cam/compressed', type: 'sensor_msgs/msg/CompressedImage' },
     ]);
     expect(result?.widgetConfigs.camera?.topic).toBe('/usb_cam/compressed');
+  });
+
+  it('prefers the VBot Humble /vel_cmd Twist interface', () => {
+    const result = suggestLayout([
+      { name: '/navigation/cmd_vel', type: 'geometry_msgs/msg/Twist' },
+      { name: '/cmd_vel', type: 'geometry_msgs/msg/TwistStamped' },
+      { name: '/vel_cmd', type: 'geometry_msgs/msg/Twist' },
+    ]);
+    expect(result?.widgetConfigs.joystick).toEqual({
+      topic: '/vel_cmd',
+      useTwistStamped: false,
+    });
   });
 
   it('includes detected topics in result', () => {

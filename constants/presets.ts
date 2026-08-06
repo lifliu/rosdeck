@@ -9,9 +9,35 @@ export interface PresetTemplate {
 
 export const PRESET_TEMPLATES: PresetTemplate[] = [
   {
+    id: 'mapping-3d',
+    name: '3D Mapping',
+    buildTree: () =>
+      createSplitNode('vertical',
+        createWidgetNode('pointcloud3d', {
+          topic: '/cloud_registered',
+          mapFrame: 'map_frame',
+          robotFrame: 'lidar_frame',
+          odomTopic: '/Odometry',
+          viewMeters: 20,
+        }),
+        createWidgetNode('joystick', {
+          topic: DEFAULTS.cmdVelTopic,
+          useTwistStamped: false,
+          frameId: 'base_link',
+          xAxisGroup: 'angular',
+          xAxisComponent: 'z',
+          xAxisScale: DEFAULTS.maxAngularVel,
+          yAxisGroup: 'linear',
+          yAxisComponent: 'x',
+          yAxisScale: DEFAULTS.maxLinearVel,
+        }),
+        0.72,
+      ),
+  },
+  {
     id: 'drive',
     name: 'Drive',
-    buildTree: () => createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: true, frameId: 'base_link' }),
+    buildTree: () => createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
   },
   {
     id: 'drive-camera',
@@ -19,7 +45,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('vertical',
         createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'mjpeg', mjpegPort: DEFAULTS.mjpegPort }),
-        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: true, frameId: 'base_link' }),
+        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
         0.6
       ),
   },
@@ -34,7 +60,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('vertical',
         createWidgetNode('map', { topic: '/map', enableNav2Goal: false, nav2GoalTopic: '/goal_pose' }),
-        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: true, frameId: 'base_link' }),
+        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
         0.6
       ),
   },
@@ -62,7 +88,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
               ],
               windowSec: 30,
             }),
-            createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: true, frameId: 'base_link' }),
+            createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
             0.5
           ),
           0.35

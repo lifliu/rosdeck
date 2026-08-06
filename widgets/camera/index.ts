@@ -7,9 +7,12 @@ export const cameraWidget: WidgetDefinition = {
   name: 'Camera',
   icon: 'videocam-outline',
   category: 'sensor',
-  supportedMessageTypes: ['sensor_msgs/msg/CompressedImage'],
+  supportedMessageTypes: [
+    'sensor_msgs/msg/CompressedImage',
+    'foxglove_msgs/msg/CompressedVideo',
+  ],
   defaultConfig: {
-    topic: DEFAULTS.cameraTopic,
+    topic: '/image_left_raw/h265_undistort',
     source: 'transport',
     mjpegPort: DEFAULTS.mjpegPort,
     maxFps: 10,
@@ -33,9 +36,12 @@ export const cameraWidget: WidgetDefinition = {
     },
     {
       key: 'topic',
-      label: 'Compressed Image Topic',
+      label: 'Compressed Image / Video Topic',
       type: 'topic',
-      topicMessageTypes: ['sensor_msgs/msg/CompressedImage'],
+      topicMessageTypes: [
+        'sensor_msgs/msg/CompressedImage',
+        'foxglove_msgs/msg/CompressedVideo',
+      ],
       visibleWhen: { key: 'source', value: 'transport' },
     },
     { key: 'mjpegPort', label: 'MJPEG Port', type: 'number', visibleWhen: { key: 'source', value: 'mjpeg' } },

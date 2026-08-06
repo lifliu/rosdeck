@@ -2,7 +2,8 @@ export const DEFAULTS = {
   rosbridgePort: 9090,
   foxglovePort: 8765,
   mjpegPort: 8080,
-  cmdVelTopic: '/cmd_vel',
+  // VBot Humble locomotion_exec subscribes to geometry_msgs/msg/Twist here.
+  cmdVelTopic: '/vel_cmd',
   cameraTopic: '/camera/image_raw/compressed',
   maxLinearVel: 0.5,
   maxAngularVel: 1.0,
@@ -12,3 +13,10 @@ export const DEFAULTS = {
   reconnectBackoffBase: 1000,
   reconnectBackoffMax: 30000,
 } as const;
+
+// foxglove_bridge 3.2+ uses sdk.v1, while legacy 0.x bridges use websocket.v1.
+// Advertising both lets the server select the version it implements.
+export const FOXGLOVE_WEBSOCKET_PROTOCOLS = [
+  'foxglove.sdk.v1',
+  'foxglove.websocket.v1',
+] as const;

@@ -12,6 +12,7 @@ import {
 } from '../lib/gamepad-mapping';
 import type { TwistField } from '../lib/ros';
 import type { GamepadStickEvent } from '../modules/expo-gamepad/src';
+import { DEFAULTS } from '../constants/defaults';
 
 export function useGamepadInput() {
   const mappingsRef = useRef<StickMapping[]>([]);
@@ -88,7 +89,7 @@ export function useGamepadInput() {
       const { config, xStick, yStick } = mapping;
       if (xStick === 'none' && yStick === 'none') continue;
 
-      const topic = config.topic;
+      const topic = config.topic || DEFAULTS.cmdVelTopic;
       trackedTopicsRef.current.add(topic);
 
       const xField = `${config.xAxisGroup ?? 'angular'}.${config.xAxisComponent ?? 'z'}` as TwistField;

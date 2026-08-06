@@ -3,7 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const STORAGE_KEY = 'ros2mobile_settings';
 
+export type AppLanguage = 'en' | 'zh';
+
 interface SettingsState {
+  language: AppLanguage;
   hapticsEnabled: boolean;
   keepAwake: boolean;
   publishRateHz: number;
@@ -15,6 +18,7 @@ interface SettingsState {
   gamepadAutoLayout: 'left-drive' | 'left-steer';
   loaded: boolean;
   load: () => Promise<void>;
+  setLanguage: (value: AppLanguage) => void;
   setHapticsEnabled: (value: boolean) => void;
   setKeepAwake: (value: boolean) => void;
   setPublishRateHz: (value: number) => void;
@@ -27,6 +31,7 @@ interface SettingsState {
 }
 
 const defaults = {
+  language: 'en' as AppLanguage,
   hapticsEnabled: true,
   keepAwake: true,
   publishRateHz: 10,
@@ -67,6 +72,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } catch {}
     set({ loaded: true });
   },
+
+  setLanguage: (value) => { set({ language: value }); persistAll(get); },
 
   setHapticsEnabled: (value) => { set({ hapticsEnabled: value }); persistAll(get); },
   setKeepAwake: (value) => { set({ keepAwake: value }); persistAll(get); },

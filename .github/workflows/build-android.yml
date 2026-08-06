@@ -12,6 +12,14 @@ on:
       - 'android/**'
       - '.github/workflows/build-android.yml'
 
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: build-android
+  cancel-in-progress: true
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -20,12 +28,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Clear previous Android caches and artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          android_cache_ids="$(
+            gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+              --jq '.actions_caches[] | select((.key | startswith("node-cache-Linux-")) and (.key | contains("-npm-"))) | .id'
+          )"
+          if [[ -n "${android_cache_ids}" ]]; then
+            while IFS= read -r cache_id; do
+              gh api --method DELETE --silent "/repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}"
+            done <<< "${android_cache_ids}"
+          fi
+
+          android_artifact_ids="$(
+            gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=omnideck-apk&per_page=100" \
+              --jq '.artifacts[].id'
+          )"
+          if [[ -n "${android_artifact_ids}" ]]; then
+            while IFS= read -r artifact_id; do
+              gh api --method DELETE --silent "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+            done <<< "${android_artifact_ids}"
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: package-lock.json
+
+      - name: Clear local npm cache
+        run: npm cache clean --force
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
@@ -46,13 +81,13 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Pre-build Expo (generate Android project)
-        run: npx expo prebuild --platform android
+        run: npx expo prebuild --platform android --clean
 
       - name: Build APK
         working-directory: android
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleRelease
+          ./gradlew clean assembleRelease --no-build-cache
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

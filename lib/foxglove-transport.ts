@@ -1,6 +1,8 @@
 import type { Transport, Subscription, TopicInfo, TransportStatus } from './transport';
 import { MessageReader } from '@foxglove/rosmsg2-serialization';
 import { parse as parseMessageDefinition } from '@foxglove/rosmsg';
+import { DEFAULTS, FOXGLOVE_WEBSOCKET_PROTOCOLS } from '../constants/defaults';
+import { canonicalizeConnectionUrl } from './connection-url';
 
 export class FoxgloveTransport implements Transport {
   private ws: WebSocket | null = null;
@@ -10,11 +12,12 @@ export class FoxgloveTransport implements Transport {
   private nextSubId = 1;
   private serverChannels: Map<number, { topic: string; schemaName: string; encoding?: string }> = new Map();
   private topicToChannelId: Map<string, number> = new Map();
-  private clientChannels: Map<string, number> = new Map();
+  private clientChannels: Map<string, { id: number; messageType: string }> = new Map();
   private nextClientChannelId = 1;
   private messageReaders: Map<string, MessageReader> = new Map();
   private schemaDefinitions: Map<string, string> = new Map();
   private pendingSubscriptions: Array<{ subId: number; topic: string }> = [];
+  private cancelPendingConnect: (() => void) | null = null;
   // Multiplexing: one bridge-level sub per topic, fan-out to all internal callbacks.
   // foxglove_bridge may only deliver messages to the first subscription ID per channel,
   // so we deduplicate at the bridge level and route internally.
@@ -34,38 +37,89 @@ export class FoxgloveTransport implements Transport {
     this.setStatus('connecting');
 
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.ws?.close();
-        this.setStatus('error', 'Connection timeout');
-        reject(new Error('Connection timeout'));
+      const canonicalUrl = canonicalizeConnectionUrl(url, DEFAULTS.foxglovePort);
+      if (!canonicalUrl) {
+        const message = 'Invalid WebSocket URL';
+        this.setStatus('error', message);
+        reject(new Error(message));
+        return;
+      }
+
+      let opened = false;
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let ws: WebSocket | null = null;
+      let cancelPending: () => void;
+      const clearPending = () => {
+        if (this.cancelPendingConnect === cancelPending) this.cancelPendingConnect = null;
+      };
+      const rejectOnce = (message: string) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        clearPending();
+        this.setStatus('error', message);
+        reject(new Error(message));
+      };
+      cancelPending = () => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        clearPending();
+        reject(new Error('Connection cancelled'));
+      };
+      this.cancelPendingConnect = cancelPending;
+
+      timeout = setTimeout(() => {
+        rejectOnce('Connection timeout');
+        try { ws?.close(); } catch {}
       }, 5000);
 
-      // foxglove_bridge 3.x uses 'foxglove.sdk.v1' subprotocol.
-      // Pass as standard WebSocket second argument (works on all platforms).
-      const ws = new (WebSocket as any)(url, ['foxglove.sdk.v1']) as WebSocket;
+      try {
+        ws = new WebSocket(canonicalUrl, [...FOXGLOVE_WEBSOCKET_PROTOCOLS]);
+      } catch (error: any) {
+        rejectOnce(error?.message || 'Unable to create WebSocket');
+        return;
+      }
+      const socket = ws;
       this.ws = ws;
-      ws.binaryType = 'arraybuffer';
+      socket.binaryType = 'arraybuffer';
 
-      ws.onopen = () => {
-        clearTimeout(timeout);
+      socket.onopen = () => {
+        if (!(FOXGLOVE_WEBSOCKET_PROTOCOLS as readonly string[]).includes(socket.protocol)) {
+          rejectOnce('Foxglove subprotocol negotiation failed');
+          try { socket.close(); } catch {}
+          return;
+        }
+        if (settled) {
+          try { socket.close(); } catch {}
+          return;
+        }
+        opened = true;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        clearPending();
         this.setStatus('connected');
         resolve();
       };
 
-      ws.onerror = (event) => {
-        clearTimeout(timeout);
-        const reason = event?.reason || 'Connection error';
-        const code = event?.code || 0;
-        console.warn('[FoxgloveTransport] WS error:', code, reason);
-        this.setStatus('error', `${reason} (code: ${code})`);
-        reject(new Error(`Connection error: ${reason} (code: ${code})`));
+      socket.onerror = (event) => {
+        const message = (event as any)?.message || 'Connection error';
+        console.warn('[FoxgloveTransport] WS error:', message);
       };
 
-      ws.onclose = () => {
-        this.setStatus('disconnected');
+      socket.onclose = (event) => {
+        if (timeout) clearTimeout(timeout);
+        if (this.ws === socket) this.ws = null;
+        const reason = event.reason || `WebSocket closed (code: ${event.code})`;
+        if (!opened) {
+          rejectOnce(reason);
+        } else {
+          this.setStatus('disconnected', reason);
+        }
       };
 
-      ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
         if (typeof event.data === 'string') {
           if (event.data.startsWith('{') || event.data.startsWith('[')) {
             try { this.handleMessage(JSON.parse(event.data)); } catch {}
@@ -263,9 +317,13 @@ export class FoxgloveTransport implements Transport {
   }
 
   disconnect(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    const cancelPending = this.cancelPendingConnect;
+    this.cancelPendingConnect = null;
+    cancelPending?.();
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      try { ws.close(); } catch {}
     }
     this.subscriptions.clear();
     this.serverChannels.clear();
@@ -327,11 +385,21 @@ export class FoxgloveTransport implements Transport {
   }
 
   private advertiseClient(topic: string, messageType: string): number {
-    let channelId = this.clientChannels.get(topic);
-    if (channelId !== undefined) return channelId;
+    const existing = this.clientChannels.get(topic);
+    if (existing?.messageType === messageType) return existing.id;
 
-    channelId = this.nextClientChannelId++;
-    this.clientChannels.set(topic, channelId);
+    // A joystick can switch from TwistStamped to Twist while connected. The
+    // Foxglove protocol binds a schema to each advertised channel, so the old
+    // channel must be withdrawn before publishing the new message shape.
+    if (existing && this.ws) {
+      this.ws.send(JSON.stringify({
+        op: 'unadvertise',
+        channelIds: [existing.id],
+      }));
+    }
+
+    const channelId = this.nextClientChannelId++;
+    this.clientChannels.set(topic, { id: channelId, messageType });
 
     if (this.ws) {
       this.ws.send(JSON.stringify({

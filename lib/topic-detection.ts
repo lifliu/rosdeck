@@ -19,7 +19,12 @@ const TYPE_TO_WIDGET: Array<{ pattern: RegExp; widgetType: string; configKey: st
 ];
 
 function hasTwist(topics: TopicInfo[]): TopicInfo | undefined {
-  return topics.find((t) => /Twist/.test(t.type));
+  const twistTopics = topics.filter((t) => /Twist/.test(t.type));
+  return twistTopics.find(
+    (t) => t.name === '/vel_cmd' && t.type === 'geometry_msgs/msg/Twist',
+  ) ?? twistTopics.find((t) => t.name === '/vel_cmd')
+    ?? twistTopics.find((t) => t.name === '/cmd_vel')
+    ?? twistTopics[0];
 }
 
 export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
@@ -38,9 +43,11 @@ export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
     }
   }
 
-  // Camera: only use CompressedImage topics, excluding depth/theora variants.
+  // Camera: prefer Foxglove encoded video, then CompressedImage.
   // Raw Image is never processed (multi-MB frames would freeze the app).
   const cameraTopic = topics.find((t) =>
+    t.type === 'foxglove_msgs/msg/CompressedVideo'
+  ) ?? topics.find((t) =>
     t.type === 'sensor_msgs/msg/CompressedImage' &&
     !/[Dd]epth|theora/.test(t.name)
   );
@@ -52,7 +59,10 @@ export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
   const twistTopic = hasTwist(topics);
   if (twistTopic) {
     detected.push({ name: twistTopic.name, type: twistTopic.type, widgetType: 'joystick' });
-    widgetConfigs.joystick = { topic: twistTopic.name };
+    widgetConfigs.joystick = {
+      topic: twistTopic.name,
+      useTwistStamped: /TwistStamped$/.test(twistTopic.type),
+    };
   }
 
   if (detected.length === 0) return null;

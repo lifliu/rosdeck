@@ -6,6 +6,7 @@ import { RosbridgeTransport } from '../lib/rosbridge-transport';
 import { FoxgloveTransport } from '../lib/foxglove-transport';
 import { DemoTransport } from '../lib/demo-transport';
 import { DEFAULTS } from '../constants/defaults';
+import { buildWebSocketUrl } from '../lib/ros';
 
 interface ConnectionState {
   url: string;
@@ -44,6 +45,45 @@ const initialConnection: ConnectionState = {
 };
 
 const STORAGE_KEY_CONNECTIONS = 'ros2mobile_saved_connections';
+
+function normalizeSavedConnections(value: unknown): SavedConnection[] {
+  if (!Array.isArray(value)) return [];
+
+  const normalized: SavedConnection[] = [];
+  const indexByUrl = new Map<string, number>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.url !== 'string') continue;
+    if (candidate.transport !== undefined
+      && candidate.transport !== 'rosbridge'
+      && candidate.transport !== 'foxglove'
+      && candidate.transport !== 'demo') continue;
+
+    const transport = candidate.transport ?? 'rosbridge';
+    const url = transport === 'demo'
+      ? (/^demo:\/\/[^\s]+$/.test(candidate.url.trim()) ? candidate.url.trim() : null)
+      : buildWebSocketUrl(candidate.url, transport);
+    if (!url) continue;
+
+    const connection: SavedConnection = {
+      url,
+      transport,
+      lastUsed: typeof candidate.lastUsed === 'number' && Number.isFinite(candidate.lastUsed)
+        ? candidate.lastUsed
+        : 0,
+      ...(typeof candidate.name === 'string' ? { name: candidate.name } : {}),
+    };
+    const existingIndex = indexByUrl.get(url);
+    if (existingIndex === undefined) {
+      indexByUrl.set(url, normalized.length);
+      normalized.push(connection);
+    } else if (connection.lastUsed >= normalized[existingIndex].lastUsed) {
+      normalized[existingIndex] = connection;
+    }
+  }
+  return normalized;
+}
 
 export const useRosStore = create<RosStore>((set, get) => ({
   connection: { ...initialConnection },
@@ -101,7 +141,13 @@ export const useRosStore = create<RosStore>((set, get) => ({
   loadSavedConnections: async () => {
     try {
       const connJson = await AsyncStorage.getItem(STORAGE_KEY_CONNECTIONS);
-      if (connJson) set({ savedConnections: JSON.parse(connJson) });
+      if (!connJson) return;
+      const parsed = JSON.parse(connJson);
+      const savedConnections = normalizeSavedConnections(parsed);
+      set({ savedConnections });
+      if (JSON.stringify(savedConnections) !== JSON.stringify(parsed)) {
+        await AsyncStorage.setItem(STORAGE_KEY_CONNECTIONS, JSON.stringify(savedConnections));
+      }
     } catch {}
   },
 
@@ -112,26 +158,53 @@ export const useRosStore = create<RosStore>((set, get) => ({
   },
 
   connectToUrl: async (url: string) => {
-    const { transportType } = get();
+    const { transportType, transport: previousTransport } = get();
+    const canonicalUrl = transportType === 'demo'
+      ? url
+      : buildWebSocketUrl(url, transportType === 'foxglove' ? 'foxglove' : 'rosbridge');
+    if (!canonicalUrl) {
+      set((s) => ({
+        transport: null,
+        connection: {
+          ...s.connection,
+          url,
+          status: 'error',
+          error: 'Invalid WebSocket URL',
+          ros: null,
+        },
+      }));
+      previousTransport?.disconnect();
+      return;
+    }
+
     const transport = transportType === 'demo'
       ? new DemoTransport()
       : transportType === 'foxglove'
         ? new FoxgloveTransport()
         : new RosbridgeTransport();
 
-    const unsub = transport.onStatus((status, error) => {
-      if (status === 'disconnected' && get().connection.status === 'connected') {
+    transport.onStatus((status) => {
+      if (get().transport === transport
+        && status === 'disconnected'
+        && get().connection.status === 'connected') {
         get().handleDisconnect();
       }
     });
 
     set((s) => ({
       transport,
-      connection: { ...s.connection, url, status: 'connecting', error: null },
+      connection: { ...s.connection, url: canonicalUrl, status: 'connecting', error: null },
     }));
+    if (previousTransport && previousTransport !== transport) {
+      previousTransport.disconnect();
+    }
 
     try {
-      await transport.connect(url);
+      await transport.connect(canonicalUrl);
+      if (get().transport !== transport) {
+        transport.disconnect();
+        return;
+      }
       set((s) => ({
         connection: {
           ...s.connection,
@@ -139,10 +212,14 @@ export const useRosStore = create<RosStore>((set, get) => ({
           ros: transportType === 'rosbridge' ? (transport as RosbridgeTransport).getRos() : null,
         },
       }));
-      if (!url.startsWith('demo://')) {
-        get().addSavedConnection(url);
+      if (!canonicalUrl.startsWith('demo://')) {
+        get().addSavedConnection(canonicalUrl);
       }
     } catch (err: any) {
+      if (get().transport !== transport) {
+        transport.disconnect();
+        return;
+      }
       set((s) => ({
         connection: { ...s.connection, status: 'error', error: err?.message || 'Connection failed' },
       }));

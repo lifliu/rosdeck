@@ -1,5 +1,7 @@
 // lib/rosbridge-transport.ts
 import type { Transport, Subscription, TopicInfo, TransportStatus } from './transport';
+import { DEFAULTS } from '../constants/defaults';
+import { canonicalizeConnectionUrl } from './connection-url';
 
 let ROSLIB: any = null;
 
@@ -27,12 +29,19 @@ export class RosbridgeTransport implements Transport {
   }
 
   async connect(url: string): Promise<void> {
-    this.url = url;
+    const canonicalUrl = canonicalizeConnectionUrl(url, DEFAULTS.rosbridgePort);
+    if (!canonicalUrl) {
+      const message = 'Invalid WebSocket URL';
+      this.setStatus('error', message);
+      throw new Error(message);
+    }
+
+    this.url = canonicalUrl;
     this.setStatus('connecting');
     const roslib = await loadRoslib();
 
     return new Promise((resolve, reject) => {
-      this.ros = new roslib.Ros({ url });
+      this.ros = new roslib.Ros({ url: canonicalUrl });
 
       const timeout = setTimeout(() => {
         this.ros?.close();

@@ -59,6 +59,11 @@ const WIDGET_HELP: Record<
     message: "No battery data on",
     hint: "Is your battery driver publishing sensor_msgs/BatteryState?",
   },
+  pointcloud3d: {
+    icon: "cube-outline",
+    message: "No registered point cloud on",
+    hint: "Start 3D mapping to begin the live preview.",
+  },
 };
 
 export function WidgetEmptyState({
