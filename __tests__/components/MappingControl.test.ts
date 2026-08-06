@@ -7,6 +7,18 @@ jest.mock('react-native', () => ({
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
+jest.mock('../../stores/useLayoutStore', () => ({
+  useLayoutStore: { getState: () => ({ layouts: [], setActiveLayout: jest.fn() }) },
+}));
+
+jest.mock('../../stores/useMappingStore', () => ({
+  useMappingStore: { getState: () => ({
+    reset: jest.fn(),
+    startSession: jest.fn(),
+    stopSession: jest.fn(),
+  }) },
+}));
+
 import {
   extractMappingStatus,
   MAPPING_STATUS_TOPIC,

@@ -41,6 +41,8 @@ describe('useLayoutStore', () => {
         expect(migrated.tree.config.xAxisComponent).toBe('z');
         expect(migrated.tree.config.yAxisComponent).toBe('x');
       }
+      expect(migrateLayoutsForVbotHumble([legacy]).some((layout) => layout.id === 'mapping-3d'))
+        .toBe(true);
     });
 
     it('preserves an explicitly customized velocity topic', () => {

@@ -4,6 +4,8 @@ import { Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { theme } from '../constants/theme';
 import { useTranslation } from '../lib/i18n';
 import { useRosStore } from '../stores/useRosStore';
+import { useLayoutStore } from '../stores/useLayoutStore';
+import { useMappingStore } from '../stores/useMappingStore';
 
 export const START_MAPPING_TOPIC = '/rosdeck/start_3d_mapping';
 export const MAPPING_STATUS_TOPIC = '/rosdeck/mapping_status';
@@ -39,6 +41,7 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
       pendingRef.current = null;
       setWaiting(false);
       setIsMapping(false);
+      useMappingStore.getState().reset();
       clearAckTimeout();
       return;
     }
@@ -53,6 +56,10 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
         if (mappingStatus.startsWith('started:') || mappingStatus === 'already_running') {
           setIsMapping(true);
           if (pendingRef.current === 'start') {
+            useMappingStore.getState().startSession();
+            if (useLayoutStore.getState().layouts.some((layout) => layout.id === 'mapping-3d')) {
+              useLayoutStore.getState().setActiveLayout('mapping-3d');
+            }
             pendingRef.current = null;
             clearAckTimeout();
             setWaiting(false);
@@ -62,6 +69,7 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
           setIsMapping(true);
         } else if (mappingStatus.startsWith('stopped:')) {
           setIsMapping(false);
+          useMappingStore.getState().stopSession();
           if (pendingRef.current === 'stop') {
             pendingRef.current = null;
             clearAckTimeout();
@@ -71,6 +79,7 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
         } else if (mappingStatus.startsWith('exited:') || mappingStatus === 'not_running') {
           const command = pendingRef.current;
           setIsMapping(false);
+          useMappingStore.getState().stopSession();
           if (command) {
             pendingRef.current = null;
             clearAckTimeout();

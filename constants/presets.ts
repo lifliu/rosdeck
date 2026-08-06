@@ -9,6 +9,32 @@ export interface PresetTemplate {
 
 export const PRESET_TEMPLATES: PresetTemplate[] = [
   {
+    id: 'mapping-3d',
+    name: '3D Mapping',
+    buildTree: () =>
+      createSplitNode('vertical',
+        createWidgetNode('pointcloud3d', {
+          topic: '/cloud_registered',
+          mapFrame: 'map_frame',
+          robotFrame: 'base_link',
+          odomTopic: '/Odometry',
+          viewMeters: 20,
+        }),
+        createWidgetNode('joystick', {
+          topic: DEFAULTS.cmdVelTopic,
+          useTwistStamped: false,
+          frameId: 'base_link',
+          xAxisGroup: 'angular',
+          xAxisComponent: 'z',
+          xAxisScale: DEFAULTS.maxAngularVel,
+          yAxisGroup: 'linear',
+          yAxisComponent: 'x',
+          yAxisScale: DEFAULTS.maxLinearVel,
+        }),
+        0.72,
+      ),
+  },
+  {
     id: 'drive',
     name: 'Drive',
     buildTree: () => createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),

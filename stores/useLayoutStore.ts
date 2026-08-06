@@ -14,7 +14,7 @@ import { DEFAULTS } from '../constants/defaults';
 import { getWidget } from '../widgets/registry';
 
 const STORAGE_KEY_PREFIX = 'ros2mobile_layouts_';
-const LAYOUT_SCHEMA_VERSION = 2;
+const LAYOUT_SCHEMA_VERSION = 3;
 
 /** Upgrade layouts created with the upstream Jazzy /cmd_vel defaults to VBot Humble. */
 export function migrateLayoutsForVbotHumble(layouts: SavedLayout[]): SavedLayout[] {
@@ -41,7 +41,12 @@ export function migrateLayoutsForVbotHumble(layouts: SavedLayout[]): SavedLayout
     };
   };
 
-  return layouts.map((layout) => ({ ...layout, tree: migrateNode(layout.tree) }));
+  const migrated = layouts.map((layout) => ({ ...layout, tree: migrateNode(layout.tree) }));
+  if (!migrated.some((layout) => layout.id === 'mapping-3d')) {
+    const mappingLayout = buildDefaultLayouts().find((layout) => layout.id === 'mapping-3d');
+    if (mappingLayout) migrated.push(mappingLayout);
+  }
+  return migrated;
 }
 
 interface LayoutState {
