@@ -90,21 +90,29 @@ npm start
 
 ### VBot 3D mapping button
 
-Foxglove cannot execute robot-side files directly. Copy
+Foxglove cannot execute robot-side files or call the VBot posture service
+through Rosdeck's topic-only transport directly. Copy
 [`robot/rosdeck_mapping_bridge.py`](robot/rosdeck_mapping_bridge.py) to the
 VBot and run it in the sourced ROS 2 Humble environment. The bridge only starts
-the fixed `/userdata/2_slam/1_mapping.sh` script; it does not expose arbitrary
-shell execution. See [`robot/README.md`](robot/README.md) for details.
+the fixed `/userdata/2_slam/1_mapping.sh` script and calls the allowlisted VBot
+stand/lie-down service modes; it does not expose arbitrary shell execution or
+service calls. See [`robot/README.md`](robot/README.md) for details.
 
 Edit `app.json` with your own `slug`, `bundleIdentifier`, `package`, and EAS `projectId` before building.
 
 ### Build
 
 ```bash
+npx expo prebuild --platform android  # generate android/ once for Android Studio
 npm run build:android-debug        # Debug APK
 npm run build:android-preview      # Release APK
 npm run build:android-production   # AAB for Play Store
 ```
+
+You can also open the generated `android/` directory in Android Studio and use
+**Build > Build APK(s)**. Select JDK 17 under **Settings > Build Tools > Gradle
+> Gradle JDK** (download it there if Android Studio only offers JDK 25). Rerun
+Expo prebuild after changing native Expo configuration or native modules.
 
 ## Tested With
 

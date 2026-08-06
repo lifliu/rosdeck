@@ -22,6 +22,7 @@ import { useRosStore } from "../../stores/useRosStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useGamepadInput } from "../../hooks/useGamepadInput";
 import { MappingControl } from "../../components/MappingControl";
+import { PostureControl } from "../../components/PostureControl";
 import { useTranslation } from "../../lib/i18n";
 
 function ConnectionDot() {
@@ -225,12 +226,19 @@ export default function ControlScreen() {
         <View style={styles.topBar}>
           <ConnectionDot />
           <LayoutManager />
+        </View>
+      )}
+
+      {!isLandscape && (
+        <View style={styles.robotActions}>
+          <PostureControl />
           <MappingControl />
         </View>
       )}
 
       {isLandscape && (
-        <View style={styles.landscapeMapping}>
+        <View style={styles.landscapeActions}>
+          <PostureControl compact />
           <MappingControl compact />
         </View>
       )}
@@ -286,11 +294,23 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.borderDefault,
   },
-  landscapeMapping: {
+  robotActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderDefault,
+  },
+  landscapeActions: {
     position: 'absolute',
     top: 8,
     right: 10,
     zIndex: 20,
+    flexDirection: 'row',
+    gap: 8,
   },
   dot: {
     width: 10,

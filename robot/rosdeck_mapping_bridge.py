@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
-"""ROS 2 bridge for Rosdeck's fixed 3D SLAM mapping command.
+"""ROS 2 bridge for Rosdeck's fixed mapping and posture commands.
 
-The node intentionally accepts no command text from the network. A message on
-``/rosdeck/start_3d_mapping`` can only launch the fixed mapping script below.
+The node intentionally exposes only a small allowlist of commands. Mapping can
+only launch the fixed script below, while posture commands are translated to
+the robot's ``software_msgs/srv/LowlevelAction`` service.
 """
 
 import os
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
+try:
+    from software_msgs.srv import LowlevelAction
+except ImportError:
+    LowlevelAction = None  # type: ignore[assignment,misc]
+
 
 SCRIPT_PATH = Path('/userdata/2_slam/1_mapping.sh')
 LOG_PATH = Path('/tmp/rosdeck_3d_mapping.log')
+LOWLEVEL_ACTION_TYPE = 'software_msgs/srv/LowlevelAction'
+POSTURE_MODES = {
+    'stand': 1,     # LowlevelAction.Request.FIXED_STAND
+    'lie_down': 2,  # LowlevelAction.Request.FIXED_LAYDOWN
+}
 
 
 class MappingBridge(Node):
@@ -26,15 +38,105 @@ class MappingBridge(Node):
         self._process: subprocess.Popen[bytes] | None = None
         self._mapping_started = False
         self._status = self.create_publisher(String, '/rosdeck/mapping_status', 10)
+        self._posture_status = self.create_publisher(String, '/rosdeck/posture_status', 10)
+        self._posture_busy = False
+        self._lowlevel_action_client = None
         self.create_subscription(Bool, '/rosdeck/start_3d_mapping', self._start_mapping, 10)
+        self.create_subscription(String, '/rosdeck/posture_command', self._set_posture, 10)
         self.get_logger().info(
             f'Ready: /rosdeck/start_3d_mapping launches {SCRIPT_PATH}'
+        )
+        self.get_logger().info(
+            'Ready: /rosdeck/posture_command accepts stand or lie_down'
         )
 
     def _publish_status(self, value: str) -> None:
         message = String()
         message.data = value
         self._status.publish(message)
+
+    def _publish_posture_status(self, value: str) -> None:
+        message = String()
+        message.data = value
+        self._posture_status.publish(message)
+
+    def _get_lowlevel_action_client(self):
+        if LowlevelAction is None:
+            return None
+        if self._lowlevel_action_client is not None:
+            return self._lowlevel_action_client
+
+        for service_name, service_types in self.get_service_names_and_types():
+            if LOWLEVEL_ACTION_TYPE in service_types:
+                self._lowlevel_action_client = self.create_client(
+                    LowlevelAction, service_name
+                )
+                self.get_logger().info(
+                    f'Discovered LowlevelAction service: {service_name}'
+                )
+                return self._lowlevel_action_client
+        return None
+
+    def _set_posture(self, message: String) -> None:
+        command = message.data.strip().lower()
+        mode = POSTURE_MODES.get(command)
+        if mode is None:
+            self.get_logger().warning(f'Ignoring unsupported posture: {command!r}')
+            self._publish_posture_status(f'error:{command}:unsupported_command')
+            return
+        if self._posture_busy:
+            self._publish_posture_status(f'error:{command}:action_in_progress')
+            return
+
+        client = self._get_lowlevel_action_client()
+        if client is None:
+            reason = (
+                'software_msgs_not_installed'
+                if LowlevelAction is None
+                else 'lowlevel_action_service_not_found'
+            )
+            self.get_logger().error(reason)
+            self._publish_posture_status(f'error:{command}:{reason}')
+            return
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('LowlevelAction service is not ready')
+            self._publish_posture_status(f'error:{command}:service_not_ready')
+            return
+
+        request = LowlevelAction.Request()
+        request.target_state = 1
+        request.mode = mode
+        request.req_id = f'rosdeck-{uuid.uuid4().hex}'
+        request.pre_check = False
+        request.action_path = ''
+        request.action_params_json = '{}'
+
+        self._posture_busy = True
+        self.get_logger().info(f'Requesting posture: {command} (mode={mode})')
+        future = client.call_async(request)
+        future.add_done_callback(
+            lambda completed, requested=command: self._posture_done(
+                requested, completed
+            )
+        )
+
+    def _posture_done(self, command: str, future) -> None:
+        self._posture_busy = False
+        try:
+            response = future.result()
+        except Exception as exc:  # noqa: BLE001 - ROS future may raise middleware errors
+            self.get_logger().error(f'Posture {command} failed: {exc}')
+            self._publish_posture_status(f'error:{command}:service_call_failed')
+            return
+
+        if response.success:
+            self.get_logger().info(f'Posture {command} completed')
+            self._publish_posture_status(f'success:{command}')
+        else:
+            reason = response.message or f'error_code_{response.error_code}'
+            reason = reason.replace(':', '_')
+            self.get_logger().error(f'Posture {command} rejected: {reason}')
+            self._publish_posture_status(f'error:{command}:{reason}')
 
     def _start_mapping(self, message: Bool) -> None:
         if not message.data:
