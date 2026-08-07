@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -75,10 +76,14 @@ public:
       "mapping.script", "/userdata/2_slam/1_mapping.sh");
     mapping_log_ = declare_parameter<std::string>(
       "mapping.log", "/tmp/rosdeck_3d_mapping.log");
-    mapping_stop_timeout_ = std::chrono::seconds(std::max(
-        0, declare_parameter<int>("mapping.stop_timeout_sec", 30)));
-    mapping_kill_timeout_ = std::chrono::seconds(std::max(
-        0, declare_parameter<int>("mapping.kill_timeout_sec", 5)));
+    const auto mapping_stop_timeout = declare_parameter<int64_t>(
+      "mapping.stop_timeout_sec", 30);
+    const auto mapping_kill_timeout = declare_parameter<int64_t>(
+      "mapping.kill_timeout_sec", 5);
+    mapping_stop_timeout_ =
+      std::chrono::seconds(std::max<int64_t>(0, mapping_stop_timeout));
+    mapping_kill_timeout_ =
+      std::chrono::seconds(std::max<int64_t>(0, mapping_kill_timeout));
     const auto locomotion_service = declare_parameter<std::string>(
       "vbot.locomotion_service", "/locomotion/set_run_mode");
     const auto posture_service = declare_parameter<std::string>(
@@ -232,8 +237,8 @@ private:
       ::dup2(log_fd, STDOUT_FILENO);
       ::dup2(log_fd, STDERR_FILENO);
       ::close(log_fd);
-      if (!working_directory.empty()) {
-        ::chdir(working_directory.c_str());
+      if (!working_directory.empty() && ::chdir(working_directory.c_str()) != 0) {
+        ::_exit(125);
       }
       ::execl("/bin/bash", "bash", mapping_script_.c_str(), static_cast<char *>(nullptr));
       ::_exit(127);
