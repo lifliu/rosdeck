@@ -7,8 +7,8 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 systemctl disable --now rosdeck-robot-bridge.service 2>/dev/null || true
-if [[ -f /userdata/init.sh ]]; then
-  sed -i '/# ROSDECK ROBOT BRIDGE/d;/bootstrap-rosdeck-service/d' /userdata/init.sh
+if [[ -f /userdata/startup.sh ]]; then
+  sed -i '/# ROSDECK ROBOT BRIDGE/d;/bootstrap-rosdeck-service/d' /userdata/startup.sh
 fi
 if [[ -f /run/systemd/system/rosdeck-robot-bridge.service ]]; then
   mv /run/systemd/system/rosdeck-robot-bridge.service \

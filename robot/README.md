@@ -63,7 +63,7 @@ The production robot only needs its base ROS runtime. The complete node runs on
 
 On VBot, both deployment checks and the systemd launcher automatically source
 `/app/script/env.sh` before the bundled runtime. Deployment also adds an
-idempotent Rosdeck entry to the persistent `/userdata/init.sh`; at every boot it
+idempotent Rosdeck entry to the persistent `/userdata/startup.sh`; at every boot it
 restores the runtime systemd unit and starts the service. If another robot uses
 a different environment entry point, install with `./deploy.sh --ros-setup PATH`.
 

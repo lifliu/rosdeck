@@ -58,7 +58,7 @@ command -v systemctl >/dev/null 2>&1 || {
 }
 
 install_init_hook() {
-  local init_script="/userdata/init.sh"
+  local init_script="/userdata/startup.sh"
   local marker="# ROSDECK ROBOT BRIDGE"
   local invocation="${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service >>${INSTALL_PREFIX}/log/bootstrap.log 2>&1 &"
 
@@ -73,7 +73,7 @@ install_init_hook() {
   elif grep -Eq '^[[:space:]]*exit[[:space:]]+0[[:space:]]*$' "${init_script}"; then
     cp -a "${init_script}" "${init_script}.before-rosdeck"
     local temp_script
-    temp_script="$(mktemp /userdata/init.sh.XXXXXX)"
+    temp_script="$(mktemp /userdata/startup.sh.XXXXXX)"
     awk -v marker="${marker}" -v invocation="${invocation}" '
       !inserted && $0 ~ /^[[:space:]]*exit[[:space:]]+0[[:space:]]*$/ {
         print marker
@@ -179,5 +179,5 @@ fi
 
 systemctl --no-pager --full status rosdeck-robot-bridge.service || true
 echo "Offline deployment successful: profile=${BUNDLE_PROFILE}, node=/${NODE_NAME}"
-echo "Boot autostart: registered in /userdata/init.sh"
+echo "Boot autostart: registered in /userdata/startup.sh"
 echo "Logs: journalctl -u rosdeck-robot-bridge -f"
