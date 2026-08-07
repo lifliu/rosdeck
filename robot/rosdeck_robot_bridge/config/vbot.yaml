@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    adapter: vbot
+    mapping.enabled: true
+    mapping.script: /userdata/2_slam/1_mapping.sh
+    mapping.log: /tmp/rosdeck_3d_mapping.log
+    # Allow FAST-LIO to save map.pcd after SIGINT before escalating signals.
+    mapping.stop_timeout_sec: 30
+    mapping.kill_timeout_sec: 5
+    posture.enabled: true
+    locomotion.enabled: true
+    vbot.locomotion_service: /locomotion/set_run_mode
+    # Empty means auto-discover software_msgs/srv/LowlevelAction.
+    vbot.posture_service: ""
+    topics.mapping_command: /rosdeck/start_3d_mapping
+    topics.mapping_status: /rosdeck/mapping_status
+    topics.posture_command: /rosdeck/posture_command
+    topics.posture_status: /rosdeck/posture_status
+    topics.locomotion_command: /rosdeck/locomotion_command
+    topics.locomotion_status: /rosdeck/locomotion_status

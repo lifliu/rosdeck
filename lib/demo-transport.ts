@@ -135,6 +135,10 @@ export class DemoTransport implements Transport {
     // No-op in demo mode
   }
 
+  async callService(_service: string, _serviceType: string, _request: Record<string, unknown>): Promise<any> {
+    return { success: true, message: 'demo', error_code: 0 };
+  }
+
   async getTopics(): Promise<TopicInfo[]> {
     return DEMO_TOPICS;
   }

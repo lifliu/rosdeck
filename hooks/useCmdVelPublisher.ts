@@ -1,10 +1,16 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { buildTwistStampedMessage, createCmdVelTopic } from '../lib/ros';
 import { useCmdVelStore } from '../stores/useCmdVelStore';
 import { useRosStore } from '../stores/useRosStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import type { TwistMessage } from '../types/ros';
 import type { TwistField } from '../lib/ros';
+import {
+  ensureLocoMode,
+  isLocoModeReady,
+  resetLocomotionModeState,
+} from '../lib/locomotion-mode';
+import { useLocomotionModeStore } from '../stores/useLocomotionModeStore';
 
 // Module-level singletons — one interval per topic, shared across all joystick instances.
 // Using a Set of publish fns so that when one joystick unmounts, the interval
@@ -51,14 +57,30 @@ export function useCmdVelPublisher(
   topic: string,
   useTwistStamped: boolean,
   frameId: string,
-): { publishNow: () => void } {
+  requireLocoMode = topic === '/vel_cmd',
+): {
+  publishNow: () => void;
+  prepareLocomotion: () => void;
+  locoStatus: ReturnType<typeof useLocomotionModeStore.getState>['status'];
+  locoError: string | null;
+} {
   const ros = useRosStore((s) => s.connection.ros);
   const transport = useRosStore((s) => s.transport);
   const status = useRosStore((s) => s.connection.status);
+  const locoStatus = useLocomotionModeStore((s) => s.status);
+  const locoError = useLocomotionModeStore((s) => s.error);
   const roslibTopicRef = useRef<any>(null);
   // Track which messageType the current roslibTopic was advertised with,
   // so we can guard against the render→effect race and config mismatches.
   const roslibTopicTypeRef = useRef<string | null>(null);
+  const previousTransportRef = useRef(transport);
+
+  useEffect(() => {
+    if (previousTransportRef.current !== transport || status !== 'connected') {
+      resetLocomotionModeState();
+      previousTransportRef.current = transport;
+    }
+  }, [transport, status]);
 
   useEffect(() => {
     // Unadvertise old topic before replacing — prevents rosbridge from keeping
@@ -91,6 +113,15 @@ export function useCmdVelPublisher(
     const messageType = useTwistStamped
       ? 'geometry_msgs/msg/TwistStamped'
       : 'geometry_msgs/msg/Twist';
+
+    const hasMotion = Object.values(axes).some((value) => Math.abs(value ?? 0) > 0.0001);
+    if (requireLocoMode && hasMotion && transport && status === 'connected' &&
+        !isLocoModeReady(transport)) {
+      void ensureLocoMode(transport)
+        .then(() => publishRef.current())
+        .catch(() => {});
+      return;
+    }
 
     // Only publish via roslib Topic if its advertised type still matches the
     // current config — guards the render→effect race window.
@@ -135,5 +166,15 @@ export function useCmdVelPublisher(
     };
   }, [topic]);
 
-  return { publishNow: () => publishRef.current() };
+  const prepareLocomotion = useCallback(() => {
+    if (!requireLocoMode || !transport || status !== 'connected') return;
+    void ensureLocoMode(transport).catch(() => {});
+  }, [requireLocoMode, transport, status]);
+
+  return {
+    publishNow: () => publishRef.current(),
+    prepareLocomotion,
+    locoStatus,
+    locoError,
+  };
 }

@@ -16,6 +16,7 @@ import { useCmdVelStore } from "../stores/useCmdVelStore";
 import { useGamepadStore } from '../stores/useGamepadStore';
 import type { WidgetProps } from "../types/layout";
 import { registerTouchEntry, unregisterTouchEntry, updateTouchBounds } from "../lib/touch-dispatcher";
+import { useTranslation } from '../lib/i18n';
 
 const lightTick = () => {
   if (Platform.OS === "ios") {
@@ -63,9 +64,16 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const yAxisScale: number = props?.config?.yAxisScale ?? 0.5;
   const xAxisField = `${xAxisGroup}.${xAxisComponent}` as TwistField;
   const yAxisField = `${yAxisGroup}.${yAxisComponent}` as TwistField;
+  const requireLocoMode = props?.config?.requireLocoMode ?? cmdVelTopic === '/vel_cmd';
+  const { t } = useTranslation();
 
   const setAxes = useCmdVelStore((s) => s.setAxes);
-  const { publishNow } = useCmdVelPublisher(cmdVelTopic, useTwistStamped, frameId);
+  const {
+    publishNow,
+    prepareLocomotion,
+    locoStatus,
+    locoError,
+  } = useCmdVelPublisher(cmdVelTopic, useTwistStamped, frameId, requireLocoMode);
 
   const gamepadConnected = useGamepadStore((s) => s.connected);
   const nodeId = props?.nodeId;
@@ -119,11 +127,13 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const updateVelocityRef = useRef(updateVelocity);
   const stopJoystickRef = useRef(stopJoystick);
   const gamepadConnectedRef = useRef(gamepadConnected);
+  const prepareLocomotionRef = useRef(prepareLocomotion);
   xAxisScaleRef.current = xAxisScale;
   yAxisScaleRef.current = yAxisScale;
   updateVelocityRef.current = updateVelocity;
   stopJoystickRef.current = stopJoystick;
   gamepadConnectedRef.current = gamepadConnected;
+  prepareLocomotionRef.current = prepareLocomotion;
 
   // Register once on mount; handlers check gamepadConnectedRef to no-op when gamepad active
   useEffect(() => {
@@ -135,6 +145,7 @@ export function Joystick(props?: Partial<WidgetProps>) {
         prevSignXRef.current = 0;
         prevSignYRef.current = 0;
         activeProgress.value = withTiming(1, { duration: 80 });
+        prepareLocomotionRef.current();
         lightTick();
         setShowHint(false);
       },
@@ -279,6 +290,20 @@ export function Joystick(props?: Partial<WidgetProps>) {
             <Text style={styles.stickBadgeText}>{stickLabel}</Text>
           </View>
         )}
+        {requireLocoMode && locoStatus !== 'idle' && (
+          <View style={styles.locoBadge}>
+            <Text style={[
+              styles.locoBadgeText,
+              locoStatus === 'error' && styles.locoErrorText,
+            ]} numberOfLines={1}>
+              {locoStatus === 'switching'
+                ? t('joystick.locoSwitching')
+                : locoStatus === 'ready'
+                  ? t('joystick.locoReady')
+                  : t('joystick.locoError')}
+            </Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.readout}>
@@ -287,6 +312,9 @@ export function Joystick(props?: Partial<WidgetProps>) {
           {yAxisField} {displayVelocity.yValue.toFixed(2)}
         </Text>
       </View>
+      {requireLocoMode && locoStatus === 'error' && locoError && (
+        <Text style={styles.locoErrorDetail} numberOfLines={1}>{locoError}</Text>
+      )}
     </View>
   );
 }
@@ -373,5 +401,31 @@ const styles = StyleSheet.create({
     fontSize: 8,
     color: theme.colors.accentPrimary,
     fontWeight: '700',
+  },
+  locoBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: theme.colors.statusConnected + '22',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    maxWidth: '70%',
+  },
+  locoBadgeText: {
+    fontFamily: 'SpaceMono',
+    fontSize: 8,
+    color: theme.colors.statusConnected,
+    fontWeight: '700',
+  },
+  locoErrorText: {
+    color: theme.colors.statusError,
+  },
+  locoErrorDetail: {
+    fontFamily: 'SpaceMono',
+    fontSize: 8,
+    color: theme.colors.statusError,
+    maxWidth: '90%',
+    marginTop: 2,
   },
 });

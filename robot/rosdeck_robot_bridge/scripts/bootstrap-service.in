@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+INSTALL_PREFIX="@INSTALL_PREFIX@"
+UNIT_NAME="rosdeck-robot-bridge.service"
+UNIT_SOURCE="${INSTALL_PREFIX}/systemd/${UNIT_NAME}"
+UNIT_RUNTIME="/run/systemd/system/${UNIT_NAME}"
+
+install -d "${INSTALL_PREFIX}/log" /run/systemd/system
+
+for attempt in $(seq 1 30); do
+  if systemctl show-environment >/dev/null 2>&1; then
+    install -m 0644 "${UNIT_SOURCE}" "${UNIT_RUNTIME}"
+    systemctl daemon-reload
+    systemctl start "${UNIT_NAME}"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "systemd was not ready after 30 seconds" >&2
+exit 1

@@ -19,10 +19,12 @@ export const joystickWidget: WidgetDefinition = {
     yAxisComponent: 'x',
     yAxisScale: 0.5,
     gamepadStick: 'auto',
+    requireLocoMode: true,
   },
   configSchema: [
     { key: 'topic', label: 'Velocity Topic', type: 'text' },
     { key: 'useTwistStamped', label: 'Use TwistStamped', type: 'boolean' },
+    { key: 'requireLocoMode', label: 'Enter VBot LOCO Mode', type: 'boolean' },
     { key: 'frameId', label: 'Frame ID', type: 'text' },
     { key: 'axisMapping', label: 'Axis Mapping', type: 'axis-mapping' },
     { key: 'gamepadStick', label: 'Gamepad Stick', type: 'select',

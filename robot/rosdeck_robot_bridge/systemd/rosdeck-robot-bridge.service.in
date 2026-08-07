@@ -1,0 +1,17 @@
+[Unit]
+Description=Rosdeck robot-side ROS 2 bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
+ExecStart=@INSTALL_PREFIX@/bin/run-rosdeck-robot-bridge
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
