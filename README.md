@@ -90,13 +90,13 @@ npm start
 
 ### VBot 3D mapping button
 
-Foxglove cannot execute robot-side files or call the VBot posture service
-through Rosdeck's topic-only transport directly. Copy
-[`robot/rosdeck_mapping_bridge.py`](robot/rosdeck_mapping_bridge.py) to the
-VBot and run it in the sourced ROS 2 Humble environment. The bridge only starts
-the fixed `/userdata/2_slam/1_mapping.sh` script and calls the allowlisted VBot
-stand/lie-down service modes; it does not expose arbitrary shell execution or
-service calls. See [`robot/README.md`](robot/README.md) for details.
+Foxglove cannot execute robot-side files directly. Build and deploy the
+[`robot/rosdeck_robot_bridge`](robot/rosdeck_robot_bridge) ROS 2 C++ package on
+an S100 development board, then copy its offline bundle to the VBot S100. The
+production robot does not need colcon. Its allowlisted adapter controls mapping,
+posture, and LOCO mode, and the bundle installer registers a systemd service for
+automatic startup. It does not expose arbitrary shell execution or arbitrary service calls. See
+[`robot/README.md`](robot/README.md) for details.
 
 Edit `app.json` with your own `slug`, `bundleIdentifier`, `package`, and EAS `projectId` before building.
 

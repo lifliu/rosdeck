@@ -8,6 +8,7 @@ describe('Transport interface', () => {
       disconnect: jest.fn(),
       subscribe: jest.fn().mockReturnValue({ unsubscribe: jest.fn() }),
       publish: jest.fn(),
+      callService: jest.fn().mockResolvedValue({}),
       getTopics: jest.fn().mockResolvedValue([]),
       onStatus: jest.fn().mockReturnValue(jest.fn()),
       getStatus: jest.fn().mockReturnValue('disconnected'),

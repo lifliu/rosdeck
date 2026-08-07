@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rosdeck_robot_bridge</name>
+  <version>0.1.1</version>
+  <description>Deployable robot-side bridge for the Rosdeck mobile application.</description>
+  <maintainer email="maintainer@example.com">Rosdeck Maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+
+  <!-- Optional VBot adapter dependencies are discovered by CMake. -->
+  <exec_depend>function_msgs</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>software_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

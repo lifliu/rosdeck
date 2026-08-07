@@ -16,6 +16,7 @@ export interface Transport {
   disconnect(): void;
   subscribe(topic: string, messageType: string, callback: (msg: any) => void, throttleRate?: number): Subscription;
   publish(topic: string, messageType: string, msg: any): void;
+  callService(service: string, serviceType: string, request: Record<string, unknown>): Promise<any>;
   getTopics(): Promise<TopicInfo[]>;
   onStatus(callback: (status: TransportStatus, error?: string) => void): () => void;
   getStatus(): TransportStatus;

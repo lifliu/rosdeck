@@ -1,4 +1,16 @@
 import { FoxgloveTransport } from '../../lib/foxglove-transport';
+import { MessageReader, MessageWriter } from '@foxglove/rosmsg2-serialization';
+import { parse as parseMessageDefinition } from '@foxglove/rosmsg';
+
+const SET_RUN_MODE_REQUEST_SCHEMA = `uint8 target_state
+uint8 mode
+string req_id
+bool pre_check
+bool has_is_traction_user_param
+bool is_traction_user_param`;
+const SET_RUN_MODE_RESPONSE_SCHEMA = `bool success
+string message
+int32 error_code`;
 
 describe('FoxgloveTransport connection', () => {
   let socket: any;
@@ -110,5 +122,86 @@ describe('FoxgloveTransport connection', () => {
         channels: [expect.objectContaining({ topic: '/vel_cmd', schemaName: 'geometry_msgs/msg/Twist' })],
       }),
     ]);
+  });
+
+  it('calls an advertised ROS 2 service using CDR and decodes its CDR response', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertiseServices',
+      services: [{
+        id: 7,
+        name: '/locomotion/set_run_mode',
+        type: 'function_msgs/srv/SetRunMode',
+      }],
+    }) });
+
+    const responsePromise = transport.callService(
+      '/locomotion/set_run_mode',
+      'function_msgs/srv/SetRunMode',
+      {
+        target_state: 1,
+        mode: 2,
+        req_id: 'rosdeck',
+        pre_check: false,
+        has_is_traction_user_param: false,
+        is_traction_user_param: false,
+      },
+    );
+    const request = socket.send.mock.calls.at(-1)?.[0] as Uint8Array;
+    const requestView = new DataView(request.buffer, request.byteOffset, request.byteLength);
+    expect(requestView.getUint8(0)).toBe(2);
+    expect(requestView.getUint32(1, true)).toBe(7);
+    const callId = requestView.getUint32(5, true);
+    const encodingLength = requestView.getUint32(9, true);
+    expect(new TextDecoder().decode(request.subarray(13, 13 + encodingLength))).toBe('cdr');
+    const requestReader = new MessageReader(parseMessageDefinition(SET_RUN_MODE_REQUEST_SCHEMA, { ros2: true }));
+    expect(requestReader.readMessage(request.subarray(13 + encodingLength))).toEqual({
+      target_state: 1,
+      mode: 2,
+      req_id: 'rosdeck',
+      pre_check: false,
+      has_is_traction_user_param: false,
+      is_traction_user_param: false,
+    });
+
+    const encoding = new TextEncoder().encode('cdr');
+    const responseWriter = new MessageWriter(parseMessageDefinition(SET_RUN_MODE_RESPONSE_SCHEMA, { ros2: true }));
+    const body = responseWriter.writeMessage({ success: true, message: 'ok', error_code: 0 });
+    const response = new Uint8Array(13 + encoding.length + body.length);
+    const responseView = new DataView(response.buffer);
+    responseView.setUint8(0, 3);
+    responseView.setUint32(1, 7, true);
+    responseView.setUint32(5, callId, true);
+    responseView.setUint32(9, encoding.length, true);
+    response.set(encoding, 13);
+    response.set(body, 13 + encoding.length);
+    socket.onmessage?.({ data: response.buffer });
+
+    await expect(responsePromise).resolves.toEqual({ success: true, message: 'ok', error_code: 0 });
+  });
+
+  it('rejects a failed Foxglove service call', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertiseServices',
+      services: [{ id: 9, name: '/locomotion/set_run_mode', type: 'function_msgs/srv/SetRunMode' }],
+    }) });
+    const promise = transport.callService(
+      '/locomotion/set_run_mode',
+      'function_msgs/srv/SetRunMode',
+      { target_state: 1, mode: 2 },
+    );
+    const request = socket.send.mock.calls.at(-1)?.[0] as Uint8Array;
+    const callId = new DataView(request.buffer, request.byteOffset, request.byteLength).getUint32(5, true);
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'serviceCallFailure', serviceId: 9, callId, message: 'service unavailable',
+    }) });
+    await expect(promise).rejects.toThrow('service unavailable');
   });
 });

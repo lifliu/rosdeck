@@ -64,6 +64,15 @@ describe('DemoTransport', () => {
     }).not.toThrow();
   });
 
+  it('simulates successful service calls', async () => {
+    await transport.connect('demo://localhost');
+    await expect(transport.callService(
+      '/locomotion/set_run_mode',
+      'function_msgs/srv/SetRunMode',
+      { target_state: 1, mode: 2 },
+    )).resolves.toEqual({ success: true, message: 'demo', error_code: 0 });
+  });
+
   it('onStatus fires callback on connect', async () => {
     const callback = jest.fn();
     transport.onStatus(callback);

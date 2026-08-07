@@ -1,0 +1,13 @@
+/**:
+  ros__parameters:
+    adapter: zsibot
+    # Mapping is disabled until Zsibot's mapping command is known.
+    mapping.enabled: false
+    # These stay enabled so the app receives an explicit adapter_not_configured
+    # response instead of falling back to VBot-specific direct services.
+    posture.enabled: true
+    locomotion.enabled: true
+    topics.posture_command: /rosdeck/posture_command
+    topics.posture_status: /rosdeck/posture_status
+    topics.locomotion_command: /rosdeck/locomotion_command
+    topics.locomotion_status: /rosdeck/locomotion_status

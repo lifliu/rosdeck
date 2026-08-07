@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -e
+
+source "@ROS_SETUP@"
+if [[ -f "@INSTALL_PREFIX@/runtime/local_setup.bash" ]]; then
+  source "@INSTALL_PREFIX@/runtime/local_setup.bash"
+fi
+
+exec "@INSTALL_PREFIX@/bin/rosdeck_robot_bridge_node" \
+  --ros-args -r __node:=@NODE_NAME@ \
+  --params-file "@INSTALL_PREFIX@/config/bridge.yaml"

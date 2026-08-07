@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -e
+
+source "@ROS_SETUP@"
+source "@INSTALL_PREFIX@/install/setup.bash"
+
+exec ros2 run rosdeck_robot_bridge rosdeck_robot_bridge_node \
+  --ros-args -r __node:=@NODE_NAME@ \
+  --params-file "@INSTALL_PREFIX@/config/bridge.yaml"

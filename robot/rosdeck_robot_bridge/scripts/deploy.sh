@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+INSTALL_PREFIX="/userdata/rosdeck"
+PROFILE="vbot"
+ROS_SETUP=""
+ENABLE_SERVICE=1
+CLEAN_CACHE=0
+NODE_NAME="rosdeck_robot_bridge"
+
+usage() {
+  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--clean] [--no-start]"
+}
+
+while (($#)); do
+  case "$1" in
+    --profile) PROFILE="${2:?missing profile}"; shift 2 ;;
+    --ros-setup) ROS_SETUP="${2:?missing ROS setup path}"; shift 2 ;;
+    --prefix) INSTALL_PREFIX="${2:?missing install prefix}"; shift 2 ;;
+    --clean) CLEAN_CACHE=1; shift ;;
+    --no-start) ENABLE_SERVICE=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Run deployment with sudo/root." >&2
+  exit 1
+fi
+if [[ ! "${PROFILE}" =~ ^(vbot|zsibot)$ ]]; then
+  echo "Unsupported profile: ${PROFILE}" >&2
+  exit 2
+fi
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  NODE_NAME="rosdeck_robot_bridge_zsibot"
+fi
+if [[ -z "${ROS_SETUP}" ]]; then
+  for candidate in /app/script/env.sh /app/opt/ros/humble/setup.bash /opt/ros/humble/setup.bash; do
+    if [[ -f "${candidate}" ]]; then
+      ROS_SETUP="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${ROS_SETUP}" || ! -f "${ROS_SETUP}" ]]; then
+  echo "ROS environment script was not found; pass --ros-setup PATH." >&2
+  exit 1
+fi
+command -v systemctl >/dev/null 2>&1 || {
+  echo "systemd/systemctl is required for automatic startup." >&2
+  exit 1
+}
+
+BUILD_ARGS=(--profile "${PROFILE}" --ros-setup "${ROS_SETUP}" --prefix "${INSTALL_PREFIX}")
+if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
+  BUILD_ARGS+=(--clean)
+fi
+"${SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}"
+
+install -d "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/config" \
+  "${INSTALL_PREFIX}/systemd"
+if [[ -f "${INSTALL_PREFIX}/config/bridge.yaml" ]]; then
+  cp -a "${INSTALL_PREFIX}/config/bridge.yaml" \
+    "${INSTALL_PREFIX}/config/bridge.yaml.previous"
+fi
+install -m 0644 "${PACKAGE_DIR}/config/${PROFILE}.yaml" \
+  "${INSTALL_PREFIX}/config/bridge.yaml"
+if [[ ! -f "${INSTALL_PREFIX}/config/bridge.env" ]]; then
+  if [[ "${PROFILE}" == "vbot" ]]; then
+    echo "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}" \
+      > "${INSTALL_PREFIX}/config/bridge.env"
+    chmod 0644 "${INSTALL_PREFIX}/config/bridge.env"
+  else
+    install -m 0644 /dev/null "${INSTALL_PREFIX}/config/bridge.env"
+  fi
+fi
+
+sed \
+  -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
+  -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+  -e "s#@NODE_NAME@#${NODE_NAME}#g" \
+  "${PACKAGE_DIR}/scripts/run-bridge.in" > "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
+chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
+
+sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+  "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
+  > "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service"
+install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
+  /etc/systemd/system/rosdeck-robot-bridge.service
+chmod 0644 /etc/systemd/system/rosdeck-robot-bridge.service
+
+systemctl daemon-reload
+if [[ "${ENABLE_SERVICE}" -eq 0 ]]; then
+  echo "Deployment complete without startup. Run: systemctl enable --now rosdeck-robot-bridge"
+  exit 0
+fi
+
+systemctl enable --now rosdeck-robot-bridge.service
+sleep 2
+if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
+  echo "Bridge failed to stay active. Recent logs:" >&2
+  journalctl -u rosdeck-robot-bridge.service -n 80 --no-pager >&2 || true
+  exit 1
+fi
+
+systemctl --no-pager --full status rosdeck-robot-bridge.service || true
+if timeout 15 bash -c '
+  set -e
+  set -a
+  [[ -f "$4" ]] && source "$4"
+  set +a
+  source "$1"
+  source "$2"
+  for _ in {1..10}; do
+    ros2 node list 2>/dev/null | grep -Fxq "$3" && exit 0
+    sleep 1
+  done
+  exit 1
+' _ "${ROS_SETUP}" "${INSTALL_PREFIX}/install/setup.bash" "/${NODE_NAME}" \
+  "${INSTALL_PREFIX}/config/bridge.env"; then
+  echo "ROS graph check: /${NODE_NAME} discovered"
+else
+  echo "Warning: service is active, but /${NODE_NAME} was not discovered within 15 seconds." >&2
+  echo "Check RMW settings in ${INSTALL_PREFIX}/config/bridge.env and inspect the journal." >&2
+fi
+echo "Deployment successful: profile=${PROFILE}, node=/${NODE_NAME}"
+echo "Boot autostart: enabled"
+echo "Logs: journalctl -u rosdeck-robot-bridge -f"

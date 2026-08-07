@@ -101,6 +101,21 @@ export class RosbridgeTransport implements Transport {
     rosTopic.publish(new ROSLIB.Message(msg));
   }
 
+  callService(service: string, serviceType: string, request: Record<string, unknown>): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.ros || !ROSLIB) {
+        reject(new Error('Rosbridge is not connected'));
+        return;
+      }
+      const client = new ROSLIB.Service({ ros: this.ros, name: service, serviceType });
+      client.callService(
+        new ROSLIB.ServiceRequest(request),
+        (response: any) => resolve(response),
+        (error: any) => reject(new Error(error?.message || String(error || 'Service call failed'))),
+      );
+    });
+  }
+
   getTopics(): Promise<TopicInfo[]> {
     return new Promise((resolve) => {
       if (!this.ros) {
