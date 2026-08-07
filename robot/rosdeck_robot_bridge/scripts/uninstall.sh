@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLE_PROFILE=""
+if [[ -f "${SCRIPT_DIR}/manifest.env" ]]; then
+  source "${SCRIPT_DIR}/manifest.env"
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this uninstaller with sudo/root." >&2
   exit 1
 fi
 
 systemctl disable --now rosdeck-robot-bridge.service 2>/dev/null || true
-if [[ -f /userdata/startup.sh ]]; then
+if [[ "${BUNDLE_PROFILE}" == "vbot" && -f /userdata/startup.sh ]]; then
   sed -i '/# ROSDECK ROBOT BRIDGE/d;/bootstrap-rosdeck-service/d' /userdata/startup.sh
 fi
 if [[ -f /run/systemd/system/rosdeck-robot-bridge.service ]]; then
@@ -20,4 +26,8 @@ if [[ -f /etc/systemd/system/rosdeck-robot-bridge.service ]]; then
 fi
 systemctl daemon-reload
 
-echo "Service disabled. /userdata/rosdeck was retained for recovery."
+if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
+  echo "Service disabled. /userdata/rosdeck was retained for recovery."
+else
+  echo "Service disabled. /opt/rosdeck was retained for recovery."
+fi

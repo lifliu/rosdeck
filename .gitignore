@@ -64,3 +64,6 @@ assets/images/icon-candidates
 
 *.apk
 *.aab
+
+# Vendor SDKs are local build inputs and include redistributable binaries.
+/sdk/zsibot_sdk-main/

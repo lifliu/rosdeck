@@ -1,12 +1,16 @@
 /**:
   ros__parameters:
     adapter: zsibot
-    # Mapping is disabled until Zsibot's mapping command is known.
+    # Zsibot's supplied SDK currently exposes motion/posture, not mapping.
     mapping.enabled: false
-    # These stay enabled so the app receives an explicit adapter_not_configured
-    # response instead of falling back to VBot-specific direct services.
     posture.enabled: true
     locomotion.enabled: true
+    # Use 127.0.0.1 only when this bridge runs directly on the Zsibot computer.
+    # For an external controller, set its NIC address and match sdk_config.yaml.
+    zsibot.local_ip: 127.0.0.1
+    zsibot.local_port: 43988
+    zsibot.dog_ip: 192.168.234.1
+    zsibot.velocity_topic: /vel_cmd
     topics.posture_command: /rosdeck/posture_command
     topics.posture_status: /rosdeck/posture_status
     topics.locomotion_command: /rosdeck/locomotion_command

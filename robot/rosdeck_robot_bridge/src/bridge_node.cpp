@@ -72,8 +72,10 @@ public:
     mapping_enabled_ = declare_parameter<bool>("mapping.enabled", true);
     posture_enabled_ = declare_parameter<bool>("posture.enabled", true);
     locomotion_enabled_ = declare_parameter<bool>("locomotion.enabled", true);
+    const auto default_mapping_script = adapter_name == "vbot" ?
+      "/userdata/2_slam/1_mapping.sh" : "";
     mapping_script_ = declare_parameter<std::string>(
-      "mapping.script", "/userdata/2_slam/1_mapping.sh");
+      "mapping.script", default_mapping_script);
     mapping_log_ = declare_parameter<std::string>(
       "mapping.log", "/tmp/rosdeck_3d_mapping.log");
     const auto mapping_stop_timeout = declare_parameter<int64_t>(

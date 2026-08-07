@@ -7,9 +7,11 @@ PROFILE="vbot"
 ROS_SETUP=""
 OUTPUT_DIR="${PACKAGE_DIR}/dist"
 VBOT_MSGS=""
+ZSIBOT_SDK=""
+ZSIBOT_MODEL=""
 
 usage() {
-  echo "Usage: ./scripts/build-package.sh [--profile vbot|zsibot] [--ros-setup PATH] [--output-dir PATH] [--vbot-msgs ACTUAL_PATH]"
+  echo "Usage: ./scripts/build-package.sh [--profile vbot|zsibot] [--ros-setup PATH] [--output-dir PATH] [--vbot-msgs PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w]"
 }
 
 is_vbot_msgs_tree() {
@@ -25,6 +27,8 @@ while (($#)); do
     --ros-setup) ROS_SETUP="${2:?missing ROS setup path}"; shift 2 ;;
     --output-dir) OUTPUT_DIR="${2:?missing output directory}"; shift 2 ;;
     --vbot-msgs) VBOT_MSGS="${2:?missing vbot_ros2_msgs path}"; shift 2 ;;
+    --zsibot-sdk) ZSIBOT_SDK="${2:?missing Zsibot SDK path}"; shift 2 ;;
+    --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -34,8 +38,28 @@ if [[ ! "${PROFILE}" =~ ^(vbot|zsibot)$ ]]; then
   echo "Unsupported profile: ${PROFILE}" >&2
   exit 2
 fi
+if [[ "${PROFILE}" == "vbot" && ( -n "${ZSIBOT_SDK}" || -n "${ZSIBOT_MODEL}" ) ]]; then
+  echo "--zsibot-sdk/--zsibot-model are only valid with --profile zsibot." >&2
+  exit 2
+fi
+if [[ "${PROFILE}" == "zsibot" && ! "${ZSIBOT_MODEL}" =~ ^(zsl-1|zsl-1w)$ ]]; then
+  echo "Profile zsibot requires --zsibot-model zsl-1 or zsl-1w." >&2
+  exit 2
+fi
 if [[ -z "${ROS_SETUP}" ]]; then
-  for candidate in /app/script/env.sh /app/opt/ros/humble/setup.bash /opt/ros/humble/setup.bash; do
+  if [[ "${PROFILE}" == "vbot" ]]; then
+    ROS_CANDIDATES=(
+      /app/script/env.sh
+      /app/opt/ros/humble/setup.bash
+      /opt/ros/humble/setup.bash
+    )
+  else
+    ROS_CANDIDATES=(
+      /opt/ros/humble/setup.bash
+      /app/opt/ros/humble/setup.bash
+    )
+  fi
+  for candidate in "${ROS_CANDIDATES[@]}"; do
     if [[ -f "${candidate}" ]]; then
       ROS_SETUP="${candidate}"
       break
@@ -108,28 +132,56 @@ if [[ "${PROFILE}" == "vbot" ]]; then
     --packages-select foxglove_msgs function_msgs software_msgs \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
   BUILD_SETUP="${BUILD_ROOT}/install/setup.bash"
+else
+  if [[ -z "${ZSIBOT_SDK}" ]]; then
+    for candidate in \
+      "${PACKAGE_DIR}/../../sdk/zsibot_sdk-main" \
+      "${PACKAGE_DIR}/../zsibot_sdk-main" \
+      "${PACKAGE_DIR}/../../zsibot_sdk-main"; do
+      if [[ -f "${candidate}/include/${ZSIBOT_MODEL}/highlevel.h" ]]; then
+        ZSIBOT_SDK="$(cd -- "${candidate}" && pwd)"
+        echo "Auto-detected Zsibot SDK: ${ZSIBOT_SDK}"
+        break
+      fi
+    done
+  fi
+  if [[ -z "${ZSIBOT_SDK}" || ! -f "${ZSIBOT_SDK}/include/${ZSIBOT_MODEL}/highlevel.h" ]]; then
+    echo "Zsibot SDK was not found; pass --zsibot-sdk /actual/path/zsibot_sdk-main." >&2
+    exit 1
+  fi
 fi
 
-"${SCRIPT_DIR}/build.sh" \
-  --profile "${PROFILE}" \
-  --ros-setup "${BUILD_SETUP}" \
-  --prefix "${BUILD_ROOT}" \
+BUILD_ARGS=(
+  --profile "${PROFILE}"
+  --ros-setup "${BUILD_SETUP}"
+  --prefix "${BUILD_ROOT}"
   --clean
+)
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  BUILD_ARGS+=(--zsibot-sdk "${ZSIBOT_SDK}" --zsibot-model "${ZSIBOT_MODEL}")
+fi
+"${SCRIPT_DIR}/build.sh" \
+  "${BUILD_ARGS[@]}"
 
 BINARY="${BUILD_ROOT}/install/lib/rosdeck_robot_bridge/rosdeck_robot_bridge_node"
 set +u
-source "${BUILD_SETUP}"
+source "${BUILD_ROOT}/install/setup.bash"
 set -u
-if ldd "${BINARY}" | grep -q 'not found'; then
+if LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
+  ldd "${BINARY}" | grep -q 'not found'; then
   echo "The compiled node has unresolved shared-library dependencies:" >&2
-  ldd "${BINARY}" >&2
+  LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" ldd "${BINARY}" >&2
   exit 1
 fi
 
 VERSION="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' "${PACKAGE_DIR}/package.xml" | head -1)"
 ARCH="$(uname -m)"
 ROS_VERSION_NAME="${ROS_DISTRO:-humble}"
-BUNDLE_NAME="rosdeck-robot-bridge-${VERSION}-${PROFILE}-${ARCH}-${ROS_VERSION_NAME}"
+PROFILE_LABEL="${PROFILE}"
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  PROFILE_LABEL="${PROFILE}-${ZSIBOT_MODEL}"
+fi
+BUNDLE_NAME="rosdeck-robot-bridge-${VERSION}-${PROFILE_LABEL}-${ARCH}-${ROS_VERSION_NAME}"
 STAGE_PARENT="${BUILD_ROOT}/bundle"
 STAGE="${STAGE_PARENT}/${BUNDLE_NAME}"
 install -d "${STAGE}/bin" "${STAGE}/config" "${STAGE}/templates" "${STAGE}/runtime"
@@ -149,6 +201,7 @@ BUNDLE_VERSION=${VERSION}
 BUNDLE_PROFILE=${PROFILE}
 BUNDLE_ARCH=${ARCH}
 BUNDLE_ROS_DISTRO=${ROS_VERSION_NAME}
+BUNDLE_ZSIBOT_MODEL=${ZSIBOT_MODEL}
 EOF
 
 install -d "${OUTPUT_DIR}"

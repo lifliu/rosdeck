@@ -7,9 +7,11 @@ INSTALL_PREFIX="/opt/rosdeck"
 PROFILE="vbot"
 ROS_SETUP=""
 CLEAN_CACHE=0
+ZSIBOT_SDK=""
+ZSIBOT_MODEL="zsl-1"
 
 usage() {
-  echo "Usage: sudo ./scripts/build.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--clean]"
+  echo "Usage: ./scripts/build.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH] [--zsibot-model zsl-1|zsl-1w] [--clean]"
 }
 
 while (($#)); do
@@ -17,6 +19,8 @@ while (($#)); do
     --profile) PROFILE="${2:?missing profile}"; shift 2 ;;
     --ros-setup) ROS_SETUP="${2:?missing ROS setup path}"; shift 2 ;;
     --prefix) INSTALL_PREFIX="${2:?missing install prefix}"; shift 2 ;;
+    --zsibot-sdk) ZSIBOT_SDK="${2:?missing Zsibot SDK path}"; shift 2 ;;
+    --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
     --clean) CLEAN_CACHE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -27,8 +31,31 @@ if [[ ! "${PROFILE}" =~ ^(vbot|zsibot)$ ]]; then
   echo "Unsupported profile: ${PROFILE}" >&2
   exit 2
 fi
+if [[ ! "${ZSIBOT_MODEL}" =~ ^(zsl-1|zsl-1w)$ ]]; then
+  echo "Unsupported Zsibot model: ${ZSIBOT_MODEL}" >&2
+  exit 2
+fi
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  if [[ -z "${ZSIBOT_SDK}" || ! -f "${ZSIBOT_SDK}/include/${ZSIBOT_MODEL}/highlevel.h" ]]; then
+    echo "A valid --zsibot-sdk PATH is required for profile zsibot." >&2
+    exit 1
+  fi
+  ZSIBOT_SDK="$(cd -- "${ZSIBOT_SDK}" && pwd)"
+fi
 if [[ -z "${ROS_SETUP}" ]]; then
-  for candidate in /app/script/env.sh /app/opt/ros/humble/setup.bash /opt/ros/humble/setup.bash; do
+  if [[ "${PROFILE}" == "vbot" ]]; then
+    ROS_CANDIDATES=(
+      /app/script/env.sh
+      /app/opt/ros/humble/setup.bash
+      /opt/ros/humble/setup.bash
+    )
+  else
+    ROS_CANDIDATES=(
+      /opt/ros/humble/setup.bash
+      /app/opt/ros/humble/setup.bash
+    )
+  fi
+  for candidate in "${ROS_CANDIDATES[@]}"; do
     if [[ -f "${candidate}" ]]; then
       ROS_SETUP="${candidate}"
       break
@@ -81,14 +108,23 @@ if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
 fi
 if [[ "${PROFILE}" == "vbot" ]]; then
   VBOT_ADAPTER_OPTION=ON
+  ZSIBOT_ADAPTER_OPTION=OFF
 else
   VBOT_ADAPTER_OPTION=OFF
+  ZSIBOT_ADAPTER_OPTION=ON
 fi
 COLCON_ARGS+=(
   --cmake-args
   -DCMAKE_BUILD_TYPE=Release
   -DROSDECK_BUILD_VBOT_ADAPTER="${VBOT_ADAPTER_OPTION}"
+  -DROSDECK_BUILD_ZSIBOT_ADAPTER="${ZSIBOT_ADAPTER_OPTION}"
 )
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  COLCON_ARGS+=(
+    -DROSDECK_ZSIBOT_SDK_ROOT="${ZSIBOT_SDK}"
+    -DROSDECK_ZSIBOT_MODEL="${ZSIBOT_MODEL}"
+  )
+fi
 
 echo "Building rosdeck_robot_bridge (${PROFILE}) with ${ROS_SETUP}"
 colcon --log-base "${INSTALL_PREFIX}/log" build "${COLCON_ARGS[@]}"

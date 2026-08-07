@@ -3,15 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-INSTALL_PREFIX="/userdata/rosdeck"
+INSTALL_PREFIX=""
 PROFILE="vbot"
 ROS_SETUP=""
 ENABLE_SERVICE=1
 CLEAN_CACHE=0
 NODE_NAME="rosdeck_robot_bridge"
+ZSIBOT_SDK=""
+ZSIBOT_MODEL=""
 
 usage() {
-  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--clean] [--no-start]"
+  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w] [--clean] [--no-start]"
 }
 
 while (($#)); do
@@ -19,6 +21,8 @@ while (($#)); do
     --profile) PROFILE="${2:?missing profile}"; shift 2 ;;
     --ros-setup) ROS_SETUP="${2:?missing ROS setup path}"; shift 2 ;;
     --prefix) INSTALL_PREFIX="${2:?missing install prefix}"; shift 2 ;;
+    --zsibot-sdk) ZSIBOT_SDK="${2:?missing Zsibot SDK path}"; shift 2 ;;
+    --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
     --clean) CLEAN_CACHE=1; shift ;;
     --no-start) ENABLE_SERVICE=0; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -36,9 +40,26 @@ if [[ ! "${PROFILE}" =~ ^(vbot|zsibot)$ ]]; then
 fi
 if [[ "${PROFILE}" == "zsibot" ]]; then
   NODE_NAME="rosdeck_robot_bridge_zsibot"
+  if [[ ! "${ZSIBOT_MODEL}" =~ ^(zsl-1|zsl-1w)$ ]]; then
+    echo "Profile zsibot requires --zsibot-model zsl-1 or zsl-1w." >&2
+    exit 2
+  fi
+  : "${ZSIBOT_SDK:?profile zsibot requires --zsibot-sdk PATH}"
+fi
+if [[ -z "${INSTALL_PREFIX}" ]]; then
+  if [[ "${PROFILE}" == "vbot" ]]; then
+    INSTALL_PREFIX="/userdata/rosdeck"
+  else
+    INSTALL_PREFIX="/opt/rosdeck"
+  fi
 fi
 if [[ -z "${ROS_SETUP}" ]]; then
-  for candidate in /app/script/env.sh /app/opt/ros/humble/setup.bash /opt/ros/humble/setup.bash; do
+  if [[ "${PROFILE}" == "vbot" ]]; then
+    ROS_CANDIDATES=(/app/script/env.sh /app/opt/ros/humble/setup.bash /opt/ros/humble/setup.bash)
+  else
+    ROS_CANDIDATES=(/opt/ros/humble/setup.bash /app/opt/ros/humble/setup.bash)
+  fi
+  for candidate in "${ROS_CANDIDATES[@]}"; do
     if [[ -f "${candidate}" ]]; then
       ROS_SETUP="${candidate}"
       break
@@ -55,6 +76,9 @@ command -v systemctl >/dev/null 2>&1 || {
 }
 
 BUILD_ARGS=(--profile "${PROFILE}" --ros-setup "${ROS_SETUP}" --prefix "${INSTALL_PREFIX}")
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  BUILD_ARGS+=(--zsibot-sdk "${ZSIBOT_SDK}" --zsibot-model "${ZSIBOT_MODEL}")
+fi
 if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
   BUILD_ARGS+=(--clean)
 fi
@@ -86,19 +110,46 @@ sed \
 chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 
 sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+  "${PACKAGE_DIR}/scripts/bootstrap-service.in" \
+  > "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
+chmod 0755 "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
+
+sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   > "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service"
+
+if [[ "${PROFILE}" == "vbot" ]]; then
+  install -d "${INSTALL_PREFIX}/log" /userdata /run/systemd/system /etc/systemd/system
+  if [[ ! -f /userdata/startup.sh ]]; then
+    printf '%s\n' '#!/usr/bin/env bash' '' '# ROSDECK ROBOT BRIDGE' \
+      "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service >>${INSTALL_PREFIX}/log/bootstrap.log 2>&1 &" \
+      > /userdata/startup.sh
+  elif ! grep -Fq '# ROSDECK ROBOT BRIDGE' /userdata/startup.sh; then
+    printf '%s\n' '' '# ROSDECK ROBOT BRIDGE' \
+      "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service >>${INSTALL_PREFIX}/log/bootstrap.log 2>&1 &" \
+      >> /userdata/startup.sh
+  fi
+  chmod 0755 /userdata/startup.sh
+  install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
+    /run/systemd/system/rosdeck-robot-bridge.service
+else
+  install -d /etc/systemd/system
+fi
 install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
   /etc/systemd/system/rosdeck-robot-bridge.service
 chmod 0644 /etc/systemd/system/rosdeck-robot-bridge.service
 
 systemctl daemon-reload
 if [[ "${ENABLE_SERVICE}" -eq 0 ]]; then
-  echo "Deployment complete without startup. Run: systemctl enable --now rosdeck-robot-bridge"
+  echo "Deployment complete without starting the service in this boot."
   exit 0
 fi
 
-systemctl enable --now rosdeck-robot-bridge.service
+if [[ "${PROFILE}" == "vbot" ]]; then
+  systemctl restart rosdeck-robot-bridge.service
+else
+  systemctl enable --now rosdeck-robot-bridge.service
+fi
 sleep 2
 if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
   echo "Bridge failed to stay active. Recent logs:" >&2
@@ -127,5 +178,9 @@ else
   echo "Check RMW settings in ${INSTALL_PREFIX}/config/bridge.env and inspect the journal." >&2
 fi
 echo "Deployment successful: profile=${PROFILE}, node=/${NODE_NAME}"
-echo "Boot autostart: enabled"
+if [[ "${PROFILE}" == "vbot" ]]; then
+  echo "Boot autostart: registered in /userdata/startup.sh"
+else
+  echo "Boot autostart: enabled with persistent systemd"
+fi
 echo "Logs: journalctl -u rosdeck-robot-bridge -f"

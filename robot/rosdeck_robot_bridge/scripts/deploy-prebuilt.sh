@@ -2,13 +2,13 @@
 set -euo pipefail
 
 BUNDLE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_PREFIX="/userdata/rosdeck"
+INSTALL_PREFIX=""
 ROS_SETUP=""
 ENABLE_SERVICE=1
 
 usage() {
   echo "Usage: sudo ./deploy.sh [--ros-setup PATH] [--prefix PATH] [--no-start]"
-  echo "The VBot default environment is /app/script/env.sh."
+  echo "Defaults: vbot=/userdata/rosdeck + /userdata/startup.sh; zsibot=/opt/rosdeck + systemd."
 }
 
 while (($#)); do
@@ -33,15 +33,42 @@ source "${BUNDLE_DIR}/manifest.env"
 : "${BUNDLE_PROFILE:?missing bundle profile}"
 : "${BUNDLE_ARCH:?missing bundle architecture}"
 : "${BUNDLE_ROS_DISTRO:?missing bundle ROS distribution}"
+: "${BUNDLE_ZSIBOT_MODEL:=}"
+if [[ ! "${BUNDLE_PROFILE}" =~ ^(vbot|zsibot)$ ]]; then
+  echo "Unsupported bundle profile: ${BUNDLE_PROFILE}" >&2
+  exit 2
+fi
+if [[ "${BUNDLE_PROFILE}" == "zsibot" && ! "${BUNDLE_ZSIBOT_MODEL}" =~ ^(zsl-1|zsl-1w)$ ]]; then
+  echo "Invalid Zsibot bundle model: ${BUNDLE_ZSIBOT_MODEL:-missing}" >&2
+  exit 2
+fi
+
+if [[ -z "${INSTALL_PREFIX}" ]]; then
+  if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
+    INSTALL_PREFIX="/userdata/rosdeck"
+  else
+    INSTALL_PREFIX="/opt/rosdeck"
+  fi
+fi
 
 if [[ "$(uname -m)" != "${BUNDLE_ARCH}" ]]; then
   echo "Architecture mismatch: bundle=${BUNDLE_ARCH}, robot=$(uname -m)." >&2
   exit 1
 fi
 if [[ -z "${ROS_SETUP}" ]]; then
-  for candidate in "/app/script/env.sh" \
-                   "/app/opt/ros/${BUNDLE_ROS_DISTRO}/setup.bash" \
-                   "/opt/ros/${BUNDLE_ROS_DISTRO}/setup.bash"; do
+  if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
+    ROS_CANDIDATES=(
+      "/app/script/env.sh"
+      "/app/opt/ros/${BUNDLE_ROS_DISTRO}/setup.bash"
+      "/opt/ros/${BUNDLE_ROS_DISTRO}/setup.bash"
+    )
+  else
+    ROS_CANDIDATES=(
+      "/opt/ros/${BUNDLE_ROS_DISTRO}/setup.bash"
+      "/app/opt/ros/${BUNDLE_ROS_DISTRO}/setup.bash"
+    )
+  fi
+  for candidate in "${ROS_CANDIDATES[@]}"; do
     if [[ -f "${candidate}" ]]; then
       ROS_SETUP="${candidate}"
       break
@@ -110,9 +137,11 @@ if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
     exit 1
   }
 fi
-if LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" ldd "${BUNDLE_DIR}/bin/rosdeck_robot_bridge_node" | grep -q 'not found'; then
+if LD_LIBRARY_PATH="${BUNDLE_DIR}/runtime/lib:${LD_LIBRARY_PATH:-}" \
+  ldd "${BUNDLE_DIR}/bin/rosdeck_robot_bridge_node" | grep -q 'not found'; then
   echo "The robot is missing shared libraries required by this bundle:" >&2
-  ldd "${BUNDLE_DIR}/bin/rosdeck_robot_bridge_node" >&2
+  LD_LIBRARY_PATH="${BUNDLE_DIR}/runtime/lib:${LD_LIBRARY_PATH:-}" \
+    ldd "${BUNDLE_DIR}/bin/rosdeck_robot_bridge_node" >&2
   exit 1
 fi
 
@@ -157,19 +186,29 @@ chmod 0755 "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
 sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   "${BUNDLE_DIR}/templates/rosdeck-robot-bridge.service.in" \
   > "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service"
-install_init_hook
-install -d /run/systemd/system /etc/systemd/system
-install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
-  /run/systemd/system/rosdeck-robot-bridge.service
-install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
-  /etc/systemd/system/rosdeck-robot-bridge.service
+if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
+  install_init_hook
+  install -d /run/systemd/system /etc/systemd/system
+  install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
+    /run/systemd/system/rosdeck-robot-bridge.service
+  install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
+    /etc/systemd/system/rosdeck-robot-bridge.service
+else
+  install -d /etc/systemd/system
+  install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
+    /etc/systemd/system/rosdeck-robot-bridge.service
+fi
 
 systemctl daemon-reload
 if [[ "${ENABLE_SERVICE}" -eq 0 ]]; then
-  echo "Installed without starting it in this boot. Run: ${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
+  echo "Installed without starting it in this boot."
   exit 0
 fi
-systemctl restart rosdeck-robot-bridge.service
+if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
+  systemctl restart rosdeck-robot-bridge.service
+else
+  systemctl enable --now rosdeck-robot-bridge.service
+fi
 sleep 2
 if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
   echo "Bridge failed to stay active. Recent logs:" >&2
@@ -178,6 +217,10 @@ if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
 fi
 
 systemctl --no-pager --full status rosdeck-robot-bridge.service || true
-echo "Offline deployment successful: profile=${BUNDLE_PROFILE}, node=/${NODE_NAME}"
-echo "Boot autostart: registered in /userdata/startup.sh"
+echo "Offline deployment successful: profile=${BUNDLE_PROFILE}, model=${BUNDLE_ZSIBOT_MODEL:-n/a}, node=/${NODE_NAME}"
+if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
+  echo "Boot autostart: registered in /userdata/startup.sh"
+else
+  echo "Boot autostart: enabled with persistent systemd (${INSTALL_PREFIX})"
+fi
 echo "Logs: journalctl -u rosdeck-robot-bridge -f"

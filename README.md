@@ -41,6 +41,7 @@
 - **Demo mode** — try the full app without a robot
 - **English / 中文 UI** — switch languages instantly from Settings
 - **VBot 3D mapping** — start the robot's fixed SLAM mapping script from the control screen through a restricted ROS 2 bridge
+- **VBot / Zsibot adapters** — one phone protocol with profile-specific native robot control and deployment
 
 ### Widgets
 
@@ -88,14 +89,15 @@ npm install
 npm start
 ```
 
-### VBot 3D mapping button
+### VBot and Zsibot robot bridge
 
 Foxglove cannot execute robot-side files directly. Build and deploy the
 [`robot/rosdeck_robot_bridge`](robot/rosdeck_robot_bridge) ROS 2 C++ package on
-an S100 development board, then copy its offline bundle to the VBot S100. The
-production robot does not need colcon. Its allowlisted adapter controls mapping,
-posture, and LOCO mode, and the bundle installer registers a systemd service for
-automatic startup. It does not expose arbitrary shell execution or arbitrary service calls. See
+an architecture-compatible development board, then copy its offline bundle to
+the target. The production target does not need colcon. VBot packages install
+under `/userdata` and register through `/userdata/startup.sh`; Zsibot packages use
+the official ZSL-1/ZSL-1W SDK, install under `/opt`, and use normal systemd.
+The allowlisted adapters do not expose arbitrary shell execution or arbitrary service calls. See
 [`robot/README.md`](robot/README.md) for details.
 
 Edit `app.json` with your own `slug`, `bundleIdentifier`, `package`, and EAS `projectId` before building.
