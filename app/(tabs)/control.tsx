@@ -21,7 +21,9 @@ import { useOrientation } from "../../hooks/useOrientation";
 import { useRosStore } from "../../stores/useRosStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useGamepadInput } from "../../hooks/useGamepadInput";
+import { EmergencyStop } from "../../components/EmergencyStop";
 import { MappingControl } from "../../components/MappingControl";
+import { NavigationControl } from "../../components/NavigationControl";
 import { PostureControl } from "../../components/PostureControl";
 import { useTranslation } from "../../lib/i18n";
 
@@ -231,14 +233,18 @@ export default function ControlScreen() {
 
       {!isLandscape && (
         <View style={styles.robotActions}>
+          <EmergencyStop />
           <PostureControl />
+          <NavigationControl />
           <MappingControl />
         </View>
       )}
 
       {isLandscape && (
         <View style={styles.landscapeActions}>
+          <EmergencyStop compact />
           <PostureControl compact />
+          <NavigationControl compact />
           <MappingControl compact />
         </View>
       )}
