@@ -6,16 +6,18 @@ import { useTranslation } from '../lib/i18n';
 import { useRosStore } from '../stores/useRosStore';
 import type { TwistMessage } from '../types/ros';
 
-const E_STOP_TOPIC = '/rosdeck/emergency_stop';
-const E_STOP_MESSAGE_TYPE = 'std_msgs/msg/Bool';
-const E_STOP_MESSAGE = { data: true } as const;
+/**
+ * Emergency stop fires the LowlevelAction service (SAFE_LAYDOWN_SEQUENCE)
+ * via the bridge posture command topic, and also publishes zero-velocity
+ * Twist to cmd_vel topics as a best-effort safety net.
+ *
+ * LowlevelAction mode: SAFE_LAYDOWN_SEQUENCE = 4
+ * Bridge path: /rosdeck/posture_command (std_msgs/msg/String) → "emergency_stop"
+ */
 
-/** Common cmd_vel topic names to publish zero-velocity to for emergency stop. */
+/** Common cmd_vel topic names for zero-velocity fallback. */
 const CMD_VEL_TOPICS = ['/cmd_vel', '/robot/cmd_vel', '/diff_drive/cmd_vel'];
 
-/**
- * Build a zero-velocity Twist message for emergency stop.
- */
 function zeroTwist(): TwistMessage {
   return { linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } };
 }
@@ -32,14 +34,22 @@ export function EmergencyStop({ compact = false }: { compact?: boolean }) {
   const sendEStop = useCallback(() => {
     if (!transport || disabled) return;
 
-    // Publish zero-velocity Twist to all known cmd_vel topics
+    // 1. Fire the LowlevelAction SAFE_LAYDOWN_SEQUENCE via the bridge posture topic.
+    transport.publish(
+      '/rosdeck/posture_command',
+      'std_msgs/msg/String',
+      { data: 'emergency_stop' },
+    );
+
+    // 2. Best-effort zero-velocity Twist to cmd_vel topics as a safety net.
     const twist = zeroTwist();
     for (const topic of CMD_VEL_TOPICS) {
-      transport.publish(topic, 'geometry_msgs/msg/Twist', twist);
+      try {
+        transport.publish(topic, 'geometry_msgs/msg/Twist', twist);
+      } catch {
+        // topic may not exist — ignore
+      }
     }
-
-    // Also publish to the bridge e-stop command topic
-    transport.publish(E_STOP_TOPIC, E_STOP_MESSAGE_TYPE, E_STOP_MESSAGE);
 
     // Brief visual feedback
     setPressed(true);

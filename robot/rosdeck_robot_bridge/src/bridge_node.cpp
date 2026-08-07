@@ -186,7 +186,7 @@ private:
 
   void request_posture(std::string command)
   {
-    if (command != "stand" && command != "lie_down") {
+    if (command != "stand" && command != "lie_down" && command != "emergency_stop") {
       publish(posture_status_, "error:" + safe_reason(command) + ":unsupported_command");
       return;
     }
