@@ -153,6 +153,75 @@ match `/opt/export/config/sdk_config.yaml` and the selected network. The vendor
 SDK requires movement state transitions to be respected: stand before sending
 non-zero velocity, and send zero velocity before stand/lie-down transitions.
 
+The current two-board Zsibot layout is configured as follows:
+
+| Role | Address | Responsibility |
+| --- | --- | --- |
+| Android app | Connects to Foxglove on S100 | Publishes the stable Rosdeck topics and `/vel_cmd` |
+| S100 Bridge/SDK client | `192.168.234.234:43988` | Receives SDK traffic and converts ROS commands through the native HighLevel SDK |
+| RK3588 motion-control computer | `192.168.234.1` | Runs the robot motion-control server |
+
+The RK3588 file `/opt/export/config/sdk_config.yaml` must send SDK data back to
+the S100 client:
+
+```yaml
+target_ip: "192.168.234.234"
+target_port: 43988
+```
+
+The matching S100 Bridge parameters are already the defaults in
+`config/zsibot.yaml`:
+
+```yaml
+zsibot.local_ip: 192.168.234.234
+zsibot.local_port: 43988
+zsibot.dog_ip: 192.168.234.1
+```
+
+`zsibot.local_port` is the S100 callback/listen port passed as `local_port` to
+the vendor `initRobot()` API. The ZSL-1W SDK demo uses `43988` for this value.
+Do not replace it with the RK3588-side command port `43998`; the robot endpoint
+is handled internally by the vendor SDK and is not an `initRobot()` argument.
+
+For a ZSL-1W robot, the archive name and startup log must both contain
+`zsl-1w`. Build it explicitly with:
+
+```bash
+./scripts/build-package.sh --profile zsibot --zsibot-model zsl-1w
+```
+
+After deploying, verify that the runtime is using the new package rather than a
+previous config:
+
+```bash
+grep -E 'local_(ip|port)|dog_ip' /opt/rosdeck/config/bridge.yaml
+journalctl -u rosdeck-robot-bridge -n 100 --no-pager
+```
+
+The startup log must say `model=zsl-1w local=192.168.234.234:43988`. The
+launcher waits up to 60 seconds for `192.168.234.234` to be assigned before it
+initializes the vendor SDK, avoiding the permanent `bind: Cannot assign
+requested address` state seen when systemd starts before the NIC is ready.
+
+The adapter logs every posture/LOCO result and throttled velocity samples. It
+also emits a ten-second diagnostic containing the SDK connection, control mode,
+battery, ROS `/vel_cmd` publisher count, received/forwarded counts, ignored zero
+messages, and the last decoded SDK result. ZSL-1W codes such as `0x3007`
+(state-machine transition failure) and `0x3013` (velocity out of range) are
+translated in both the journal and App acknowledgement.
+
+The App can continuously publish zero `Twist` values while its control screen is
+open. The Zsibot adapter now sends only the first stop after real motion and
+ignores subsequent idle zeros, because repeatedly invoking the vendor `move()`
+API can interfere with posture state transitions. Touching the joystick sends a
+LOCO request; for Zsibot this automatically calls `standUp()` when necessary and
+waits for standing mode before allowing non-zero velocity through.
+
+All addresses are on `192.168.234.0/24`, so the vendor `SDK_CLIENT_IP` override
+for cross-subnet control is not required. If either board's address or the UDP
+port changes, update both sides together. This is a Bridge/client configuration;
+the Android app does not contain or link the Zsibot SDK.
+
 ## Stable phone protocol
 
 | Direction | Topic | Type | Payload |

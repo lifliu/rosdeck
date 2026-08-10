@@ -167,17 +167,27 @@ private:
 
   void request_locomotion(std::string command)
   {
+    RCLCPP_INFO(get_logger(), "Locomotion command received: command=%s", command.c_str());
     if (command != "loco") {
+      RCLCPP_WARN(
+        get_logger(), "Locomotion command rejected: unsupported command=%s", command.c_str());
       publish(locomotion_status_, "error:" + safe_reason(command) + ":unsupported_command");
       return;
     }
     if (locomotion_busy_.exchange(true)) {
+      RCLCPP_WARN(get_logger(), "Locomotion command rejected: request already in progress");
       publish(locomotion_status_, "error:loco:request_in_progress");
       return;
     }
     adapter_->request_locomotion(
       [this](bool success, const std::string & reason) {
         locomotion_busy_ = false;
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(), "Locomotion command completed: success reason=%s", reason.c_str());
+        } else {
+          RCLCPP_ERROR(get_logger(), "Locomotion command failed: reason=%s", reason.c_str());
+        }
         publish(
           locomotion_status_,
           success ? "success:loco" : "error:loco:" + safe_reason(reason));
@@ -186,11 +196,17 @@ private:
 
   void request_posture(std::string command)
   {
+    RCLCPP_INFO(get_logger(), "Posture command received: command=%s", command.c_str());
     if (command != "stand" && command != "lie_down") {
+      RCLCPP_WARN(
+        get_logger(), "Posture command rejected: unsupported command=%s", command.c_str());
       publish(posture_status_, "error:" + safe_reason(command) + ":unsupported_command");
       return;
     }
     if (posture_busy_.exchange(true)) {
+      RCLCPP_WARN(
+        get_logger(), "Posture command rejected: action already in progress command=%s",
+        command.c_str());
       publish(posture_status_, "error:" + command + ":action_in_progress");
       return;
     }
@@ -198,6 +214,15 @@ private:
       command,
       [this, command](bool success, const std::string & reason) {
         posture_busy_ = false;
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(), "Posture command completed: command=%s reason=%s",
+            command.c_str(), reason.c_str());
+        } else {
+          RCLCPP_ERROR(
+            get_logger(), "Posture command failed: command=%s reason=%s",
+            command.c_str(), reason.c_str());
+        }
         publish(
           posture_status_,
           success ? "success:" + command :

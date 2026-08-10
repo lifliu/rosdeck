@@ -5,12 +5,20 @@
     mapping.enabled: false
     posture.enabled: true
     locomotion.enabled: true
-    # Use 127.0.0.1 only when this bridge runs directly on the Zsibot computer.
-    # For an external controller, set its NIC address and match sdk_config.yaml.
-    zsibot.local_ip: 127.0.0.1
+    # Bridge/SDK client runs on the S100 and talks to motion control on RK3588.
+    # This is the S100 callback/listen port passed to initRobot(), not the
+    # robot-side command port. RK3588 sdk_config.yaml must target it.
+    zsibot.local_ip: 192.168.234.234
     zsibot.local_port: 43988
     zsibot.dog_ip: 192.168.234.1
     zsibot.velocity_topic: /vel_cmd
+    # Touching the joystick automatically stands the dog and waits for mode 1.
+    zsibot.auto_stand_on_locomotion: true
+    # Keep this below the App's 10-second acknowledgement timeout.
+    zsibot.stand_timeout_sec: 8
+    # ZSL-1W forbids posture transitions while moving; send one stop first.
+    zsibot.stop_settle_ms: 300
+    zsibot.diagnostics_period_sec: 10
     topics.posture_command: /rosdeck/posture_command
     topics.posture_status: /rosdeck/posture_status
     topics.locomotion_command: /rosdeck/locomotion_command

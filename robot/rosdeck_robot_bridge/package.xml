@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rosdeck_robot_bridge</name>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
   <description>Deployable robot-side bridge for the Rosdeck mobile application.</description>
   <maintainer email="maintainer@example.com">Rosdeck Maintainers</maintainer>
   <license>Apache-2.0</license>
