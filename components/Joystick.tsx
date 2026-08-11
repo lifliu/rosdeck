@@ -73,6 +73,7 @@ export function Joystick(props?: Partial<WidgetProps>) {
     prepareLocomotion,
     locoStatus,
     locoError,
+    controlBlocked,
   } = useCmdVelPublisher(cmdVelTopic, useTwistStamped, frameId, requireLocoMode);
 
   const gamepadConnected = useGamepadStore((s) => s.connected);
@@ -290,7 +291,13 @@ export function Joystick(props?: Partial<WidgetProps>) {
             <Text style={styles.stickBadgeText}>{stickLabel}</Text>
           </View>
         )}
-        {requireLocoMode && locoStatus !== 'idle' && (
+        {controlBlocked ? (
+          <View style={[styles.locoBadge, styles.controlBlockedBadge]}>
+            <Text style={[styles.locoBadgeText, styles.controlBlockedText]} numberOfLines={1}>
+              {t('joystick.takeControl')}
+            </Text>
+          </View>
+        ) : requireLocoMode && locoStatus !== 'idle' && (
           <View style={styles.locoBadge}>
             <Text style={[
               styles.locoBadgeText,
@@ -420,6 +427,12 @@ const styles = StyleSheet.create({
   },
   locoErrorText: {
     color: theme.colors.statusError,
+  },
+  controlBlockedBadge: {
+    backgroundColor: theme.colors.statusConnecting + '22',
+  },
+  controlBlockedText: {
+    color: theme.colors.statusConnecting,
   },
   locoErrorDetail: {
     fontFamily: 'SpaceMono',

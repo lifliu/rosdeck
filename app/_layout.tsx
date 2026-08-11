@@ -23,6 +23,9 @@ import { useRosStore } from '../stores/useRosStore';
 import { useOnboardingStore } from '../stores/useOnboardingStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { ControlAuthoritySession } from '../components/ControlAuthority';
+import { bestEffortReleaseControl } from '../lib/control-authority';
+import { useControlAuthorityStore } from '../stores/useControlAuthorityStore';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -68,6 +71,10 @@ function RootLayoutNav() {
     const handleAppState = (nextState: AppStateStatus) => {
       const store = useRosStore.getState();
       if (nextState === 'background' || nextState === 'inactive') {
+        bestEffortReleaseControl(store.transport);
+        if (useControlAuthorityStore.getState().status === 'acquired') {
+          useControlAuthorityStore.getState().beginRelease();
+        }
         if (store.connection.ros) {
           store.connection.ros.close();
         }
@@ -97,6 +104,7 @@ function RootLayoutNav() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ErrorBoundary>
         <ThemeProvider value={DarkTheme}>
+          <ControlAuthoritySession />
           <StatusBar style="light" />
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

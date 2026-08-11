@@ -7,35 +7,10 @@ if [[ -f "@INSTALL_PREFIX@/runtime/local_setup.bash" ]]; then
 fi
 export LD_LIBRARY_PATH="@INSTALL_PREFIX@/runtime/lib:${LD_LIBRARY_PATH:-}"
 
-# The vendor SDK binds its UDP socket only once during initRobot().  Some S100
-# network services report network-online before the static Zsibot address has
-# actually appeared; starting in that window leaves the SDK permanently
-# disconnected.  Wait here and let systemd restart us if the address never
-# becomes ready.
-bridge_config="@INSTALL_PREFIX@/config/bridge.yaml"
-wait_ip="$(sed -n 's/^[[:space:]]*zsibot\.local_ip:[[:space:]]*\([^#[:space:]]*\).*$/\1/p' "${bridge_config}" | head -1)"
-wait_ip="${wait_ip#\"}"
-wait_ip="${wait_ip%\"}"
-wait_ip="${wait_ip#\'}"
-wait_ip="${wait_ip%\'}"
-wait_seconds="${ROSDECK_NETWORK_WAIT_SEC:-60}"
-if [[ -n "${wait_ip}" && "${wait_ip}" != "127.0.0.1" && "${wait_ip}" != "0.0.0.0" ]] && \
-   command -v ip >/dev/null 2>&1; then
-  echo "Waiting for Zsibot local address ${wait_ip} (timeout ${wait_seconds}s)..."
-  address_ready=0
-  for ((attempt = 0; attempt < wait_seconds; ++attempt)); do
-    if ip -4 -o address show | grep -Fq " ${wait_ip}/"; then
-      address_ready=1
-      break
-    fi
-    sleep 1
-  done
-  if [[ "${address_ready}" -ne 1 ]]; then
-    echo "Zsibot local address ${wait_ip} is not assigned; aborting SDK startup." >&2
-    exit 75
-  fi
-  echo "Zsibot local address ${wait_ip} is ready."
-fi
+# The process can start before the Zsibot network is ready because initRobot()
+# is now lazy.  Each acquire request validates that the configured local IP is
+# assigned before constructing the vendor SDK, so a failed early request can be
+# retried without restarting this service.
 
 exec "@INSTALL_PREFIX@/bin/rosdeck_robot_bridge_node" \
   --ros-args -r __node:=@NODE_NAME@ \

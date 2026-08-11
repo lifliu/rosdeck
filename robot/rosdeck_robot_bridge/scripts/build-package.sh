@@ -81,7 +81,7 @@ set +u
 source "${ROS_SETUP}"
 set -u
 command -v colcon >/dev/null 2>&1 || {
-  echo "colcon is required on the S100 development board." >&2
+  echo "colcon is required on the development/build host (not on the deployment target)." >&2
   exit 1
 }
 
@@ -191,10 +191,13 @@ install -m 0644 "${PACKAGE_DIR}/config/${PROFILE}.yaml" "${STAGE}/config/bridge.
 install -m 0755 "${PACKAGE_DIR}/scripts/deploy-prebuilt.sh" "${STAGE}/deploy.sh"
 install -m 0755 "${PACKAGE_DIR}/scripts/uninstall.sh" "${STAGE}/uninstall.sh"
 install -m 0644 "${PACKAGE_DIR}/scripts/run-prebuilt.in" "${STAGE}/templates/run-bridge.in"
+install -m 0644 "${PACKAGE_DIR}/scripts/run-foxglove.in" "${STAGE}/templates/run-foxglove.in"
 install -m 0644 "${PACKAGE_DIR}/scripts/bootstrap-service.in" \
   "${STAGE}/templates/bootstrap-service.in"
 install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   "${STAGE}/templates/rosdeck-robot-bridge.service.in"
+install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
+  "${STAGE}/templates/rosdeck-foxglove-bridge.service.in"
 
 cat > "${STAGE}/manifest.env" <<EOF
 BUNDLE_VERSION=${VERSION}

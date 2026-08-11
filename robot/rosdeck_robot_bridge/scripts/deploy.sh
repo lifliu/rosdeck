@@ -7,13 +7,14 @@ INSTALL_PREFIX=""
 PROFILE="vbot"
 ROS_SETUP=""
 ENABLE_SERVICE=1
+ENABLE_FOXGLOVE=-1
 CLEAN_CACHE=0
 NODE_NAME="rosdeck_robot_bridge"
 ZSIBOT_SDK=""
 ZSIBOT_MODEL=""
 
 usage() {
-  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w] [--clean] [--no-start]"
+  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w] [--clean] [--no-start] [--no-foxglove]"
 }
 
 while (($#)); do
@@ -25,6 +26,7 @@ while (($#)); do
     --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
     --clean) CLEAN_CACHE=1; shift ;;
     --no-start) ENABLE_SERVICE=0; shift ;;
+    --no-foxglove) ENABLE_FOXGLOVE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -45,6 +47,9 @@ if [[ "${PROFILE}" == "zsibot" ]]; then
     exit 2
   fi
   : "${ZSIBOT_SDK:?profile zsibot requires --zsibot-sdk PATH}"
+fi
+if [[ "${ENABLE_FOXGLOVE}" -lt 0 ]]; then
+  [[ "${PROFILE}" == "zsibot" ]] && ENABLE_FOXGLOVE=1 || ENABLE_FOXGLOVE=0
 fi
 if [[ -z "${INSTALL_PREFIX}" ]]; then
   if [[ "${PROFILE}" == "vbot" ]]; then
@@ -84,6 +89,16 @@ if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
 fi
 "${SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}"
 
+set +u
+source "${ROS_SETUP}"
+source "${INSTALL_PREFIX}/install/setup.bash"
+set -u
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+  echo "foxglove_bridge is required for mobile connections but is not installed." >&2
+  echo "Install it first: sudo apt install ros-${ROS_DISTRO:-humble}-foxglove-bridge" >&2
+  exit 1
+fi
+
 install -d "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/config" \
   "${INSTALL_PREFIX}/systemd"
 if [[ -f "${INSTALL_PREFIX}/config/bridge.yaml" ]]; then
@@ -101,6 +116,27 @@ if [[ ! -f "${INSTALL_PREFIX}/config/bridge.env" ]]; then
     install -m 0644 /dev/null "${INSTALL_PREFIX}/config/bridge.env"
   fi
 fi
+DEFAULT_ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+DEFAULT_RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}"
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  DEFAULT_ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-24}"
+  DEFAULT_RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}"
+fi
+if ! grep -Eq '^[[:space:]]*ROS_DOMAIN_ID=' "${INSTALL_PREFIX}/config/bridge.env"; then
+  echo "ROS_DOMAIN_ID=${DEFAULT_ROS_DOMAIN_ID}" >> "${INSTALL_PREFIX}/config/bridge.env"
+fi
+if ! grep -Eq '^[[:space:]]*ROS_LOCALHOST_ONLY=' "${INSTALL_PREFIX}/config/bridge.env"; then
+  echo "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}" >> "${INSTALL_PREFIX}/config/bridge.env"
+fi
+if ! grep -Eq '^[[:space:]]*RMW_IMPLEMENTATION=' "${INSTALL_PREFIX}/config/bridge.env"; then
+  echo "RMW_IMPLEMENTATION=${DEFAULT_RMW_IMPLEMENTATION}" >> "${INSTALL_PREFIX}/config/bridge.env"
+fi
+chmod 0644 "${INSTALL_PREFIX}/config/bridge.env"
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 && ! -f "${INSTALL_PREFIX}/config/foxglove.env" ]]; then
+  printf '%s\n' 'FOXGLOVE_ADDRESS=0.0.0.0' 'FOXGLOVE_PORT=8765' \
+    > "${INSTALL_PREFIX}/config/foxglove.env"
+  chmod 0644 "${INSTALL_PREFIX}/config/foxglove.env"
+fi
 
 sed \
   -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
@@ -108,6 +144,14 @@ sed \
   -e "s#@NODE_NAME@#${NODE_NAME}#g" \
   "${PACKAGE_DIR}/scripts/run-bridge.in" > "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  sed \
+    -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
+    -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+    "${PACKAGE_DIR}/scripts/run-foxglove.in" \
+    > "${INSTALL_PREFIX}/bin/run-rosdeck-foxglove-bridge"
+  chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-foxglove-bridge"
+fi
 
 sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   "${PACKAGE_DIR}/scripts/bootstrap-service.in" \
@@ -117,6 +161,11 @@ chmod 0755 "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
 sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   > "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service"
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+    "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
+    > "${INSTALL_PREFIX}/systemd/rosdeck-foxglove-bridge.service"
+fi
 
 if [[ "${PROFILE}" == "vbot" ]]; then
   install -d "${INSTALL_PREFIX}/log" /userdata /run/systemd/system /etc/systemd/system
@@ -138,6 +187,10 @@ fi
 install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
   /etc/systemd/system/rosdeck-robot-bridge.service
 chmod 0644 /etc/systemd/system/rosdeck-robot-bridge.service
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-foxglove-bridge.service" \
+    /etc/systemd/system/rosdeck-foxglove-bridge.service
+fi
 
 systemctl daemon-reload
 if [[ "${ENABLE_SERVICE}" -eq 0 ]]; then
@@ -150,10 +203,19 @@ if [[ "${PROFILE}" == "vbot" ]]; then
 else
   systemctl enable --now rosdeck-robot-bridge.service
 fi
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  systemctl enable --now rosdeck-foxglove-bridge.service
+fi
 sleep 2
 if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
   echo "Bridge failed to stay active. Recent logs:" >&2
   journalctl -u rosdeck-robot-bridge.service -n 80 --no-pager >&2 || true
+  exit 1
+fi
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && \
+  ! systemctl is-active --quiet rosdeck-foxglove-bridge.service; then
+  echo "Foxglove Bridge failed to stay active. Recent logs:" >&2
+  journalctl -u rosdeck-foxglove-bridge.service -n 80 --no-pager >&2 || true
   exit 1
 fi
 
@@ -184,3 +246,6 @@ else
   echo "Boot autostart: enabled with persistent systemd"
 fi
 echo "Logs: journalctl -u rosdeck-robot-bridge -f"
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  echo "Foxglove: ws://<orin-ip>:8765 (systemctl status rosdeck-foxglove-bridge)"
+fi

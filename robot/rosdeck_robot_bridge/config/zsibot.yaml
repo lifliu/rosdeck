@@ -5,8 +5,12 @@
     mapping.enabled: false
     posture.enabled: true
     locomotion.enabled: true
-    # Bridge/SDK client runs on the S100 and talks to motion control on RK3588.
-    # This is the S100 callback/listen port passed to initRobot(), not the
+    # The Bridge process stays alive on Orin, but the vendor SDK remains idle
+    # until the mobile app explicitly acquires control. This lets the factory
+    # remote operate whenever mobile control is released.
+    control.enabled: true
+    # Bridge/SDK client runs on Orin and talks to motion control on RK3588.
+    # This is the Orin callback/listen port passed to initRobot(), not the
     # robot-side command port. RK3588 sdk_config.yaml must target it.
     zsibot.local_ip: 192.168.234.234
     zsibot.local_port: 43988
@@ -19,7 +23,19 @@
     # ZSL-1W forbids posture transitions while moving; send one stop first.
     zsibot.stop_settle_ms: 300
     zsibot.diagnostics_period_sec: 10
+    # App sends a heartbeat every second. A lost phone/network automatically
+    # releases SDK control after this timeout.
+    zsibot.control.lease_timeout_sec: 5
+    zsibot.control.acquire_timeout_sec: 10
+    # Stop, request lie-down and wait for mode 0 before destroying the SDK.
+    zsibot.control.lie_down_on_release: true
+    zsibot.control.release_timeout_sec: 8
+    # RK3588 considers SDK traffic lost after 3 seconds, then returns control
+    # to the factory remote.
+    zsibot.control.remote_recovery_sec: 3
     topics.posture_command: /rosdeck/posture_command
     topics.posture_status: /rosdeck/posture_status
     topics.locomotion_command: /rosdeck/locomotion_command
     topics.locomotion_status: /rosdeck/locomotion_status
+    topics.control_command: /rosdeck/control_command
+    topics.control_status: /rosdeck/control_status

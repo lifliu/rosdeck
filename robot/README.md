@@ -16,7 +16,8 @@ The `zsibot` adapter uses the official native HighLevel SDK and supports:
 - ZSL-1 and ZSL-1W selected at build time;
 - `standUp()` / `lieDown()` posture control;
 - `/vel_cmd` conversion to `move(vx, vy, yaw_rate)`;
-- SDK connection checks before accepting locomotion commands.
+- explicit mobile-control acquisition so the factory remote remains available;
+- heartbeat timeout, safe lie-down/passive fallback and SDK teardown on release.
 
 ## Offline build and deployment
 
@@ -29,7 +30,7 @@ Profiles intentionally use different deployment policies:
 | Profile | Build input | Default install path | Autostart |
 | --- | --- | --- | --- |
 | `vbot` | `vbot_ros2_msgs` | `/userdata/rosdeck` | Persistent `/userdata/startup.sh` restores a runtime systemd unit |
-| `zsibot` | `zsibot_sdk-main` plus model | `/opt/rosdeck` | Normal persistent systemd service |
+| `zsibot` | `zsibot_sdk-main` plus model | `/opt/rosdeck` on Orin | Persistent Bridge and Foxglove systemd services |
 
 `/userdata` and `/userdata/startup.sh` are VBot-specific and are never used by a
 Zsibot bundle.
@@ -113,7 +114,14 @@ a different environment entry point, install with `./deploy.sh --ros-setup PATH`
 
 Zsibot does not source the VBot environment and does not modify anything under
 `/userdata`. It uses the standard ROS setup under `/opt/ros/<distro>` and
-`systemctl enable --now`.
+`systemctl enable --now`. Its installer also verifies that `foxglove_bridge` is
+installed and enables `rosdeck-foxglove-bridge.service` on port 8765. Install a
+missing Humble package before deployment:
+
+```bash
+sudo apt update
+sudo apt install ros-humble-foxglove-bridge
+```
 
 Common operations on the production robot:
 
@@ -121,11 +129,26 @@ Common operations on the production robot:
 systemctl status rosdeck-robot-bridge
 journalctl -u rosdeck-robot-bridge -f
 systemctl restart rosdeck-robot-bridge
+systemctl status rosdeck-foxglove-bridge
+journalctl -u rosdeck-foxglove-bridge -f
 ```
 
 Environment overrides are stored under `<install-prefix>/config/bridge.env`.
 For VBot this is `/userdata/rosdeck/config`; for Zsibot it is
-`/opt/rosdeck/config`.
+`/opt/rosdeck/config`. Both the robot Bridge and Foxglove systemd services read
+this same file, so `ROS_DOMAIN_ID`, `ROS_LOCALHOST_ONLY`, and an optional
+`RMW_IMPLEMENTATION` cannot silently diverge between them.
+
+For the current Zsibot ROS graph, a fresh deployment writes these defaults:
+
+```text
+ROS_DOMAIN_ID=24
+ROS_LOCALHOST_ONLY=0
+RMW_IMPLEMENTATION=rmw_zenoh_cpp
+```
+
+The installer preserves an existing `bridge.env`; edit that file explicitly
+when migrating an older install that already contains Domain 0 or another RMW.
 
 `scripts/build.sh` and `scripts/deploy.sh` remain developer conveniences for a
 board that has colcon. Production deployment should use the generated archive.
@@ -157,19 +180,19 @@ The current two-board Zsibot layout is configured as follows:
 
 | Role | Address | Responsibility |
 | --- | --- | --- |
-| Android app | Connects to Foxglove on S100 | Publishes the stable Rosdeck topics and `/vel_cmd` |
-| S100 Bridge/SDK client | `192.168.234.234:43988` | Receives SDK traffic and converts ROS commands through the native HighLevel SDK |
+| Android app | Connects to Foxglove on Orin port 8765 | Publishes the stable Rosdeck topics and `/vel_cmd` |
+| Orin Bridge/SDK client | `192.168.234.234:43988` | Runs both services and creates the native HighLevel SDK only while mobile control is acquired |
 | RK3588 motion-control computer | `192.168.234.1` | Runs the robot motion-control server |
 
 The RK3588 file `/opt/export/config/sdk_config.yaml` must send SDK data back to
-the S100 client:
+the Orin client:
 
 ```yaml
 target_ip: "192.168.234.234"
 target_port: 43988
 ```
 
-The matching S100 Bridge parameters are already the defaults in
+The matching Orin Bridge parameters are already the defaults in
 `config/zsibot.yaml`:
 
 ```yaml
@@ -178,7 +201,7 @@ zsibot.local_port: 43988
 zsibot.dog_ip: 192.168.234.1
 ```
 
-`zsibot.local_port` is the S100 callback/listen port passed as `local_port` to
+`zsibot.local_port` is the Orin callback/listen port passed as `local_port` to
 the vendor `initRobot()` API. The ZSL-1W SDK demo uses `43988` for this value.
 Do not replace it with the RK3588-side command port `43998`; the robot endpoint
 is handled internally by the vendor SDK and is not an `initRobot()` argument.
@@ -198,10 +221,10 @@ grep -E 'local_(ip|port)|dog_ip' /opt/rosdeck/config/bridge.yaml
 journalctl -u rosdeck-robot-bridge -n 100 --no-pager
 ```
 
-The startup log must say `model=zsl-1w local=192.168.234.234:43988`. The
-launcher waits up to 60 seconds for `192.168.234.234` to be assigned before it
-initializes the vendor SDK, avoiding the permanent `bind: Cannot assign
-requested address` state seen when systemd starts before the NIC is ready.
+At boot the startup log must say `Zsibot SDK is idle until control is acquired`;
+it must not print `mp_recv_cp` until the App requests control. Each acquisition
+checks that `192.168.234.234` is assigned before calling `initRobot()`, so an
+early network error is retryable and does not require restarting the service.
 
 The adapter logs every posture/LOCO result and throttled velocity samples. It
 also emits a ten-second diagnostic containing the SDK connection, control mode,
@@ -215,7 +238,28 @@ open. The Zsibot adapter now sends only the first stop after real motion and
 ignores subsequent idle zeros, because repeatedly invoking the vendor `move()`
 API can interfere with posture state transitions. Touching the joystick sends a
 LOCO request; for Zsibot this automatically calls `standUp()` when necessary and
-waits for standing mode before allowing non-zero velocity through.
+waits for standing mode before allowing non-zero velocity through. The App also
+blocks posture and non-zero velocity locally until it owns the control lease.
+
+### Zsibot control ownership
+
+The Bridge process is always running, but the vendor `HighLevel` object is not.
+The App's **Take Control** button creates the SDK object and starts a one-second
+heartbeat. Only that App session can renew or release the lease. A normal
+release sends zero velocity, requests lie-down, waits for passive mode, and
+uses `passive()` as a timeout/error fallback before destroying the SDK object.
+The Bridge then exposes a three-second cooldown matching the RK3588 SDK-loss
+watchdog before reporting that the factory remote is available.
+
+If the phone crashes, loses Wi-Fi, closes the connection, or goes into the
+background, the five-second lease expires and runs the same safe release path.
+Another phone cannot release or renew the current owner's lease. Relevant
+parameters are under `zsibot.control.*` in `config/zsibot.yaml`.
+
+The control status is broadcast every 500 ms in addition to direct command
+responses. This handles the short Foxglove publisher-discovery race during App
+connection and lets a late subscriber immediately recover the current owner or
+cooldown state.
 
 All addresses are on `192.168.234.0/24`, so the vendor `SDK_CLIENT_IP` override
 for cross-subnet control is not required. If either board's address or the UDP
@@ -232,6 +276,8 @@ the Android app does not contain or link the Zsibot SDK.
 | Robot → app | `/rosdeck/posture_status` | `std_msgs/msg/String` | `success:*`, `error:*` |
 | App → robot | `/rosdeck/locomotion_command` | `std_msgs/msg/String` | `loco` |
 | Robot → app | `/rosdeck/locomotion_status` | `std_msgs/msg/String` | `success:loco`, `error:loco:*` |
+| App → robot | `/rosdeck/control_command` | `std_msgs/msg/String` | `status:<id>`, `acquire:<id>`, `heartbeat:<id>`, `release:<id>` |
+| Robot → app | `/rosdeck/control_status` | `std_msgs/msg/String` | `available`, `acquiring:<id>`, `acquired:<id>`, `releasing:<id>`, `cooldown:<seconds>`, `error:*` |
 
 Keeping these topics stable means future robot support only requires another
 C++ `RobotAdapter`; the Android app and Foxglove connection do not change.

@@ -23,6 +23,7 @@ import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useGamepadInput } from "../../hooks/useGamepadInput";
 import { MappingControl } from "../../components/MappingControl";
 import { PostureControl } from "../../components/PostureControl";
+import { ControlAuthorityButton } from "../../components/ControlAuthority";
 import { useTranslation } from "../../lib/i18n";
 
 function ConnectionDot() {
@@ -145,7 +146,7 @@ export default function ControlScreen() {
 
   const handleExitDemo = () => {
     disconnect();
-    router.push("/(tabs)/");
+    router.push("/(tabs)");
   };
 
   useEffect(() => {
@@ -231,6 +232,7 @@ export default function ControlScreen() {
 
       {!isLandscape && (
         <View style={styles.robotActions}>
+          <ControlAuthorityButton />
           <PostureControl />
           <MappingControl />
         </View>
@@ -238,6 +240,7 @@ export default function ControlScreen() {
 
       {isLandscape && (
         <View style={styles.landscapeActions}>
+          <ControlAuthorityButton compact />
           <PostureControl compact />
           <MappingControl compact />
         </View>
@@ -296,6 +299,7 @@ const styles = StyleSheet.create({
   },
   robotActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'flex-end',
     paddingHorizontal: 12,

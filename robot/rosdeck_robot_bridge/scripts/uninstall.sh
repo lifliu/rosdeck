@@ -13,6 +13,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 systemctl disable --now rosdeck-robot-bridge.service 2>/dev/null || true
+systemctl disable --now rosdeck-foxglove-bridge.service 2>/dev/null || true
 if [[ "${BUNDLE_PROFILE}" == "vbot" && -f /userdata/startup.sh ]]; then
   sed -i '/# ROSDECK ROBOT BRIDGE/d;/bootstrap-rosdeck-service/d' /userdata/startup.sh
 fi
@@ -20,9 +21,17 @@ if [[ -f /run/systemd/system/rosdeck-robot-bridge.service ]]; then
   mv /run/systemd/system/rosdeck-robot-bridge.service \
     /run/systemd/system/rosdeck-robot-bridge.service.disabled
 fi
+if [[ -f /run/systemd/system/rosdeck-foxglove-bridge.service ]]; then
+  mv /run/systemd/system/rosdeck-foxglove-bridge.service \
+    /run/systemd/system/rosdeck-foxglove-bridge.service.disabled
+fi
 if [[ -f /etc/systemd/system/rosdeck-robot-bridge.service ]]; then
   mv /etc/systemd/system/rosdeck-robot-bridge.service \
     /etc/systemd/system/rosdeck-robot-bridge.service.disabled
+fi
+if [[ -f /etc/systemd/system/rosdeck-foxglove-bridge.service ]]; then
+  mv /etc/systemd/system/rosdeck-foxglove-bridge.service \
+    /etc/systemd/system/rosdeck-foxglove-bridge.service.disabled
 fi
 systemctl daemon-reload
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=Rosdeck Foxglove WebSocket bridge
+Wants=network-online.target rosdeck-robot-bridge.service
+After=network-online.target rosdeck-robot-bridge.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
+EnvironmentFile=-@INSTALL_PREFIX@/config/foxglove.env
+ExecStart=@INSTALL_PREFIX@/bin/run-rosdeck-foxglove-bridge
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

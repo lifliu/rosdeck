@@ -139,7 +139,7 @@ export function LandscapeTabRail() {
             accessibilityRole="button"
             accessibilityState={isFocused ? { selected: true } : {}}
             onPress={() => {
-              if (routeName === "index") router.push("/(tabs)/");
+              if (routeName === "index") router.push("/(tabs)");
               else router.push(`/(tabs)/${routeName}` as any);
             }}
             style={[styles.railTab, isFocused && styles.railTabActive]}

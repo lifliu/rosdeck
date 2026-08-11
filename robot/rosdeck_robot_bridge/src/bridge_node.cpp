@@ -40,6 +40,18 @@ std::string safe_reason(std::string value)
   return value.empty() ? "unknown_error" : value;
 }
 
+bool valid_client_id(const std::string & value)
+{
+  if (value.empty() || value.size() > 64) {
+    return false;
+  }
+  return std::all_of(value.begin(), value.end(), [](const char character) {
+    return (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z') ||
+           (character >= '0' && character <= '9') || character == '-' || character == '_';
+  });
+}
+
 class UnavailableAdapter final : public RobotAdapter
 {
 public:
@@ -72,6 +84,7 @@ public:
     mapping_enabled_ = declare_parameter<bool>("mapping.enabled", true);
     posture_enabled_ = declare_parameter<bool>("posture.enabled", true);
     locomotion_enabled_ = declare_parameter<bool>("locomotion.enabled", true);
+    control_enabled_ = declare_parameter<bool>("control.enabled", adapter_name == "zsibot");
     const auto default_mapping_script = adapter_name == "vbot" ?
       "/userdata/2_slam/1_mapping.sh" : "";
     mapping_script_ = declare_parameter<std::string>(
@@ -103,6 +116,10 @@ public:
       "topics.locomotion_command", "/rosdeck/locomotion_command");
     const auto locomotion_status_topic = declare_parameter<std::string>(
       "topics.locomotion_status", "/rosdeck/locomotion_status");
+    const auto control_command_topic = declare_parameter<std::string>(
+      "topics.control_command", "/rosdeck/control_command");
+    const auto control_status_topic = declare_parameter<std::string>(
+      "topics.control_status", "/rosdeck/control_status");
 
 #ifdef ROSDECK_HAS_VBOT_ADAPTER
     if (adapter_name == "vbot") {
@@ -142,12 +159,28 @@ public:
           request_locomotion(message->data);
         });
     }
+    if (control_enabled_) {
+      control_status_ = create_publisher<std_msgs::msg::String>(control_status_topic, 10);
+      control_command_ = create_subscription<std_msgs::msg::String>(
+        control_command_topic, 10,
+        [this](const std_msgs::msg::String::SharedPtr message) {
+          request_control(message->data);
+        });
+      // Periodically repeat the authority state. A phone may advertise and
+      // publish its first status request before foxglove_bridge has finished
+      // creating the corresponding ROS publisher, so relying on a single
+      // startup/status-change message leaves late subscribers undetected.
+      control_status_timer_ = create_wall_timer(
+        500ms, [this]() {publish_control_status_if_changed(true);});
+      publish_control_status_if_changed(true);
+    }
 
     RCLCPP_INFO(
       get_logger(),
-      "Ready: adapter=%s mapping=%s posture=%s locomotion=%s",
+      "Ready: adapter=%s mapping=%s posture=%s locomotion=%s control_lease=%s",
       adapter_->name().c_str(), mapping_enabled_ ? "on" : "off",
-      posture_enabled_ ? "on" : "off", locomotion_enabled_ ? "on" : "off");
+      posture_enabled_ ? "on" : "off", locomotion_enabled_ ? "on" : "off",
+      control_enabled_ && adapter_->requires_control_lease() ? "on" : "off");
   }
 
   ~BridgeNode() override
@@ -160,9 +193,79 @@ private:
     const rclcpp::Publisher<std_msgs::msg::String>::SharedPtr & publisher,
     const std::string & value)
   {
+    if (!publisher) {
+      return;
+    }
     std_msgs::msg::String message;
     message.data = value;
     publisher->publish(message);
+  }
+
+  void request_control(const std::string & command)
+  {
+    const auto separator = command.find(':');
+    const std::string action = command.substr(0, separator);
+    const std::string client_id = separator == std::string::npos ? "" :
+      command.substr(separator + 1);
+    if ((action != "acquire" && action != "release" && action != "heartbeat" &&
+      action != "status") || !valid_client_id(client_id))
+    {
+      RCLCPP_WARN(
+        get_logger(), "Control command rejected: malformed action=%s client=%s",
+        safe_reason(action).c_str(), safe_reason(client_id).c_str());
+      publish(control_status_, "error:command:unknown:malformed_request");
+      return;
+    }
+
+    if (action == "status") {
+      publish_control_status_if_changed(true);
+      return;
+    }
+
+    if (action != "heartbeat") {
+      RCLCPP_INFO(
+        get_logger(), "Control command received: action=%s client=%s current=%s",
+        action.c_str(), client_id.c_str(), adapter_->control_status().c_str());
+    }
+    adapter_->request_control(
+      action, client_id,
+      [this, action, client_id](bool success, const std::string & reason) {
+        if (action == "heartbeat") {
+          if (!success) {
+            RCLCPP_WARN_THROTTLE(
+              get_logger(), *get_clock(), 2000,
+              "Control heartbeat rejected: client=%s reason=%s",
+              client_id.c_str(), reason.c_str());
+          }
+          return;
+        }
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(), "Control command completed: action=%s client=%s reason=%s",
+            action.c_str(), client_id.c_str(), reason.c_str());
+        } else {
+          RCLCPP_ERROR(
+            get_logger(), "Control command failed: action=%s client=%s reason=%s",
+            action.c_str(), client_id.c_str(), reason.c_str());
+          publish(
+            control_status_,
+            "error:" + action + ':' + client_id + ':' + safe_reason(reason));
+        }
+      });
+    publish_control_status_if_changed();
+  }
+
+  void publish_control_status_if_changed(bool force = false)
+  {
+    if (!control_status_) {
+      return;
+    }
+    const std::string status = adapter_->control_status();
+    if (!force && status == last_control_status_) {
+      return;
+    }
+    last_control_status_ = status;
+    publish(control_status_, status);
   }
 
   void request_locomotion(std::string command)
@@ -412,6 +515,7 @@ private:
   bool mapping_enabled_{false};
   bool posture_enabled_{false};
   bool locomotion_enabled_{false};
+  bool control_enabled_{false};
   std::string mapping_script_;
   std::string mapping_log_;
   std::chrono::seconds mapping_stop_timeout_{30};
@@ -424,13 +528,17 @@ private:
   bool mapping_stop_requested_{false};
   std::chrono::steady_clock::time_point mapping_stop_requested_at_{};
   std::thread mapping_waiter_;
+  std::string last_control_status_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mapping_status_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr posture_status_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr locomotion_status_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr control_status_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mapping_command_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr posture_command_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr locomotion_command_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_;
+  rclcpp::TimerBase::SharedPtr control_status_timer_;
 };
 
 }  // namespace

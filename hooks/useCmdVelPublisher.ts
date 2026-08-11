@@ -11,6 +11,10 @@ import {
   resetLocomotionModeState,
 } from '../lib/locomotion-mode';
 import { useLocomotionModeStore } from '../stores/useLocomotionModeStore';
+import {
+  mobileControlBlocksCommands,
+  useControlAuthorityStore,
+} from '../stores/useControlAuthorityStore';
 
 // Module-level singletons — one interval per topic, shared across all joystick instances.
 // Using a Set of publish fns so that when one joystick unmounts, the interval
@@ -63,12 +67,15 @@ export function useCmdVelPublisher(
   prepareLocomotion: () => void;
   locoStatus: ReturnType<typeof useLocomotionModeStore.getState>['status'];
   locoError: string | null;
+  controlBlocked: boolean;
 } {
   const ros = useRosStore((s) => s.connection.ros);
   const transport = useRosStore((s) => s.transport);
   const status = useRosStore((s) => s.connection.status);
   const locoStatus = useLocomotionModeStore((s) => s.status);
   const locoError = useLocomotionModeStore((s) => s.error);
+  const authorityStatus = useControlAuthorityStore((s) => s.status);
+  const authorityOwner = useControlAuthorityStore((s) => s.ownerId);
   const roslibTopicRef = useRef<any>(null);
   // Track which messageType the current roslibTopic was advertised with,
   // so we can guard against the render→effect race and config mismatches.
@@ -115,6 +122,9 @@ export function useCmdVelPublisher(
       : 'geometry_msgs/msg/Twist';
 
     const hasMotion = Object.values(axes).some((value) => Math.abs(value ?? 0) > 0.0001);
+    if (hasMotion && mobileControlBlocksCommands()) {
+      return;
+    }
     if (requireLocoMode && hasMotion && transport && status === 'connected' &&
         !isLocoModeReady(transport)) {
       void ensureLocoMode(transport)
@@ -167,14 +177,16 @@ export function useCmdVelPublisher(
   }, [topic]);
 
   const prepareLocomotion = useCallback(() => {
-    if (!requireLocoMode || !transport || status !== 'connected') return;
+    if (!requireLocoMode || !transport || status !== 'connected' ||
+      mobileControlBlocksCommands()) return;
     void ensureLocoMode(transport).catch(() => {});
-  }, [requireLocoMode, transport, status]);
+  }, [requireLocoMode, transport, status, authorityStatus, authorityOwner]);
 
   return {
     publishNow: () => publishRef.current(),
     prepareLocomotion,
     locoStatus,
     locoError,
+    controlBlocked: mobileControlBlocksCommands(),
   };
 }

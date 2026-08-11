@@ -1,4 +1,4 @@
-import { EventEmitter, type Subscription } from 'expo-modules-core';
+import { EventEmitter, type EventSubscription } from 'expo-modules-core';
 import ExpoGamepadModule from './ExpoGamepadModule';
 
 export type GamepadStickEvent = {
@@ -13,16 +13,21 @@ export type GamepadConnectionEvent = {
   name: string;
 };
 
-const emitter = new EventEmitter(ExpoGamepadModule);
+type GamepadEvents = {
+  onGamepadAxis: (event: GamepadStickEvent) => void;
+  onGamepadConnection: (event: GamepadConnectionEvent) => void;
+};
+
+const emitter = new EventEmitter<GamepadEvents>(ExpoGamepadModule);
 
 export function addAxisListener(
   listener: (event: GamepadStickEvent) => void,
-): Subscription {
+): EventSubscription {
   return emitter.addListener('onGamepadAxis', listener);
 }
 
 export function addConnectionListener(
   listener: (event: GamepadConnectionEvent) => void,
-): Subscription {
+): EventSubscription {
   return emitter.addListener('onGamepadConnection', listener);
 }

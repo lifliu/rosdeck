@@ -9,6 +9,8 @@
     mapping.kill_timeout_sec: 5
     posture.enabled: true
     locomotion.enabled: true
+    # VBot does not share its SDK control channel with a factory remote.
+    control.enabled: false
     vbot.locomotion_service: /locomotion/set_run_mode
     # Empty means auto-discover software_msgs/srv/LowlevelAction.
     vbot.posture_service: ""
