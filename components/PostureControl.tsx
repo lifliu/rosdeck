@@ -15,6 +15,10 @@ export const POSTURE_COMMANDS = {
   lieDown: { data: 'lie_down' },
 } as const;
 
+export function buildPostureCommand(command: PostureCommand) {
+  return { data: `${POSTURE_COMMANDS[command].data}:${CONTROL_CLIENT_ID}` };
+}
+
 export type PostureCommand = keyof typeof POSTURE_COMMANDS;
 
 const ACK_TIMEOUT_MS = 10000;
@@ -84,7 +88,11 @@ export function PostureControl({ compact = false }: { compact?: boolean }) {
     }
     pendingRef.current = command;
     setPending(command);
-    transport.publish(POSTURE_COMMAND_TOPIC, POSTURE_MESSAGE_TYPE, POSTURE_COMMANDS[command]);
+    transport.publish(
+      POSTURE_COMMAND_TOPIC,
+      POSTURE_MESSAGE_TYPE,
+      buildPostureCommand(command),
+    );
     clearTimeoutRef();
     timeoutRef.current = setTimeout(() => {
       pendingRef.current = null;

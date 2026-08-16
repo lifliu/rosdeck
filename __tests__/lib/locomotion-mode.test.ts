@@ -45,6 +45,7 @@ describe('VBot locomotion mode gate', () => {
       LOCOMOTION_MESSAGE_TYPE,
       LOCOMOTION_COMMAND,
     );
+    expect(LOCOMOTION_COMMAND.data).toMatch(/^loco:app-/);
     expect(transport.callService).not.toHaveBeenCalled();
     expect(isLocoModeReady(transport)).toBe(true);
     expect(useLocomotionModeStore.getState().status).toBe('ready');

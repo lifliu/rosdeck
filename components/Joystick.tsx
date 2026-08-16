@@ -17,6 +17,7 @@ import { useGamepadStore } from '../stores/useGamepadStore';
 import type { WidgetProps } from "../types/layout";
 import { registerTouchEntry, unregisterTouchEntry, updateTouchBounds } from "../lib/touch-dispatcher";
 import { useTranslation } from '../lib/i18n';
+import { defaultUsesTwistStamped, getTeleopSafetyPolicy } from '../lib/teleop';
 
 const lightTick = () => {
   if (Platform.OS === "ios") {
@@ -54,7 +55,8 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const [showHint, setShowHint] = useState(true);
 
   const cmdVelTopic = props?.config?.topic || DEFAULTS.cmdVelTopic;
-  const useTwistStamped = props?.config?.useTwistStamped ?? false;
+  const useTwistStamped = props?.config?.useTwistStamped ??
+    defaultUsesTwistStamped(cmdVelTopic);
   const frameId = props?.config?.frameId || "base_link";
   const xAxisGroup: 'linear' | 'angular' = props?.config?.xAxisGroup ?? 'angular';
   const xAxisComponent: 'x' | 'y' | 'z' = props?.config?.xAxisComponent ?? 'z';
@@ -64,7 +66,10 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const yAxisScale: number = props?.config?.yAxisScale ?? 0.5;
   const xAxisField = `${xAxisGroup}.${xAxisComponent}` as TwistField;
   const yAxisField = `${yAxisGroup}.${yAxisComponent}` as TwistField;
-  const requireLocoMode = props?.config?.requireLocoMode ?? cmdVelTopic === '/vel_cmd';
+  const requireLocoMode = getTeleopSafetyPolicy(
+    cmdVelTopic,
+    props?.config?.requireLocoMode,
+  ).requireLocomotionMode;
   const { t } = useTranslation();
 
   const setAxes = useCmdVelStore((s) => s.setAxes);

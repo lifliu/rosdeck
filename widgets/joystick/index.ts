@@ -10,7 +10,7 @@ export const joystickWidget: WidgetDefinition = {
   supportedMessageTypes: [],
   defaultConfig: {
     topic: DEFAULTS.cmdVelTopic,
-    useTwistStamped: false,
+    useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
     frameId: 'base_link',
     xAxisGroup: 'angular',
     xAxisComponent: 'z',

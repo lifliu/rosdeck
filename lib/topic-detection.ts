@@ -1,4 +1,5 @@
 import type { TopicInfo } from './transport';
+import { getTeleopSafetyPolicy, selectPreferredTeleopTarget } from './teleop';
 
 export interface DetectedTopic {
   name: string;
@@ -17,15 +18,6 @@ const TYPE_TO_WIDGET: Array<{ pattern: RegExp; widgetType: string; configKey: st
   { pattern: /DiagnosticArray/, widgetType: 'diagnostics', configKey: 'topic' },
   { pattern: /BatteryState/, widgetType: 'battery', configKey: 'topic' },
 ];
-
-function hasTwist(topics: TopicInfo[]): TopicInfo | undefined {
-  const twistTopics = topics.filter((t) => /Twist/.test(t.type));
-  return twistTopics.find(
-    (t) => t.name === '/vel_cmd' && t.type === 'geometry_msgs/msg/Twist',
-  ) ?? twistTopics.find((t) => t.name === '/vel_cmd')
-    ?? twistTopics.find((t) => t.name === '/cmd_vel')
-    ?? twistTopics[0];
-}
 
 export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
   if (topics.length === 0) return null;
@@ -56,12 +48,16 @@ export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
     widgetConfigs.camera = { topic: cameraTopic.name, source: 'transport' };
   }
 
-  const twistTopic = hasTwist(topics);
-  if (twistTopic) {
-    detected.push({ name: twistTopic.name, type: twistTopic.type, widgetType: 'joystick' });
+  const teleopTarget = selectPreferredTeleopTarget(topics);
+  if (teleopTarget) {
+    const type = teleopTarget.useTwistStamped
+      ? 'geometry_msgs/msg/TwistStamped'
+      : 'geometry_msgs/msg/Twist';
+    detected.push({ name: teleopTarget.topic, type, widgetType: 'joystick' });
     widgetConfigs.joystick = {
-      topic: twistTopic.name,
-      useTwistStamped: /TwistStamped$/.test(twistTopic.type),
+      topic: teleopTarget.topic,
+      useTwistStamped: teleopTarget.useTwistStamped,
+      requireLocoMode: getTeleopSafetyPolicy(teleopTarget.topic).requireLocomotionMode,
     };
   }
 
@@ -69,7 +65,7 @@ export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
 
   const hasImage = detected.some((d) => d.widgetType === 'camera');
   const hasMap = detected.some((d) => d.widgetType === 'map');
-  const hasTwistTopic = !!twistTopic;
+  const hasTwistTopic = !!teleopTarget;
 
   let presetId: string;
   if (hasImage && hasMap && hasTwistTopic) {

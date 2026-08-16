@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Modal,
   Platform,
@@ -15,6 +15,14 @@ import { LayoutRenderer } from "../../components/LayoutRenderer";
 import { TopicSuggestionModal } from "../../components/TopicSuggestionModal";
 import { theme } from "../../constants/theme";
 import { suggestLayout, type TopicSuggestion } from "../../lib/topic-detection";
+import { OMNI_TELEOP_TOPIC, selectPreferredTeleopTarget } from "../../lib/teleop";
+import {
+  acceptTopicSuggestionSession,
+  createTopicSuggestionSession,
+  refreshTopicSuggestionSession,
+  topicSuggestionSourceIsCurrent,
+  type TopicSuggestionSession,
+} from "../../lib/topic-suggestion-session";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useOnboardingStore } from "../../stores/useOnboardingStore";
 import { useOrientation } from "../../hooks/useOrientation";
@@ -24,6 +32,7 @@ import { useGamepadInput } from "../../hooks/useGamepadInput";
 import { MappingControl } from "../../components/MappingControl";
 import { PostureControl } from "../../components/PostureControl";
 import { ControlAuthorityButton } from "../../components/ControlAuthority";
+import { SafetyControl } from "../../components/SafetyControl";
 import { useTranslation } from "../../lib/i18n";
 
 function ConnectionDot() {
@@ -139,6 +148,8 @@ export default function ControlScreen() {
 
   const [suggestion, setSuggestion] = useState<TopicSuggestion | null>(null);
   const [showSuggestion, setShowSuggestion] = useState(false);
+  const [initializedUrl, setInitializedUrl] = useState<string | null>(null);
+  const suggestionSessionRef = useRef<TopicSuggestionSession | null>(null);
   const suggestedForUrls = useOnboardingStore((s) => s.suggestedForUrls);
   const addSuggestedUrl = useOnboardingStore((s) => s.addSuggestedUrl);
   const setActiveLayout = useLayoutStore((s) => s.setActiveLayout);
@@ -150,52 +161,132 @@ export default function ControlScreen() {
   };
 
   useEffect(() => {
-    if (url && status === "connected") {
-      initForRobot(url);
+    let cancelled = false;
+    setInitializedUrl(null);
+    setSuggestion(null);
+    suggestionSessionRef.current = null;
+    setShowSuggestion(false);
+    if (!url || status !== "connected") return () => { cancelled = true; };
+
+    const initialize = async () => {
+      const committed = await initForRobot(url);
+      const currentConnection = useRosStore.getState().connection;
+      if (cancelled || !committed || currentConnection.status !== "connected" ||
+        currentConnection.url !== url) return;
+      setInitializedUrl(url);
       if (!url.startsWith("demo://")) {
         useOnboardingStore.getState().setFirstLaunchDone();
       }
-    }
-  }, [url, status]);
+    };
+    void initialize();
+    return () => { cancelled = true; };
+  }, [url, status, initForRobot]);
 
   const autoDetectTopics = useSettingsStore((s) => s.autoDetectTopics);
   useEffect(() => {
-    if (!autoDetectTopics) return;
-    if (status !== "connected" || !url || url.startsWith("demo://")) return;
-    if (suggestedForUrls.includes(url)) return;
+    if (status !== "connected" || !url || initializedUrl !== url ||
+      url.startsWith("demo://")) return;
 
-    const detectTopics = async () => {
-      try {
-        const topics = await useRosStore.getState().getTopics();
-        const result = suggestLayout(topics);
-        if (result) {
-          setSuggestion(result);
-          setShowSuggestion(true);
-        }
-        addSuggestedUrl(url);
-      } catch {}
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    let suggestionHandled = !autoDetectTopics || suggestedForUrls.includes(url);
+    const expectedTransport = useRosStore.getState().transport;
+
+    const stillCurrent = () => {
+      const rosState = useRosStore.getState();
+      return !cancelled && rosState.connection.status === "connected" &&
+        rosState.connection.url === url && rosState.transport === expectedTransport &&
+        useLayoutStore.getState().robotUrl === url;
     };
 
-    const timer = setTimeout(detectTopics, 500);
-    return () => clearTimeout(timer);
-  }, [status, url, autoDetectTopics]);
+    const detectTopics = async () => {
+      ++attempts;
+      try {
+        const topics = await useRosStore.getState().getTopics();
+        if (!stillCurrent()) return;
+        const teleopTarget = selectPreferredTeleopTarget(topics);
+        if (teleopTarget?.topic === OMNI_TELEOP_TOPIC) {
+          await useLayoutStore.getState().migrateLegacyTeleopForUnifiedRobot(url);
+          if (!stillCurrent()) return;
+          const nextSession = refreshTopicSuggestionSession(
+            suggestionSessionRef.current,
+            { url, transport: expectedTransport },
+            suggestLayout(topics),
+          );
+          if (nextSession !== suggestionSessionRef.current) {
+            suggestionSessionRef.current = nextSession;
+            setSuggestion(nextSession?.suggestion ?? null);
+          }
+        }
+
+        if (!suggestionHandled) {
+          const result = suggestLayout(topics);
+          if (result) {
+            suggestionSessionRef.current = createTopicSuggestionSession(
+              { url, transport: expectedTransport },
+              result,
+            );
+            setSuggestion(result);
+            setShowSuggestion(true);
+          }
+          addSuggestedUrl(url);
+          suggestionHandled = true;
+        }
+      } catch {}
+
+      // ROS graph discovery is eventually consistent. Retry the capability
+      // check for five seconds so an existing ZsiBot layout is not stranded
+      // merely because rosapi answered before the arbiter appeared.
+      if (stillCurrent() && attempts < 5) {
+        retryTimer = setTimeout(detectTopics, 1000);
+      }
+    };
+
+    retryTimer = setTimeout(detectTopics, 500);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [status, url, initializedUrl, autoDetectTopics, addSuggestedUrl]);
 
   const handleAcceptSuggestion = () => {
-    if (!suggestion) return;
-    setActiveLayout(suggestion.presetId);
+    const currentRos = useRosStore.getState();
+    const acceptedSession = acceptTopicSuggestionSession(
+      suggestionSessionRef.current,
+      {
+        url: currentRos.connection.url,
+        transport: currentRos.transport,
+        layoutRobotUrl: useLayoutStore.getState().robotUrl,
+      },
+    );
+    if (!acceptedSession) {
+      setShowSuggestion(false);
+      setSuggestion(null);
+      suggestionSessionRef.current = null;
+      return;
+    }
+    const { source, suggestion: acceptedSuggestion } = acceptedSession;
+    setActiveLayout(acceptedSuggestion.presetId);
 
     // Inject detected topic names into widget configs
     setTimeout(() => {
+      const latestRos = useRosStore.getState();
+      if (!topicSuggestionSourceIsCurrent(source, {
+        url: latestRos.connection.url,
+        transport: latestRos.transport,
+        layoutRobotUrl: useLayoutStore.getState().robotUrl,
+      })) return;
       const updated = useLayoutStore.getState().getActiveLayout();
       if (updated) {
         const applyConfigs = (node: any) => {
           if (
             node.type === "widget" &&
-            suggestion.widgetConfigs[node.widgetType]
+            acceptedSuggestion.widgetConfigs[node.widgetType]
           ) {
             updateWidgetConfig(node.id, {
               ...node.config,
-              ...suggestion.widgetConfigs[node.widgetType],
+              ...acceptedSuggestion.widgetConfigs[node.widgetType],
             });
           }
           if (node.type === "split") {
@@ -208,11 +299,13 @@ export default function ControlScreen() {
 
     setShowSuggestion(false);
     setSuggestion(null);
+    suggestionSessionRef.current = null;
   };
 
   const handleDismissSuggestion = () => {
     setShowSuggestion(false);
     setSuggestion(null);
+    suggestionSessionRef.current = null;
   };
 
   return (
@@ -233,6 +326,7 @@ export default function ControlScreen() {
       {!isLandscape && (
         <View style={styles.robotActions}>
           <ControlAuthorityButton />
+          <SafetyControl />
           <PostureControl />
           <MappingControl />
         </View>
@@ -241,6 +335,7 @@ export default function ControlScreen() {
       {isLandscape && (
         <View style={styles.landscapeActions}>
           <ControlAuthorityButton compact />
+          <SafetyControl compact />
           <PostureControl compact />
           <MappingControl compact />
         </View>

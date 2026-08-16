@@ -77,7 +77,46 @@ describe('suggestLayout', () => {
     expect(result?.widgetConfigs.camera?.topic).toBe('/usb_cam/compressed');
   });
 
-  it('prefers the VBot Humble /vel_cmd Twist interface', () => {
+  it('prefers the unified teleop TwistStamped input over legacy velocity topics', () => {
+    const result = suggestLayout([
+      { name: '/navigation/cmd_vel', type: 'geometry_msgs/msg/Twist' },
+      { name: '/cmd_vel', type: 'geometry_msgs/msg/TwistStamped' },
+      { name: '/vel_cmd', type: 'geometry_msgs/msg/Twist' },
+      { name: '/omni/cmd_vel/teleop', type: 'geometry_msgs/msg/Twist' },
+      { name: '/omni/cmd_vel/teleop', type: 'geometry_msgs/msg/TwistStamped' },
+    ]);
+    expect(result?.widgetConfigs.joystick).toEqual({
+      topic: '/omni/cmd_vel/teleop',
+      useTwistStamped: true,
+      requireLocoMode: true,
+    });
+  });
+
+  it('does not treat a non-canonical unified Twist topic as arbiter capability', () => {
+    const result = suggestLayout([
+      { name: '/vel_cmd', type: 'geometry_msgs/msg/Twist' },
+      { name: '/omni/cmd_vel/teleop', type: 'geometry_msgs/msg/Twist' },
+    ]);
+    expect(result?.widgetConfigs.joystick).toEqual({
+      topic: '/vel_cmd',
+      useTwistStamped: false,
+      requireLocoMode: true,
+    });
+  });
+
+  it('uses the published arbiter status as capability when Foxglove omits subscriber-only input', () => {
+    const result = suggestLayout([
+      { name: '/vel_cmd', type: 'geometry_msgs/msg/Twist' },
+      { name: '/omni/cmd_vel/arbiter_status', type: 'std_msgs/msg/String' },
+    ]);
+    expect(result?.widgetConfigs.joystick).toEqual({
+      topic: '/omni/cmd_vel/teleop',
+      useTwistStamped: true,
+      requireLocoMode: true,
+    });
+  });
+
+  it('falls back to the old VBot /vel_cmd Twist interface', () => {
     const result = suggestLayout([
       { name: '/navigation/cmd_vel', type: 'geometry_msgs/msg/Twist' },
       { name: '/cmd_vel', type: 'geometry_msgs/msg/TwistStamped' },
@@ -86,6 +125,7 @@ describe('suggestLayout', () => {
     expect(result?.widgetConfigs.joystick).toEqual({
       topic: '/vel_cmd',
       useTwistStamped: false,
+      requireLocoMode: true,
     });
   });
 
