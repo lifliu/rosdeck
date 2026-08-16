@@ -15,9 +15,21 @@ The `zsibot` adapter uses the official native HighLevel SDK and supports:
 
 - ZSL-1 and ZSL-1W selected at build time;
 - `standUp()` / `lieDown()` posture control;
-- `/vel_cmd` conversion to `move(vx, vy, yaw_rate)`;
+- an authority-gated `/omni/cmd_vel/final` conversion to
+  `move(vx, vy, yaw_rate)`;
 - explicit mobile-control acquisition so the factory remote remains available;
 - heartbeat timeout, safe lie-down/passive fallback and SDK teardown on release.
+
+The package also installs a separate `rosdeck_safety_supervisor_node`. It is the
+only product component allowed to publish the reliable periodic
+`/omni/safety/estop` heartbeat consumed by the Bridge. A host-wide lock rejects
+a second supervisor process, while the Bridge rejects multiple ROS publishers.
+
+The supported product entry point is `product_bringup.launch.py`; it starts the
+Gateway and safety supervisor as one service boundary. Source and offline
+deployment launchers use this entry point rather than executing the Gateway
+binary directly. OpenNav Docking integration and its scoped `cmd_vel` remap are
+documented in `rosdeck_robot_bridge/doc/product_bringup_and_docking.md`.
 
 ## Offline build and deployment
 
@@ -180,7 +192,7 @@ The current two-board Zsibot layout is configured as follows:
 
 | Role | Address | Responsibility |
 | --- | --- | --- |
-| Android app | Connects to Foxglove on Orin port 8765 | Publishes the stable Rosdeck topics and `/vel_cmd` |
+| Android app | Connects to Foxglove on Orin port 8765 | Publishes stable Rosdeck topics and unified `TwistStamped` teleop on `/omni/cmd_vel/teleop`; `/vel_cmd` remains the legacy VBot fallback |
 | Orin Bridge/SDK client | `192.168.234.234:43988` | Runs both services and creates the native HighLevel SDK only while mobile control is acquired |
 | RK3588 motion-control computer | `192.168.234.1` | Runs the robot motion-control server |
 
@@ -228,10 +240,113 @@ early network error is retryable and does not require restarting the service.
 
 The adapter logs every posture/LOCO result and throttled velocity samples. It
 also emits a ten-second diagnostic containing the SDK connection, control mode,
-battery, ROS `/vel_cmd` publisher count, received/forwarded counts, ignored zero
-messages, and the last decoded SDK result. ZSL-1W codes such as `0x3007`
+battery, final-command publisher count, received/forwarded counts, zero and
+deadband stops, invalid/limited commands, watchdog stops, stop failures, and the
+last decoded SDK result. ZSL-1W codes such as `0x3007`
 (state-machine transition failure) and `0x3013` (velocity out of range) are
 translated in both the journal and App acknowledgement.
+
+### Two-stage software E-stop
+
+The supervisor starts fail-closed and publishes `true`. It can publish `false`
+only after an explicit call to its arm service. Any `true` received on
+`/omni/safety/estop_request`, a missed supervisor heartbeat deadline, a manual
+latch request, a supervisor restart, or loss of the supervisor heartbeat makes
+the system latch again. A `false` request never clears a latch.
+
+Recovery intentionally has two independent stages; neither node calls the
+other node's reset service:
+
+```bash
+# Stage 1: make the sole supervisor heartbeat healthy (false).
+ros2 service call /omni/safety/arm_supervisor std_srvs/srv/Trigger '{}'
+
+# Inspect state=armed and output_estop=false before continuing.
+ros2 topic echo --once /omni/safety/supervisor_status
+
+# Stage 2: explicitly clear the Bridge latch. Cached velocity is already gone,
+# so a new authorized command is required before motion resumes.
+ros2 service call /omni/safety/reset_estop std_srvs/srv/Trigger '{}'
+```
+
+For Zsibot, Stage 2 is rejected until the Bridge has confirmed a direct zero
+command at the adapter. A failed direct stop is retried at most three times;
+publisher-conflict traffic cannot trigger an unbounded stream of SDK calls. If
+all attempts fail, the ordinary reset remains locked out and operator recovery
+must repair/restart the adapter path rather than bypassing the stop failure.
+While the latch is active, Zsibot may establish an authorization-only control
+lease so the App can perform the two-stage recovery. Velocity, posture and
+locomotion remain blocked. Initial SDK construction and the later connected
+acquire completion each invalidate older direct-stop confirmation; Stage 2 is
+rejected until the lease is acquired and a zero command is freshly confirmed
+for that session. An SDK-idle startup confirmation can therefore never be
+reused by a later session. Heartbeat, status and release remain available.
+
+To assert E-stop, any safety source may publish `true`; false is ignored:
+
+```bash
+ros2 topic pub --once /omni/safety/estop_request std_msgs/msg/Bool '{data: true}'
+# Equivalent local operator action:
+ros2 service call /omni/safety/latch_estop std_srvs/srv/Trigger '{}'
+```
+
+Supervisor status is a transient-local `std_msgs/msg/String` on
+`/omni/safety/supervisor_status`. The normal Zsibot configuration publishes the
+E-stop heartbeat every 100 ms and both the supervisor and Bridge treat a 500 ms
+gap as unhealthy. The supervisor never auto-arms, including after a process
+restart. `launch/bridge.launch.py` starts both critical nodes as one launch
+epoch; if either node exits, the launch shuts down and systemd restarts the
+complete Gateway + supervisor boundary. The restarted supervisor still
+requires the two-stage recovery above.
+
+Production systemd runs as root and owns `/run/lock/omni/safety_supervisor.lock`.
+For a non-root development launch only, set `OMNI_SAFETY_SUPERVISOR_LOCK` to an
+absolute lock-file path in a directory owned by that developer; do not set this
+override in the production service environment.
+
+This is a software stop layer, not a substitute for a wired E-stop or the
+motion controller's own command timeout. An SDK call that blocks its process
+cannot be made safe by another callback in that same process. Phase 0 does not
+yet connect a GPIO/PLC hardware E-stop or an independent hardware-health input;
+those signals must be added before treating this as a product safety system.
+Before claiming a stopping-time bound, run Orin/Zsibot HIL fault injection and
+measure worst-case latency while vendor SDK calls are delayed or unresponsive.
+
+### Adapter and battery observability
+
+The Bridge publishes a thread-safe copy of telemetry already cached by each
+adapter. Publishing never calls `checkConnect()`, `getCurrentCtrlmode()`,
+`getBatteryPower()`, or another vendor API. Zsibot connection and mode samples
+come from its existing 250 ms SDK poll; battery percentage reuses the existing
+diagnostic sampling pass and is normalized from 0–100 to 0.0–1.0.
+
+Standard ROS consumers should use:
+
+- `/battery_state` (`sensor_msgs/msg/BatteryState`): `percentage` is NaN when
+  the battery sample is unavailable or stale, rather than reporting a fake 0%.
+  Physical `present` is tracked separately, so an old percentage never makes a
+  known installed battery appear absent;
+- `/diagnostics` (`diagnostic_msgs/msg/DiagnosticArray`): connection, sample
+  freshness, battery, mode/posture, authority owner, last SDK result, and last
+  adapter error are grouped under `omni/robot_adapter`.
+
+Simple transient-local compatibility topics are also published at
+`/omni/robot/connection`, `/omni/robot/mode`, `/omni/robot/sdk_error`, and
+`/omni/robot/adapter_status`. VBot currently has command services but no
+authoritative chassis telemetry API, so its connection, battery percentage,
+mode, and posture remain explicitly `unknown` (physical battery presence is
+known). Requesting the `vbot` or `zsibot` product
+adapter when it was not compiled into the binary now rejects process startup;
+only an explicit `adapter=unavailable` diagnostic placeholder is permitted,
+and it reports ERROR. These status topics are observational only and are
+deliberately separate from the Safety Supervisor latch and reset protocol.
+The `/omni/cmd_vel/arbiter_status` string is also republished at least once per
+second with a monotonically increasing `status_seq`; consumers must treat a
+non-advancing sequence as stale instead of trusting the transient-local cache.
+Adapter errors are tracked by independent domains (telemetry, battery, motion,
+stop, release, locomotion, posture, and authority): a successful connection
+poll cannot erase an unresolved command or safety failure. Unknown firmware
+posture/mode values remain WARN instead of being reported healthy.
 
 The App can continuously publish zero `Twist` values while its control screen is
 open. The Zsibot adapter now sends only the first stop after real motion and
@@ -248,6 +363,9 @@ The App's **Take Control** button creates the SDK object and starts a one-second
 heartbeat. Only that App session can renew or release the lease. A normal
 release sends zero velocity, requests lie-down, waits for passive mode, and
 uses `passive()` as a timeout/error fallback before destroying the SDK object.
+Ownership is still relinquished if that fallback fails, but the callback and
+diagnostics explicitly report a degraded release instead of claiming that the
+safe posture was confirmed.
 The Bridge then exposes a three-second cooldown matching the RK3588 SDK-loss
 watchdog before reporting that the factory remote is available.
 
@@ -272,12 +390,18 @@ the Android app does not contain or link the Zsibot SDK.
 | --- | --- | --- | --- |
 | App → robot | `/rosdeck/start_3d_mapping` | `std_msgs/msg/Bool` | `true` start, `false` stop |
 | Robot → app | `/rosdeck/mapping_status` | `std_msgs/msg/String` | `started:*`, `stopped:*`, `error:*` |
-| App → robot | `/rosdeck/posture_command` | `std_msgs/msg/String` | `stand`, `lie_down` |
+| App → robot | `/rosdeck/posture_command` | `std_msgs/msg/String` | `stand:<client_id>`, `lie_down:<client_id>`; ZsiBot requires `<client_id>` to own the current lease |
 | Robot → app | `/rosdeck/posture_status` | `std_msgs/msg/String` | `success:*`, `error:*` |
-| App → robot | `/rosdeck/locomotion_command` | `std_msgs/msg/String` | `loco` |
+| App → robot | `/rosdeck/locomotion_command` | `std_msgs/msg/String` | `loco:<client_id>`; ZsiBot requires `<client_id>` to own the current lease |
 | Robot → app | `/rosdeck/locomotion_status` | `std_msgs/msg/String` | `success:loco`, `error:loco:*` |
 | App → robot | `/rosdeck/control_command` | `std_msgs/msg/String` | `status:<id>`, `acquire:<id>`, `heartbeat:<id>`, `release:<id>` |
 | Robot → app | `/rosdeck/control_status` | `std_msgs/msg/String` | `available`, `acquiring:<id>`, `acquired:<id>`, `releasing:<id>`, `cooldown:<seconds>`, `error:*` |
+| Safety source → supervisor | `/omni/safety/estop_request` | `std_msgs/msg/Bool` | `true` latches; `false` never resets |
+| Supervisor → Bridge | `/omni/safety/estop` | `std_msgs/msg/Bool` | Reliable heartbeat; `true` stop, `false` healthy/armed |
+| Supervisor → observers | `/omni/safety/supervisor_status` | `std_msgs/msg/String` | Latch reason, heartbeat health and transition counters |
+| Adapter → ROS | `/battery_state` | `sensor_msgs/msg/BatteryState` | Physical presence independent from normalized 0.0–1.0 percentage; percentage is NaN if unknown/stale |
+| Adapter → ROS diagnostics | `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | Connection, freshness, battery, mode, authority and SDK errors |
+| Adapter → simple observers | `/omni/robot/adapter_status` | `std_msgs/msg/String` | Compact cached adapter snapshot; never a safety reset signal |
 
 Keeping these topics stable means future robot support only requires another
 C++ `RobotAdapter`; the Android app and Foxglove connection do not change.
