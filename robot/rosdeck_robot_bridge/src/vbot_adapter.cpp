@@ -167,7 +167,7 @@ public:
 
   void request_posture(const std::string & command, CommandResult callback) override
   {
-    const std::uint8_t mode = command == "stand" ? 1 : command == "lie_down" ? 2 : 0;
+    const std::uint8_t mode = command == "stand" ? 1 : command == "lie_down" ? 2 : command == "emergency_stop" ? 4 : 0;
     if (mode == 0) {
       record_result(CommandDomain::posture, false, "posture_unsupported_command");
       callback(false, "unsupported_command");

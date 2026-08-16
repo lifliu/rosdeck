@@ -1171,13 +1171,17 @@ private:
       return;
     }
     RCLCPP_INFO(get_logger(), "Posture command received: command=%s", command.c_str());
-    if (command != "stand" && command != "lie_down") {
+    if (command != "stand" && command != "lie_down" && command != "emergency_stop") {
       RCLCPP_WARN(
         get_logger(), "Posture command rejected: unsupported command=%s", command.c_str());
       publish(posture_status_, "error:" + safe_reason(command) + ":unsupported_command");
       return;
     }
-    if (cmd_vel_arbiter_ && cmd_vel_arbiter_->estop_latched()) {
+    // A stop command must remain deliverable after the software latch is set;
+    // stand/lie-down transitions stay blocked until the explicit reset path.
+    if (command != "emergency_stop" && cmd_vel_arbiter_ &&
+      cmd_vel_arbiter_->estop_latched())
+    {
       RCLCPP_ERROR(
         get_logger(), "Posture request rejected while software E-stop is latched: %s",
         command.c_str());

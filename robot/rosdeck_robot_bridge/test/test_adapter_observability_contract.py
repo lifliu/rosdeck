@@ -170,6 +170,28 @@ class AdapterObservabilityContractStaticTest(unittest.TestCase):
             publish_body.index("service_direct_emergency_stop_retry(now)"),
         )
 
+    def test_vbot_emergency_stop_survives_gateway_latch_merge(self):
+        bridge = _source("src/bridge_node.cpp")
+        vbot = _source("src/vbot_adapter.cpp")
+        posture_start = bridge.index("void request_posture(std::string wire_command)")
+        posture_end = bridge.index("void start_mapping()", posture_start)
+        posture = bridge[posture_start:posture_end]
+
+        self.assertIn(
+            'command != "stand" && command != "lie_down" && '
+            'command != "emergency_stop"',
+            posture,
+        )
+        latch_call = posture.index("cmd_vel_arbiter_->estop_latched()")
+        latch_gate_start = posture.rfind("if (", 0, latch_call)
+        latch_gate_end = posture.index("{", latch_call)
+        latch_gate = posture[latch_gate_start:latch_gate_end]
+        self.assertIn('command != "emergency_stop"', latch_gate)
+        self.assertRegex(
+            vbot,
+            r'command\s*==\s*"emergency_stop"\s*\?\s*4\s*:\s*0',
+        )
+
     def test_sdk_owner_lock_override_must_be_absolute(self):
         lock = _source("include/rosdeck_robot_bridge/sdk_owner_lock.hpp")
         self.assertIn("path.empty() || path.front() != '/'", lock)
