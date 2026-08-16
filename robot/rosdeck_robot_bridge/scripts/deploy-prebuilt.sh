@@ -147,13 +147,23 @@ if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
     exit 1
   }
 fi
-if LD_LIBRARY_PATH="${BUNDLE_DIR}/runtime/lib:${LD_LIBRARY_PATH:-}" \
-  ldd "${BUNDLE_DIR}/bin/rosdeck_robot_bridge_node" | grep -q 'not found'; then
-  echo "The robot is missing shared libraries required by this bundle:" >&2
-  LD_LIBRARY_PATH="${BUNDLE_DIR}/runtime/lib:${LD_LIBRARY_PATH:-}" \
-    ldd "${BUNDLE_DIR}/bin/rosdeck_robot_bridge_node" >&2
-  exit 1
-fi
+RUNTIME_EXECUTABLES=(
+  "${BUNDLE_DIR}/runtime/lib/rosdeck_robot_bridge/rosdeck_robot_bridge_node"
+  "${BUNDLE_DIR}/runtime/lib/rosdeck_robot_bridge/rosdeck_safety_supervisor_node"
+)
+for runtime_executable in "${RUNTIME_EXECUTABLES[@]}"; do
+  if [[ ! -x "${runtime_executable}" ]]; then
+    echo "Invalid bundle: product runtime executable is missing: ${runtime_executable}" >&2
+    exit 1
+  fi
+  if LD_LIBRARY_PATH="${BUNDLE_DIR}/runtime/lib:${LD_LIBRARY_PATH:-}" \
+    ldd "${runtime_executable}" | grep -q 'not found'; then
+    echo "The robot is missing shared libraries required by this bundle:" >&2
+    LD_LIBRARY_PATH="${BUNDLE_DIR}/runtime/lib:${LD_LIBRARY_PATH:-}" \
+      ldd "${runtime_executable}" >&2
+    exit 1
+  fi
+done
 
 NODE_NAME="rosdeck_robot_bridge"
 if [[ "${BUNDLE_PROFILE}" == "zsibot" ]]; then
@@ -208,6 +218,7 @@ sed \
   -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
   -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   -e "s#@NODE_NAME@#${NODE_NAME}#g" \
+  -e "s#@PROFILE@#${BUNDLE_PROFILE}#g" \
   "${BUNDLE_DIR}/templates/run-bridge.in" > "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
@@ -270,6 +281,23 @@ if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && \
   ! systemctl is-active --quiet rosdeck-foxglove-bridge.service; then
   echo "Foxglove Bridge failed to stay active. Recent logs:" >&2
   journalctl -u rosdeck-foxglove-bridge.service -n 80 --no-pager >&2 || true
+  exit 1
+fi
+
+if ! timeout 50 bash -c '
+  set -e
+  set -a
+  [[ -f "$4" ]] && source "$4"
+  set +a
+  source "$1"
+  [[ -f "$2" ]] && source "$2"
+  "$5" "$6" "$3" rosdeck-robot-bridge.service
+' _ "${ROS_SETUP}" "${INSTALL_PREFIX}/runtime/local_setup.bash" \
+  "/${NODE_NAME}" "${INSTALL_PREFIX}/config/bridge.env" \
+  "${INSTALL_PREFIX}/runtime/lib/rosdeck_robot_bridge/assert-product-bringup-health.sh" \
+  "${BUNDLE_PROFILE}"; then
+  echo "Product bringup failed its continuous graph/cgroup/status health check." >&2
+  journalctl -u rosdeck-robot-bridge.service -n 80 --no-pager >&2 || true
   exit 1
 fi
 

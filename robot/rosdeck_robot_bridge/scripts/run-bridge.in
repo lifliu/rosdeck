@@ -4,6 +4,14 @@ set -e
 source "@ROS_SETUP@"
 source "@INSTALL_PREFIX@/install/setup.bash"
 
-exec ros2 run rosdeck_robot_bridge rosdeck_robot_bridge_node \
-  --ros-args -r __node:=@NODE_NAME@ \
-  --params-file "@INSTALL_PREFIX@/config/bridge.yaml"
+PROFILE="@PROFILE@"
+ENABLE_SAFETY_SUPERVISOR=false
+if [[ "${PROFILE}" == "zsibot" ]]; then
+  "@INSTALL_PREFIX@/install/lib/rosdeck_robot_bridge/assert-no-legacy-zsibot-owner.sh"
+  ENABLE_SAFETY_SUPERVISOR=true
+fi
+
+exec ros2 launch rosdeck_robot_bridge product_bringup.launch.py \
+  config:="@INSTALL_PREFIX@/config/bridge.yaml" \
+  bridge_node_name:=@NODE_NAME@ \
+  enable_safety_supervisor:="${ENABLE_SAFETY_SUPERVISOR}"

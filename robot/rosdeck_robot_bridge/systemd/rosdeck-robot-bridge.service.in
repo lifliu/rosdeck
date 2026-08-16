@@ -8,7 +8,10 @@ Type=simple
 User=root
 EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
 ExecStart=@INSTALL_PREFIX@/bin/run-rosdeck-robot-bridge
-Restart=on-failure
+# ros2 launch can perform an orderly shutdown after a critical child exits.
+# Restart the complete Gateway + supervisor epoch even when launch itself
+# returns success; an explicit systemctl stop is never restarted by systemd.
+Restart=always
 RestartSec=3
 TimeoutStopSec=45
 KillMode=control-group

@@ -9,12 +9,21 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
+  <depend>diagnostic_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <!-- Optional VBot adapter dependencies are discovered by CMake. -->
   <exec_depend>function_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>opennav_docking</exec_depend>
   <exec_depend>software_msgs</exec_depend>
   <exec_depend>foxglove_bridge</exec_depend>
 

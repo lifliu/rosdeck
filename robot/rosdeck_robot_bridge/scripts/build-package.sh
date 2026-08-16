@@ -164,15 +164,23 @@ fi
   "${BUILD_ARGS[@]}"
 
 BINARY="${BUILD_ROOT}/install/lib/rosdeck_robot_bridge/rosdeck_robot_bridge_node"
+SUPERVISOR_BINARY="${BUILD_ROOT}/install/lib/rosdeck_robot_bridge/rosdeck_safety_supervisor_node"
 set +u
 source "${BUILD_ROOT}/install/setup.bash"
 set -u
-if LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
-  ldd "${BINARY}" | grep -q 'not found'; then
-  echo "The compiled node has unresolved shared-library dependencies:" >&2
-  LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" ldd "${BINARY}" >&2
-  exit 1
-fi
+for runtime_binary in "${BINARY}" "${SUPERVISOR_BINARY}"; do
+  if [[ ! -x "${runtime_binary}" ]]; then
+    echo "Build completed but a product runtime executable is missing: ${runtime_binary}" >&2
+    exit 1
+  fi
+  if LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
+    ldd "${runtime_binary}" | grep -q 'not found'; then
+    echo "A product runtime executable has unresolved shared-library dependencies:" >&2
+    LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
+      ldd "${runtime_binary}" >&2
+    exit 1
+  fi
+done
 
 VERSION="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' "${PACKAGE_DIR}/package.xml" | head -1)"
 ARCH="$(uname -m)"

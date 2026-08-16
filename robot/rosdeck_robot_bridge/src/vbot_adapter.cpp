@@ -1,10 +1,13 @@
 #include "rosdeck_robot_bridge/robot_adapter.hpp"
 
 #include <atomic>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -33,6 +36,34 @@ std::string response_reason(const std::string & message, std::int32_t error_code
   return message.empty() ? "error_code_" + std::to_string(error_code) : message;
 }
 
+enum class CommandDomain : std::size_t
+{
+  locomotion,
+  posture,
+  count,
+};
+
+const char * command_domain_name(CommandDomain domain)
+{
+  switch (domain) {
+    case CommandDomain::locomotion:
+      return "locomotion_service";
+    case CommandDomain::posture:
+      return "posture_service";
+    case CommandDomain::count:
+      break;
+  }
+  return "command_service";
+}
+
+struct CommandFault
+{
+  bool active{false};
+  std::string message;
+  AdapterSteadyTime at{};
+  uint64_t ordinal{0};
+};
+
 class VbotAdapter final : public RobotAdapter
 {
 public:
@@ -54,9 +85,48 @@ public:
 
   std::string name() const override {return "vbot";}
 
+  AdapterSnapshot snapshot() const override
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    AdapterSnapshot value;
+    value.adapter_name = "vbot";
+    // This adapter exposes command services only. It has no authoritative
+    // connection, battery, control-mode, or posture telemetry source.
+    value.battery_presence_known = true;
+    value.battery_present = true;
+    value.authority_known = true;
+    value.authority_state = "unsupported";
+    const CommandFault * newest_active_fault = nullptr;
+    CommandDomain newest_active_domain = CommandDomain::locomotion;
+    for (std::size_t index = 0; index < command_faults_.size(); ++index) {
+      const auto & fault = command_faults_[index];
+      if (fault.active &&
+        (!newest_active_fault || fault.ordinal > newest_active_fault->ordinal))
+      {
+        newest_active_fault = &fault;
+        newest_active_domain = static_cast<CommandDomain>(index);
+      }
+    }
+    value.last_error_active = newest_active_fault != nullptr;
+    if (newest_active_fault) {
+      value.last_error_domain = command_domain_name(newest_active_domain);
+      value.last_error = newest_active_fault->message;
+      value.last_error_sample_known = true;
+      value.last_error_at = newest_active_fault->at;
+    } else {
+      value.last_error_domain = last_error_domain_;
+      value.last_error = last_error_;
+      value.last_error_sample_known = last_error_sample_known_;
+      value.last_error_at = last_error_at_;
+    }
+    value.sequence = state_sequence_;
+    return value;
+  }
+
   void request_locomotion(CommandResult callback) override
   {
     if (!locomotion_client_->wait_for_service(1s)) {
+      record_result(CommandDomain::locomotion, false, "locomotion_service_not_ready");
       callback(false, "service_not_ready");
       return;
     }
@@ -71,16 +141,26 @@ public:
 
     locomotion_client_->async_send_request(
       request,
-      [callback = std::move(callback)](
+      [this, callback = std::move(callback)](
         rclcpp::Client<function_msgs::srv::SetRunMode>::SharedFuture future)
       {
         try {
           const auto response = future.get();
+          const std::string reason = response->success ? "ok" :
+            response_reason(response->message, response->error_code);
+          record_result(CommandDomain::locomotion, response->success, "locomotion_" + reason);
           callback(
             response->success,
-            response->success ? "ok" : response_reason(response->message, response->error_code));
+            reason);
         } catch (const std::exception & error) {
-          callback(false, std::string("service_call_failed_") + error.what());
+          const std::string reason = std::string("service_call_failed_") + error.what();
+          record_result(CommandDomain::locomotion, false, "locomotion_" + reason);
+          callback(false, reason);
+        } catch (...) {
+          record_result(
+            CommandDomain::locomotion, false,
+            "locomotion_service_call_failed_unknown_exception");
+          callback(false, "service_call_failed_unknown_exception");
         }
       });
   }
@@ -89,14 +169,17 @@ public:
   {
     const std::uint8_t mode = command == "stand" ? 1 : command == "lie_down" ? 2 : 0;
     if (mode == 0) {
+      record_result(CommandDomain::posture, false, "posture_unsupported_command");
       callback(false, "unsupported_command");
       return;
     }
     if (!ensure_posture_client()) {
+      record_result(CommandDomain::posture, false, "posture_service_not_found");
       callback(false, "lowlevel_action_service_not_found");
       return;
     }
     if (!posture_client_->wait_for_service(1s)) {
+      record_result(CommandDomain::posture, false, "posture_service_not_ready");
       callback(false, "service_not_ready");
       return;
     }
@@ -111,21 +194,54 @@ public:
 
     posture_client_->async_send_request(
       request,
-      [callback = std::move(callback)](
+      [this, command, callback = std::move(callback)](
         rclcpp::Client<software_msgs::srv::LowlevelAction>::SharedFuture future)
       {
         try {
           const auto response = future.get();
+          const std::string reason = response->success ? "ok" :
+            response_reason(response->message, response->error_code);
+          record_result(
+            CommandDomain::posture, response->success,
+            "posture_" + command + '_' + reason);
           callback(
             response->success,
-            response->success ? "ok" : response_reason(response->message, response->error_code));
+            reason);
         } catch (const std::exception & error) {
-          callback(false, std::string("service_call_failed_") + error.what());
+          const std::string reason = std::string("service_call_failed_") + error.what();
+          record_result(
+            CommandDomain::posture, false, "posture_" + command + '_' + reason);
+          callback(false, reason);
+        } catch (...) {
+          record_result(
+            CommandDomain::posture, false,
+            "posture_" + command + "_service_call_failed_unknown_exception");
+          callback(false, "service_call_failed_unknown_exception");
         }
       });
   }
 
 private:
+  void record_result(CommandDomain domain, bool success, const std::string & context)
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    ++state_sequence_;
+    auto & fault = command_faults_[static_cast<std::size_t>(domain)];
+    if (!success) {
+      const auto now = AdapterSteadyClock::now();
+      fault.active = true;
+      fault.message = context;
+      fault.at = now;
+      fault.ordinal = ++fault_ordinal_;
+      last_error_ = context;
+      last_error_domain_ = command_domain_name(domain);
+      last_error_sample_known_ = true;
+      last_error_at_ = now;
+    } else {
+      fault.active = false;
+    }
+  }
+
   bool ensure_posture_client()
   {
     if (posture_client_) {
@@ -137,7 +253,9 @@ private:
         if (service_type == expected_type) {
           posture_service_ = service_name;
           posture_client_ = node_.create_client<software_msgs::srv::LowlevelAction>(service_name);
-          RCLCPP_INFO(node_.get_logger(), "Discovered LowlevelAction service: %s", service_name.c_str());
+          RCLCPP_INFO(
+            node_.get_logger(), "Discovered LowlevelAction service: %s",
+            service_name.c_str());
           return true;
         }
       }
@@ -146,6 +264,14 @@ private:
   }
 
   rclcpp::Node & node_;
+  mutable std::mutex state_mutex_;
+  std::array<CommandFault, static_cast<std::size_t>(CommandDomain::count)> command_faults_{};
+  uint64_t fault_ordinal_{0};
+  bool last_error_sample_known_{false};
+  std::string last_error_domain_{"none"};
+  std::string last_error_;
+  AdapterSteadyTime last_error_at_{};
+  uint64_t state_sequence_{0};
   std::string locomotion_service_;
   std::string posture_service_;
   rclcpp::Client<function_msgs::srv::SetRunMode>::SharedPtr locomotion_client_;

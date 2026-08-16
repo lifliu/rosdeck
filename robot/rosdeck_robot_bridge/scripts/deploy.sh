@@ -142,6 +142,7 @@ sed \
   -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
   -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   -e "s#@NODE_NAME@#${NODE_NAME}#g" \
+  -e "s#@PROFILE@#${PROFILE}#g" \
   "${PACKAGE_DIR}/scripts/run-bridge.in" > "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
@@ -220,24 +221,23 @@ if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && \
 fi
 
 systemctl --no-pager --full status rosdeck-robot-bridge.service || true
-if timeout 15 bash -c '
+if timeout 50 bash -c '
   set -e
   set -a
   [[ -f "$4" ]] && source "$4"
   set +a
   source "$1"
   source "$2"
-  for _ in {1..10}; do
-    ros2 node list 2>/dev/null | grep -Fxq "$3" && exit 0
-    sleep 1
-  done
-  exit 1
+  "$5" "$6" "$3" rosdeck-robot-bridge.service
 ' _ "${ROS_SETUP}" "${INSTALL_PREFIX}/install/setup.bash" "/${NODE_NAME}" \
-  "${INSTALL_PREFIX}/config/bridge.env"; then
-  echo "ROS graph check: /${NODE_NAME} discovered"
+  "${INSTALL_PREFIX}/config/bridge.env" \
+  "${INSTALL_PREFIX}/install/lib/rosdeck_robot_bridge/assert-product-bringup-health.sh" \
+  "${PROFILE}"; then
+  echo "Product health check passed for /${NODE_NAME} (${PROFILE})"
 else
-  echo "Warning: service is active, but /${NODE_NAME} was not discovered within 15 seconds." >&2
+  echo "Product bringup failed its continuous graph/cgroup/status health check." >&2
   echo "Check RMW settings in ${INSTALL_PREFIX}/config/bridge.env and inspect the journal." >&2
+  exit 1
 fi
 echo "Deployment successful: profile=${PROFILE}, node=/${NODE_NAME}"
 if [[ "${PROFILE}" == "vbot" ]]; then

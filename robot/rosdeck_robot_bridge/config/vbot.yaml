@@ -11,6 +11,20 @@
     locomotion.enabled: true
     # VBot does not share its SDK control channel with a factory remote.
     control.enabled: false
+    # Preserve the existing VBot /vel_cmd path; the ZsiBot-only unified
+    # arbiter is opt-in here to avoid changing deployed VBot behavior.
+    cmd_vel_arbiter.enabled: false
+    # VBot has no authoritative telemetry source in this adapter. The same
+    # product topics are still published, explicitly carrying unknown values.
+    adapter_status.publish_period_ms: 1000
+    adapter_status.telemetry_stale_ms: 1500
+    adapter_status.battery_stale_ms: 15000
+    adapter_status.topics.battery: /battery_state
+    adapter_status.topics.diagnostics: /diagnostics
+    adapter_status.topics.connection: /omni/robot/connection
+    adapter_status.topics.mode: /omni/robot/mode
+    adapter_status.topics.sdk_error: /omni/robot/sdk_error
+    adapter_status.topics.summary: /omni/robot/adapter_status
     vbot.locomotion_service: /locomotion/set_run_mode
     # Empty means auto-discover software_msgs/srv/LowlevelAction.
     vbot.posture_service: ""

@@ -1,15 +1,24 @@
 #include "rosdeck_robot_bridge/robot_adapter.hpp"
+#include "rosdeck_robot_bridge/cmd_vel_arbiter.hpp"
+#include "rosdeck_robot_bridge/direct_estop_guard.hpp"
+#include "rosdeck_robot_bridge/sdk_owner_lock.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <limits>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -19,9 +28,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <diagnostic_msgs/msg/key_value.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/battery_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 namespace rosdeck_robot_bridge
 {
@@ -38,6 +54,16 @@ std::string safe_reason(std::string value)
     }
   }
   return value.empty() ? "unknown_error" : value;
+}
+
+std::string safe_status_field(std::string value)
+{
+  for (char & character : value) {
+    if (character == ';' || character == '=' || character == '\n' || character == '\r') {
+      character = '_';
+    }
+  }
+  return value.empty() ? "none" : value;
 }
 
 bool valid_client_id(const std::string & value)
@@ -59,6 +85,18 @@ public:
   : adapter_name_(std::move(adapter_name)) {}
 
   std::string name() const override {return adapter_name_;}
+
+  AdapterSnapshot snapshot() const override
+  {
+    AdapterSnapshot value;
+    value.adapter_name = adapter_name_;
+    value.authority_known = true;
+    value.authority_state = "unavailable";
+    value.last_error_active = true;
+    value.last_error_domain = "adapter";
+    value.last_error = "adapter_not_available";
+    return value;
+  }
 
   void request_locomotion(CommandResult callback) override
   {
@@ -120,19 +158,278 @@ public:
       "topics.control_command", "/rosdeck/control_command");
     const auto control_status_topic = declare_parameter<std::string>(
       "topics.control_status", "/rosdeck/control_status");
+    const auto battery_state_topic = declare_parameter<std::string>(
+      "adapter_status.topics.battery", "/battery_state");
+    const auto diagnostics_topic = declare_parameter<std::string>(
+      "adapter_status.topics.diagnostics", "/diagnostics");
+    const auto adapter_connection_topic = declare_parameter<std::string>(
+      "adapter_status.topics.connection", "/omni/robot/connection");
+    const auto adapter_mode_topic = declare_parameter<std::string>(
+      "adapter_status.topics.mode", "/omni/robot/mode");
+    const auto adapter_sdk_error_topic = declare_parameter<std::string>(
+      "adapter_status.topics.sdk_error", "/omni/robot/sdk_error");
+    const auto adapter_summary_topic = declare_parameter<std::string>(
+      "adapter_status.topics.summary", "/omni/robot/adapter_status");
+
+    cmd_vel_arbiter_enabled_ = declare_parameter<bool>(
+      "cmd_vel_arbiter.enabled", adapter_name == "zsibot");
+    if (adapter_name == "zsibot" && !cmd_vel_arbiter_enabled_) {
+      throw std::invalid_argument(
+              "cmd_vel_arbiter.enabled=false is forbidden for the ZsiBot product adapter");
+    }
+    const auto bounded_milliseconds =
+      [this](const std::string & name, int64_t fallback, int64_t minimum, int64_t maximum) {
+        const auto requested = declare_parameter<int64_t>(name, fallback);
+        if (requested < minimum || requested > maximum) {
+          RCLCPP_WARN(
+            get_logger(), "%s=%ld is outside [%ld, %ld]; clamping",
+            name.c_str(), static_cast<long>(requested), static_cast<long>(minimum),
+            static_cast<long>(maximum));
+        }
+        return std::chrono::milliseconds(std::clamp(requested, minimum, maximum));
+      };
+    adapter_status_period_ = bounded_milliseconds(
+      "adapter_status.publish_period_ms", 1000, 100, 5000);
+    adapter_telemetry_timeout_ = bounded_milliseconds(
+      "adapter_status.telemetry_stale_ms", 1500, 500, 10000);
+    adapter_battery_timeout_ = bounded_milliseconds(
+      "adapter_status.battery_stale_ms", 15000, 1000, 120000);
+    cmd_vel_arbiter::Config arbiter_config;
+    arbiter_config.teleop_timeout = bounded_milliseconds(
+      "cmd_vel_arbiter.teleop_timeout_ms", 250, 100, 300);
+    arbiter_config.docking_timeout = bounded_milliseconds(
+      "cmd_vel_arbiter.docking_timeout_ms", 250, 100, 300);
+    arbiter_config.navigation_timeout = bounded_milliseconds(
+      "cmd_vel_arbiter.navigation_timeout_ms", 250, 100, 300);
+    arbiter_config.stamped_max_age = bounded_milliseconds(
+      "cmd_vel_arbiter.stamped_max_age_ms", 1000, 100, 5000);
+    arbiter_config.stamped_future_tolerance = bounded_milliseconds(
+      "cmd_vel_arbiter.stamped_future_tolerance_ms", 500, 0, 2000);
+    arbiter_config.enforce_stamp_freshness = declare_parameter<bool>(
+      "cmd_vel_arbiter.enforce_stamp_freshness", false);
+    const auto arbiter_period = bounded_milliseconds(
+      "cmd_vel_arbiter.output_period_ms", 25, 10, 100);
+    arbiter_status_period_ = bounded_milliseconds(
+      "cmd_vel_arbiter.status_period_ms", 1000, 100, 1000);
+    const auto teleop_topic = declare_parameter<std::string>(
+      "cmd_vel_arbiter.topics.teleop", "/omni/cmd_vel/teleop");
+    const auto navigation_topic = declare_parameter<std::string>(
+      "cmd_vel_arbiter.topics.navigation", "/scan_planner/cmd_vel");
+    const auto docking_topic = declare_parameter<std::string>(
+      "cmd_vel_arbiter.topics.docking", "/omni/cmd_vel/docking");
+    const auto estop_topic = declare_parameter<std::string>(
+      "cmd_vel_arbiter.topics.estop", "/omni/safety/estop");
+    const auto arbiter_status_topic = declare_parameter<std::string>(
+      "cmd_vel_arbiter.topics.status", "/omni/cmd_vel/arbiter_status");
+    const auto estop_reset_service = declare_parameter<std::string>(
+      "cmd_vel_arbiter.services.estop_reset", "/omni/safety/reset_estop");
+    require_estop_monitor_ = declare_parameter<bool>(
+      "cmd_vel_arbiter.require_estop_monitor", adapter_name == "zsibot");
+    if (adapter_name == "zsibot" && !require_estop_monitor_) {
+      throw std::invalid_argument(
+              "cmd_vel_arbiter.require_estop_monitor=false is forbidden for the ZsiBot "
+              "product adapter");
+    }
+    const auto requested_estop_monitor_timeout = declare_parameter<int64_t>(
+      "cmd_vel_arbiter.estop_monitor_timeout_ms", 500);
+    if (adapter_name == "zsibot" &&
+      (requested_estop_monitor_timeout < 100 || requested_estop_monitor_timeout > 500))
+    {
+      throw std::invalid_argument(
+              "ZsiBot cmd_vel_arbiter.estop_monitor_timeout_ms must be in [100, 500]");
+    }
+    estop_monitor_timeout_ = std::chrono::milliseconds(std::clamp<int64_t>(
+        requested_estop_monitor_timeout, 100, adapter_name == "zsibot" ? 500 : 5000));
+
+    const AdapterBuildSupport build_support{
+#ifdef ROSDECK_HAS_VBOT_ADAPTER
+      true,
+#else
+      false,
+#endif
+#ifdef ROSDECK_HAS_ZSIBOT_SDK
+      true,
+#else
+      false,
+#endif
+    };
+    if (const auto selection_error = adapter_selection_error(adapter_name, build_support)) {
+      throw std::invalid_argument(*selection_error);
+    }
 
 #ifdef ROSDECK_HAS_VBOT_ADAPTER
     if (adapter_name == "vbot") {
       adapter_ = make_vbot_adapter(*this, locomotion_service, posture_service);
     }
 #endif
+#ifdef ROSDECK_HAS_ZSIBOT_SDK
     if (adapter_name == "zsibot") {
+      sdk_owner_lock_ = std::make_unique<SdkOwnerLock>("rosdeck_robot_bridge");
       adapter_ = make_zsibot_adapter(*this);
     }
-    if (!adapter_) {
+#endif
+    if (adapter_name == "unavailable") {
       adapter_ = std::make_unique<UnavailableAdapter>(adapter_name);
-      RCLCPP_WARN(
-        get_logger(), "Adapter '%s' is not available in this build", adapter_name.c_str());
+    }
+    if (!adapter_) {
+      throw std::logic_error("validated adapter selection did not construct an adapter");
+    }
+
+    const auto adapter_state_qos =
+      rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    const auto adapter_stream_qos =
+      rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+    battery_state_ = create_publisher<sensor_msgs::msg::BatteryState>(
+      battery_state_topic, adapter_stream_qos);
+    adapter_diagnostics_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      diagnostics_topic, adapter_stream_qos);
+    adapter_connection_ = create_publisher<std_msgs::msg::String>(
+      adapter_connection_topic, adapter_state_qos);
+    adapter_mode_ = create_publisher<std_msgs::msg::String>(
+      adapter_mode_topic, adapter_state_qos);
+    adapter_sdk_error_ = create_publisher<std_msgs::msg::String>(
+      adapter_sdk_error_topic, adapter_state_qos);
+    adapter_summary_ = create_publisher<std_msgs::msg::String>(
+      adapter_summary_topic, adapter_state_qos);
+    const std::array<std::string, 6> resolved_adapter_topics{
+      battery_state_->get_topic_name(),
+      adapter_diagnostics_->get_topic_name(),
+      adapter_connection_->get_topic_name(),
+      adapter_mode_->get_topic_name(),
+      adapter_sdk_error_->get_topic_name(),
+      adapter_summary_->get_topic_name(),
+    };
+    for (std::size_t index = 0; index < resolved_adapter_topics.size(); ++index) {
+      if (resolved_adapter_topics[index] == "/omni/safety/estop" ||
+        resolved_adapter_topics[index] == "/omni/safety/estop_request")
+      {
+        throw std::invalid_argument(
+                "adapter observability topics must not use Safety Supervisor channels");
+      }
+      for (std::size_t other = index + 1; other < resolved_adapter_topics.size(); ++other) {
+        if (resolved_adapter_topics[index] == resolved_adapter_topics[other]) {
+          throw std::invalid_argument("resolved adapter observability topics must be unique");
+        }
+      }
+    }
+
+    if (cmd_vel_arbiter_enabled_) {
+      constexpr const char * output_topic = cmd_vel_arbiter::kFinalTopic;
+      const std::array<std::string, 3> velocity_inputs{
+        teleop_topic, docking_topic, navigation_topic};
+      for (std::size_t index = 0; index < velocity_inputs.size(); ++index) {
+        if (velocity_inputs[index].empty() || velocity_inputs[index] == output_topic) {
+          throw std::invalid_argument(
+                  "cmd_vel arbiter inputs must be non-empty and must not use the final output");
+        }
+        for (std::size_t other = index + 1; other < velocity_inputs.size(); ++other) {
+          if (velocity_inputs[index] == velocity_inputs[other]) {
+            throw std::invalid_argument("cmd_vel arbiter input topics must be unique");
+          }
+        }
+      }
+      std::string adapter_velocity_topic;
+      if (adapter_name == "zsibot" && has_parameter("zsibot.velocity_topic") &&
+        get_parameter("zsibot.velocity_topic", adapter_velocity_topic) &&
+        adapter_velocity_topic != output_topic)
+      {
+        throw std::invalid_argument(
+                "zsibot.velocity_topic must be /omni/cmd_vel/final when arbiter is enabled");
+      }
+
+      cmd_vel_arbiter_ = std::make_unique<cmd_vel_arbiter::Arbiter>(arbiter_config);
+      const auto velocity_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+      const auto estop_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+      const auto status_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+      cmd_vel_output_ = create_publisher<geometry_msgs::msg::Twist>(output_topic, velocity_qos);
+      cmd_vel_arbiter_status_ =
+        create_publisher<std_msgs::msg::String>(arbiter_status_topic, status_qos);
+      cmd_vel_teleop_ = create_subscription<geometry_msgs::msg::TwistStamped>(
+        teleop_topic, velocity_qos,
+        [this](const geometry_msgs::msg::TwistStamped::SharedPtr message) {
+          receive_stamped_velocity(cmd_vel_arbiter::Source::teleop, *message);
+        });
+      // OpenNav Docking publishes Twist. Safety freshness for this source is
+      // enforced with steady receipt time, identical to navigation.
+      cmd_vel_docking_ = create_subscription<geometry_msgs::msg::Twist>(
+        docking_topic, velocity_qos,
+        [this](const geometry_msgs::msg::Twist::SharedPtr message) {
+          receive_docking_velocity(*message);
+        });
+      cmd_vel_navigation_ = create_subscription<geometry_msgs::msg::Twist>(
+        navigation_topic, velocity_qos,
+        [this](const geometry_msgs::msg::Twist::SharedPtr message) {
+          receive_navigation_velocity(*message);
+        });
+      software_estop_ = create_subscription<std_msgs::msg::Bool>(
+        estop_topic, estop_qos,
+        [this](const std_msgs::msg::Bool::SharedPtr message) {
+          receive_software_estop(message->data);
+        });
+      estop_reset_ = create_service<std_srvs::srv::Trigger>(
+        estop_reset_service,
+        [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr response) {
+          reset_software_estop(*response);
+        });
+
+      // Parameter text is insufficient here: namespaces and ROS remap rules
+      // can resolve two different strings to the same graph name. Validate the
+      // endpoints after rclcpp has applied all resolution/remapping.
+      const std::string resolved_output = cmd_vel_output_->get_topic_name();
+      const std::array<std::string, 4> resolved_inputs{
+        cmd_vel_teleop_->get_topic_name(),
+        cmd_vel_docking_->get_topic_name(),
+        cmd_vel_navigation_->get_topic_name(),
+        software_estop_->get_topic_name(),
+      };
+      for (std::size_t index = 0; index < resolved_inputs.size(); ++index) {
+        if (resolved_inputs[index] == resolved_output) {
+          throw std::invalid_argument(
+                  "resolved cmd_vel/estop input must not equal the final output topic");
+        }
+        for (std::size_t other = index + 1; other < resolved_inputs.size(); ++other) {
+          if (resolved_inputs[index] == resolved_inputs[other]) {
+            throw std::invalid_argument("resolved cmd_vel/estop input topics must be unique");
+          }
+        }
+      }
+      if (cmd_vel_arbiter_status_->get_topic_name() == resolved_output) {
+        throw std::invalid_argument("arbiter status must not resolve to the final output topic");
+      }
+      if (adapter_name == "zsibot" &&
+        software_estop_->get_topic_name() != std::string("/omni/safety/estop"))
+      {
+        throw std::invalid_argument(
+                "ZsiBot E-stop monitor must resolve to canonical /omni/safety/estop");
+      }
+      if (adapter_name == "zsibot" &&
+        std::string(estop_reset_->get_service_name()) != "/omni/safety/reset_estop")
+      {
+        throw std::invalid_argument(
+                "ZsiBot E-stop reset must resolve to canonical /omni/safety/reset_estop");
+      }
+      cmd_vel_arbiter_timer_ = create_wall_timer(
+        arbiter_period, [this]() {publish_arbiter_output();});
+      publish_arbiter_output();
+      RCLCPP_INFO(
+        get_logger(),
+        "cmd_vel arbiter enabled: teleop=%s docking=%s navigation=%s estop=%s "
+        "output=%s status=%s period=%ldms status_period=%ldms source_timeout=(%ld,%ld,%ld)ms "
+        "stamp_max_age=%ldms stamp_future_tolerance=%ldms stamp_enforce=%s (NTP required)",
+        teleop_topic.c_str(), docking_topic.c_str(), navigation_topic.c_str(),
+        estop_topic.c_str(), output_topic, arbiter_status_topic.c_str(),
+        static_cast<long>(arbiter_period.count()),
+        static_cast<long>(arbiter_status_period_.count()),
+        static_cast<long>(arbiter_config.teleop_timeout.count()),
+        static_cast<long>(arbiter_config.docking_timeout.count()),
+        static_cast<long>(arbiter_config.navigation_timeout.count()),
+        static_cast<long>(arbiter_config.stamped_max_age.count()),
+        static_cast<long>(arbiter_config.stamped_future_tolerance.count()),
+        arbiter_config.enforce_stamp_freshness ? "true" : "false");
     }
 
     if (mapping_enabled_) {
@@ -175,12 +472,17 @@ public:
       publish_control_status_if_changed(true);
     }
 
+    adapter_status_timer_ = create_wall_timer(
+      adapter_status_period_, [this]() {publish_adapter_observability();});
+    publish_adapter_observability();
+
     RCLCPP_INFO(
       get_logger(),
-      "Ready: adapter=%s mapping=%s posture=%s locomotion=%s control_lease=%s",
+      "Ready: adapter=%s mapping=%s posture=%s locomotion=%s control_lease=%s arbiter=%s",
       adapter_->name().c_str(), mapping_enabled_ ? "on" : "off",
       posture_enabled_ ? "on" : "off", locomotion_enabled_ ? "on" : "off",
-      control_enabled_ && adapter_->requires_control_lease() ? "on" : "off");
+      control_enabled_ && adapter_->requires_control_lease() ? "on" : "off",
+      cmd_vel_arbiter_enabled_ ? "on" : "off");
   }
 
   ~BridgeNode() override
@@ -189,6 +491,513 @@ public:
   }
 
 private:
+  static diagnostic_msgs::msg::KeyValue diagnostic_value(
+    const std::string & key, const std::string & value)
+  {
+    diagnostic_msgs::msg::KeyValue item;
+    item.key = key;
+    item.value = value;
+    return item;
+  }
+
+  void publish_adapter_observability()
+  {
+    const AdapterSnapshot snapshot = adapter_->snapshot();
+    const auto steady_now = AdapterSteadyClock::now();
+    const auto ros_now = get_clock()->now();
+    const int64_t telemetry_age = adapter_sample_age_ms(
+      snapshot.telemetry_sample_known, snapshot.telemetry_sample_at, steady_now);
+    const int64_t battery_age = adapter_sample_age_ms(
+      snapshot.battery_sample_known, snapshot.battery_sample_at, steady_now);
+    const int64_t error_age = adapter_sample_age_ms(
+      snapshot.last_error_sample_known, snapshot.last_error_at, steady_now);
+    const bool telemetry_fresh = adapter_sample_fresh(
+      snapshot.telemetry_sample_known, snapshot.telemetry_sample_at,
+      steady_now, adapter_telemetry_timeout_);
+    const bool battery_fresh = snapshot.battery_known && adapter_sample_fresh(
+      snapshot.battery_sample_known, snapshot.battery_sample_at,
+      steady_now, adapter_battery_timeout_);
+    const auto health = assess_adapter_health(
+      snapshot, steady_now, adapter_telemetry_timeout_, adapter_battery_timeout_);
+
+    const float unknown = std::numeric_limits<float>::quiet_NaN();
+    sensor_msgs::msg::BatteryState battery;
+    battery.header.stamp = ros_now;
+    battery.voltage = unknown;
+    battery.temperature = unknown;
+    battery.current = unknown;
+    battery.charge = unknown;
+    battery.capacity = unknown;
+    battery.design_capacity = unknown;
+    battery.percentage = battery_fresh && std::isfinite(snapshot.battery_fraction) ?
+      std::clamp(snapshot.battery_fraction, 0.0F, 1.0F) : unknown;
+    battery.power_supply_status = sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_UNKNOWN;
+    battery.power_supply_health = sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN;
+    battery.power_supply_technology =
+      sensor_msgs::msg::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
+    // BatteryState has no tri-state presence field. False is therefore used
+    // for unknown presence, while diagnostics carries the explicit known bit.
+    // Percentage freshness never changes physical-presence reporting.
+    battery.present = battery_state_present(snapshot);
+    battery.location = snapshot.adapter_name;
+    battery_state_->publish(battery);
+
+    diagnostic_msgs::msg::DiagnosticStatus adapter_status;
+    adapter_status.name = "omni/robot_adapter";
+    adapter_status.hardware_id = snapshot.adapter_name;
+    switch (health.level) {
+      case AdapterHealthLevel::ok:
+        adapter_status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+        break;
+      case AdapterHealthLevel::warning:
+        adapter_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+        break;
+      case AdapterHealthLevel::error:
+        adapter_status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+        break;
+    }
+    adapter_status.message = health.reason;
+    const auto boolean = [](bool value) {return value ? "true" : "false";};
+    adapter_status.values = {
+      diagnostic_value("adapter", snapshot.adapter_name),
+      diagnostic_value("connection_known", boolean(snapshot.connection_known)),
+      diagnostic_value(
+        "connected", snapshot.connection_known ? boolean(snapshot.connected) : "unknown"),
+      diagnostic_value("telemetry_fresh", boolean(telemetry_fresh)),
+      diagnostic_value("telemetry_age_ms", std::to_string(telemetry_age)),
+      diagnostic_value("battery_known", boolean(snapshot.battery_known)),
+      diagnostic_value(
+        "battery_presence_known", boolean(snapshot.battery_presence_known)),
+      diagnostic_value(
+        "battery_present", snapshot.battery_presence_known ?
+        boolean(snapshot.battery_present) : "unknown"),
+      diagnostic_value(
+        "battery_fraction", snapshot.battery_known ?
+        std::to_string(snapshot.battery_fraction) : "unknown"),
+      diagnostic_value("battery_fresh", boolean(battery_fresh)),
+      diagnostic_value("battery_age_ms", std::to_string(battery_age)),
+      diagnostic_value("control_mode_known", boolean(snapshot.control_mode_known)),
+      diagnostic_value("control_mode", snapshot.control_mode),
+      diagnostic_value("posture_known", boolean(snapshot.posture_known)),
+      diagnostic_value("posture", snapshot.posture),
+      diagnostic_value("authority_known", boolean(snapshot.authority_known)),
+      diagnostic_value("authority_state", snapshot.authority_state),
+      diagnostic_value(
+        "authority_owner", snapshot.authority_owner.empty() ? "none" : snapshot.authority_owner),
+      diagnostic_value("last_sdk_result_known", boolean(snapshot.last_sdk_result_known)),
+      diagnostic_value(
+        "last_sdk_result_code", snapshot.last_sdk_result_known ?
+        std::to_string(snapshot.last_sdk_result_code) : "unknown"),
+      diagnostic_value("last_sdk_result", snapshot.last_sdk_result),
+      diagnostic_value("last_error_active", boolean(snapshot.last_error_active)),
+      diagnostic_value("last_error_domain", snapshot.last_error_domain),
+      diagnostic_value(
+        "last_error", snapshot.last_error.empty() ? "none" : snapshot.last_error),
+      diagnostic_value("last_error_age_ms", std::to_string(error_age)),
+      diagnostic_value("snapshot_sequence", std::to_string(snapshot.sequence)),
+    };
+    diagnostic_msgs::msg::DiagnosticArray diagnostics;
+    diagnostics.header.stamp = ros_now;
+    diagnostics.status.push_back(std::move(adapter_status));
+    adapter_diagnostics_->publish(diagnostics);
+
+    std::ostringstream connection;
+    connection << "known=" << boolean(snapshot.connection_known) <<
+      ";connected=" << (snapshot.connection_known ? boolean(snapshot.connected) : "unknown") <<
+      ";fresh=" << boolean(telemetry_fresh) <<
+      ";age_ms=" << telemetry_age;
+    publish(adapter_connection_, connection.str());
+
+    std::ostringstream mode;
+    mode << "fresh=" << boolean(telemetry_fresh) <<
+      ";control_mode_known=" << boolean(snapshot.control_mode_known) <<
+      ";control_mode=" << (telemetry_fresh ?
+      safe_status_field(snapshot.control_mode) : "unknown") <<
+      ";posture_known=" << boolean(snapshot.posture_known) <<
+      ";posture=" << (telemetry_fresh ? safe_status_field(snapshot.posture) : "unknown");
+    publish(adapter_mode_, mode.str());
+
+    std::ostringstream sdk_error;
+    sdk_error << "active=" << boolean(snapshot.last_error_active) <<
+      ";domain=" << safe_status_field(snapshot.last_error_domain) <<
+      ";last_error=" << safe_status_field(snapshot.last_error) <<
+      ";age_ms=" << error_age <<
+      ";last_result_known=" << boolean(snapshot.last_sdk_result_known) <<
+      ";last_result=" << safe_status_field(snapshot.last_sdk_result);
+    publish(adapter_sdk_error_, sdk_error.str());
+
+    std::ostringstream summary;
+    summary << "adapter=" << safe_status_field(snapshot.adapter_name) <<
+      ";health=" << health.reason <<
+      ";connection=" << (!snapshot.connection_known ? "unknown" :
+      !snapshot.connected ? "disconnected" : !telemetry_fresh ? "stale" : "connected") <<
+      ";battery_fresh=" << boolean(battery_fresh) <<
+      ";battery_present=" << (!snapshot.battery_presence_known ? "unknown" :
+      boolean(snapshot.battery_present)) <<
+      ";battery=" << (battery_fresh ?
+      std::to_string(snapshot.battery_fraction) : "unknown") <<
+      ";mode=" << (telemetry_fresh ? safe_status_field(snapshot.control_mode) : "unknown") <<
+      ";posture=" << (telemetry_fresh ? safe_status_field(snapshot.posture) : "unknown") <<
+      ";authority=" << safe_status_field(snapshot.authority_state) <<
+      ";owner=" << safe_status_field(snapshot.authority_owner) <<
+      ";last_error_active=" << boolean(snapshot.last_error_active) <<
+      ";last_error_domain=" << safe_status_field(snapshot.last_error_domain) <<
+      ";sequence=" << snapshot.sequence;
+    publish(adapter_summary_, summary.str());
+  }
+
+  static cmd_vel_arbiter::RawTwist raw_twist(const geometry_msgs::msg::Twist & message)
+  {
+    return {
+      message.linear.x,
+      message.linear.y,
+      message.linear.z,
+      message.angular.x,
+      message.angular.y,
+      message.angular.z,
+    };
+  }
+
+  static int64_t stamp_nanoseconds(const builtin_interfaces::msg::Time & stamp)
+  {
+    if (stamp.sec < 0) {
+      return -1;
+    }
+    return static_cast<int64_t>(stamp.sec) * 1'000'000'000LL +
+           static_cast<int64_t>(stamp.nanosec);
+  }
+
+  void synchronize_arbiter_control_status()
+  {
+    if (!cmd_vel_arbiter_) {
+      return;
+    }
+    const std::string current = adapter_->control_status();
+    if (current == arbiter_control_status_) {
+      return;
+    }
+    // Commands captured before an authority transition must never start moving
+    // after a different owner acquires control.
+    cmd_vel_arbiter_->clear_sources();
+    arbiter_control_status_ = current;
+  }
+
+  void receive_stamped_velocity(
+    cmd_vel_arbiter::Source source,
+    const geometry_msgs::msg::TwistStamped & message)
+  {
+    if (!cmd_vel_arbiter_) {
+      return;
+    }
+    if (!velocity_source_has_unique_publisher(source)) {
+      publish_arbiter_output();
+      return;
+    }
+    synchronize_arbiter_control_status();
+    const auto health = cmd_vel_arbiter_->ingest_stamped(
+      source, raw_twist(message.twist), stamp_nanoseconds(message.header.stamp),
+      get_clock()->now().nanoseconds(), cmd_vel_arbiter::SteadyClock::now());
+    if (health != cmd_vel_arbiter::SourceHealth::ready) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cmd_vel arbiter rejected %s input: %s",
+        cmd_vel_arbiter::source_name(source), cmd_vel_arbiter::health_name(health));
+    } else {
+      const auto stamp_health = cmd_vel_arbiter_->stamp_health(source);
+      if (stamp_health == cmd_vel_arbiter::SourceHealth::stale_stamp ||
+        stamp_health == cmd_vel_arbiter::SourceHealth::future_stamp)
+      {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "cmd_vel arbiter accepted %s by arrival timeout but detected %s skew=%ldms; "
+          "enable stamp enforcement after NTP verification",
+          cmd_vel_arbiter::source_name(source), cmd_vel_arbiter::health_name(stamp_health),
+          static_cast<long>(cmd_vel_arbiter_->last_stamp_skew_ms(source)));
+      }
+    }
+    publish_arbiter_output();
+  }
+
+  void receive_navigation_velocity(const geometry_msgs::msg::Twist & message)
+  {
+    if (!cmd_vel_arbiter_) {
+      return;
+    }
+    if (!velocity_source_has_unique_publisher(cmd_vel_arbiter::Source::navigation)) {
+      publish_arbiter_output();
+      return;
+    }
+    synchronize_arbiter_control_status();
+    const auto health = cmd_vel_arbiter_->ingest_navigation(
+      raw_twist(message), cmd_vel_arbiter::SteadyClock::now());
+    if (health != cmd_vel_arbiter::SourceHealth::ready) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cmd_vel arbiter rejected navigation input: %s",
+        cmd_vel_arbiter::health_name(health));
+    }
+    publish_arbiter_output();
+  }
+
+  void receive_docking_velocity(const geometry_msgs::msg::Twist & message)
+  {
+    if (!cmd_vel_arbiter_) {
+      return;
+    }
+    if (!velocity_source_has_unique_publisher(cmd_vel_arbiter::Source::docking)) {
+      publish_arbiter_output();
+      return;
+    }
+    synchronize_arbiter_control_status();
+    const auto health = cmd_vel_arbiter_->ingest_unstamped(
+      cmd_vel_arbiter::Source::docking, raw_twist(message),
+      cmd_vel_arbiter::SteadyClock::now());
+    if (health != cmd_vel_arbiter::SourceHealth::ready) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "cmd_vel arbiter rejected docking input: %s",
+        cmd_vel_arbiter::health_name(health));
+    }
+    publish_arbiter_output();
+  }
+
+  void receive_software_estop(bool active)
+  {
+    if (!cmd_vel_arbiter_) {
+      return;
+    }
+    const std::size_t publisher_count = software_estop_->get_publisher_count();
+    if (publisher_count != 1) {
+      const bool newly_faulted = !estop_monitor_fault_;
+      const bool newly_latched = !cmd_vel_arbiter_->estop_latched();
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Software E-stop publisher conflict: expected exactly one, found %zu; latching stop",
+        publisher_count);
+      cmd_vel_arbiter_->set_estop(true);
+      estop_monitor_fault_ = true;
+      if (newly_faulted || newly_latched) {
+        begin_direct_emergency_stop();
+      }
+      publish_arbiter_output();
+      return;
+    }
+    last_estop_message_ = std::chrono::steady_clock::now();
+    last_estop_input_active_ = active;
+    if (active) {
+      const bool changed = !cmd_vel_arbiter_->estop_latched();
+      cmd_vel_arbiter_->set_estop(true);
+      if (changed) {
+        RCLCPP_ERROR(get_logger(), "Software emergency stop latched; all motion is blocked");
+        begin_direct_emergency_stop();
+      }
+    }
+    publish_arbiter_output();
+  }
+
+  void reset_software_estop(std_srvs::srv::Trigger::Response & response)
+  {
+    if (!cmd_vel_arbiter_ || !software_estop_) {
+      response.success = false;
+      response.message = "cmd_vel_arbiter_not_enabled";
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const bool unique_publisher = software_estop_->get_publisher_count() == 1;
+    const bool fresh = last_estop_message_.has_value() &&
+      now - *last_estop_message_ < estop_monitor_timeout_;
+    const bool control_session_ready = direct_estop::control_session_ready_for_estop_reset(
+      adapter_->requires_control_lease(), adapter_->control_status());
+    const bool direct_stop_ready = direct_estop_guard_.reset_allowed(
+      adapter_->requires_control_lease());
+    if (!unique_publisher || (require_estop_monitor_ && !fresh) || last_estop_input_active_ ||
+      !control_session_ready || !direct_stop_ready)
+    {
+      response.success = false;
+      response.message = !unique_publisher ? "estop_publisher_not_unique" :
+        !fresh ? "estop_monitor_not_fresh" : last_estop_input_active_ ?
+        "estop_input_still_active" : !control_session_ready ?
+        "control_session_not_acquired" : "direct_adapter_stop_not_confirmed";
+      return;
+    }
+    estop_monitor_fault_ = false;
+    cmd_vel_arbiter_->set_estop(false);
+    direct_estop_guard_.cancel();
+    publish_arbiter_output();
+    response.success = true;
+    response.message = "estop_reset_new_command_required";
+    RCLCPP_WARN(get_logger(), "Software E-stop explicitly reset; cached commands remain cleared");
+  }
+
+  void begin_direct_emergency_stop()
+  {
+    direct_estop_guard_.begin(direct_estop::Clock::now());
+  }
+
+  bool restart_direct_emergency_stop_for_control_session()
+  {
+    if (!cmd_vel_arbiter_ || !cmd_vel_arbiter_->estop_latched() ||
+      !adapter_->requires_control_lease())
+    {
+      return false;
+    }
+    direct_estop_guard_.restart_for_control_session(direct_estop::Clock::now());
+    return true;
+  }
+
+  void service_direct_emergency_stop_retry(
+    const std::chrono::steady_clock::time_point now)
+  {
+    constexpr auto retry_period = 200ms;
+    if (!cmd_vel_arbiter_ || !cmd_vel_arbiter_->estop_latched()) {
+      return;
+    }
+    const auto incident = direct_estop_guard_.start_attempt(now);
+    if (!incident) {
+      return;
+    }
+
+    adapter_->emergency_stop(
+      [this, incident = *incident, retry_period](bool success, const std::string & reason) {
+        const auto completion = direct_estop_guard_.complete_attempt(
+          incident, success, direct_estop::Clock::now(), retry_period);
+        if (completion == direct_estop::Completion::stale ||
+          completion == direct_estop::Completion::confirmed)
+        {
+          return;
+        }
+        RCLCPP_ERROR(
+          get_logger(), "Direct adapter emergency stop attempt %u failed: %s",
+          direct_estop_guard_.attempts(), reason.c_str());
+        if (completion == direct_estop::Completion::exhausted) {
+          RCLCPP_ERROR(
+            get_logger(),
+            "Direct adapter emergency stop is unconfirmed; ordinary E-stop reset remains blocked");
+        }
+      });
+  }
+
+  void enforce_estop_monitor(const std::chrono::steady_clock::time_point now)
+  {
+    if (!require_estop_monitor_ || !software_estop_) {
+      return;
+    }
+    const bool unique_publisher = software_estop_->get_publisher_count() == 1;
+    const bool fresh = last_estop_message_.has_value() &&
+      now - *last_estop_message_ < estop_monitor_timeout_;
+    if (unique_publisher && fresh) {
+      return;
+    }
+    const bool newly_latched = !cmd_vel_arbiter_->estop_latched();
+    estop_monitor_fault_ = true;
+    cmd_vel_arbiter_->set_estop(true);
+    if (newly_latched) {
+      begin_direct_emergency_stop();
+    }
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "E-stop monitor unhealthy: publishers=%zu fresh=%s; explicit reset required",
+      software_estop_->get_publisher_count(), fresh ? "true" : "false");
+  }
+
+  bool velocity_source_has_unique_publisher(cmd_vel_arbiter::Source source)
+  {
+    std::size_t publisher_count = 0;
+    switch (source) {
+      case cmd_vel_arbiter::Source::teleop:
+        publisher_count = cmd_vel_teleop_->get_publisher_count();
+        break;
+      case cmd_vel_arbiter::Source::docking:
+        publisher_count = cmd_vel_docking_->get_publisher_count();
+        break;
+      case cmd_vel_arbiter::Source::navigation:
+        publisher_count = cmd_vel_navigation_->get_publisher_count();
+        break;
+      case cmd_vel_arbiter::Source::none:
+        return false;
+    }
+    if (publisher_count == 1) {
+      return true;
+    }
+    cmd_vel_arbiter_->invalidate_source(
+      source, cmd_vel_arbiter::SourceHealth::publisher_conflict);
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "cmd_vel arbiter rejected %s: expected exactly one publisher, found %zu",
+      cmd_vel_arbiter::source_name(source), publisher_count);
+    return false;
+  }
+
+  void publish_arbiter_output()
+  {
+    if (!cmd_vel_arbiter_ || !cmd_vel_output_) {
+      return;
+    }
+    synchronize_arbiter_control_status();
+    const auto now = cmd_vel_arbiter::SteadyClock::now();
+    enforce_estop_monitor(now);
+    const auto decision = cmd_vel_arbiter_->decide(now, arbiter_control_status_);
+
+    geometry_msgs::msg::Twist output;
+    output.linear.x = decision.command.vx;
+    output.linear.y = decision.command.vy;
+    output.angular.z = decision.command.yaw;
+    cmd_vel_output_->publish(output);
+    // Publish the arbiter's zero command before entering a vendor SDK call.
+    // The SDK path remains software-only and may block, but it can no longer
+    // delay this ROS-side stop publication within the same callback.
+    service_direct_emergency_stop_retry(now);
+
+    std::ostringstream status;
+    status << "selected=" << cmd_vel_arbiter::source_name(decision.source) <<
+      ";reason=" << cmd_vel_arbiter::reason_name(decision.reason) <<
+      ";owner_kind=" << cmd_vel_arbiter::owner_name(decision.owner) <<
+      ";authority=" << arbiter_control_status_ <<
+      ";estop=" << (cmd_vel_arbiter_->estop_latched() ? "true" : "false") <<
+      ";estop_monitor_fault=" << (estop_monitor_fault_ ? "true" : "false") <<
+      ";direct_stop_confirmed=" << (direct_estop_guard_.confirmed() ? "true" : "false") <<
+      ";direct_stop_attempts=" << direct_estop_guard_.attempts() <<
+      ";stamp_enforce=" <<
+      (cmd_vel_arbiter_->stamp_freshness_enforced() ? "true" : "false") <<
+      ";teleop=" << cmd_vel_arbiter::health_name(
+      cmd_vel_arbiter_->source_health(cmd_vel_arbiter::Source::teleop, now)) <<
+      ";docking=" << cmd_vel_arbiter::health_name(
+      cmd_vel_arbiter_->source_health(cmd_vel_arbiter::Source::docking, now)) <<
+      ";navigation=" << cmd_vel_arbiter::health_name(
+      cmd_vel_arbiter_->source_health(cmd_vel_arbiter::Source::navigation, now)) <<
+      ";teleop_stamp=" << cmd_vel_arbiter::health_name(
+      cmd_vel_arbiter_->stamp_health(cmd_vel_arbiter::Source::teleop)) <<
+      ";teleop_skew_ms=" << cmd_vel_arbiter_->last_stamp_skew_ms(
+      cmd_vel_arbiter::Source::teleop) <<
+      ";teleop_skew_events=" << cmd_vel_arbiter_->stamp_skew_events(
+      cmd_vel_arbiter::Source::teleop) <<
+      ";teleop_stamp_rejects=" << cmd_vel_arbiter_->stamp_rejections(
+      cmd_vel_arbiter::Source::teleop) <<
+      ";docking_stamp=" << cmd_vel_arbiter::health_name(
+      cmd_vel_arbiter_->stamp_health(cmd_vel_arbiter::Source::docking)) <<
+      ";docking_skew_ms=" << cmd_vel_arbiter_->last_stamp_skew_ms(
+      cmd_vel_arbiter::Source::docking) <<
+      ";docking_skew_events=" << cmd_vel_arbiter_->stamp_skew_events(
+      cmd_vel_arbiter::Source::docking) <<
+      ";docking_stamp_rejects=" << cmd_vel_arbiter_->stamp_rejections(
+      cmd_vel_arbiter::Source::docking);
+    const std::string base_status = status.str();
+    const bool changed = base_status != last_arbiter_status_;
+    const bool heartbeat_due = !last_arbiter_status_publish_.has_value() ||
+      now - *last_arbiter_status_publish_ >= arbiter_status_period_;
+    if (changed || heartbeat_due) {
+      last_arbiter_status_ = base_status;
+      last_arbiter_status_publish_ = now;
+      ++arbiter_status_sequence_;
+      const std::string heartbeat_status =
+        base_status + ";status_seq=" + std::to_string(arbiter_status_sequence_);
+      publish(cmd_vel_arbiter_status_, heartbeat_status);
+      if (changed) {
+        RCLCPP_INFO(get_logger(), "cmd_vel arbiter: %s", heartbeat_status.c_str());
+      }
+    }
+  }
+
   void publish(
     const rclcpp::Publisher<std_msgs::msg::String>::SharedPtr & publisher,
     const std::string & value)
@@ -222,6 +1031,17 @@ private:
       return;
     }
 
+    if (cmd_vel_arbiter_ && cmd_vel_arbiter_->estop_latched() &&
+      !direct_estop::control_action_allowed_while_estop_latched(action))
+    {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Control action rejected while software E-stop is latched: action=%s client=%s",
+        action.c_str(), client_id.c_str());
+      publish(control_status_, "error:" + action + ':' + client_id + ":estop_latched");
+      return;
+    }
+
     if (action != "heartbeat") {
       RCLCPP_INFO(
         get_logger(), "Control command received: action=%s client=%s current=%s",
@@ -230,6 +1050,14 @@ private:
     adapter_->request_control(
       action, client_id,
       [this, action, client_id](bool success, const std::string & reason) {
+        // An acquire completion can mean that a previously unconnected SDK
+        // session is now live. Invalidate any stop confirmation obtained while
+        // it was idle/acquiring before another callback can reset the latch.
+        // Do not call the adapter again here: immediate callbacks may still be
+        // running under an adapter mutex. The arbiter timer performs the stop.
+        if (action == "acquire" && success) {
+          restart_direct_emergency_stop_for_control_session();
+        }
         if (action == "heartbeat") {
           if (!success) {
             RCLCPP_WARN_THROTTLE(
@@ -252,6 +1080,13 @@ private:
             "error:" + action + ':' + client_id + ':' + safe_reason(reason));
         }
       });
+    // Initial SDK construction happens synchronously inside request_control(),
+    // before an asynchronous acquire callback reports a connected session.
+    // Start a fresh incident now and publish zero before directly stopping the
+    // newly created session. A later successful completion restarts it again.
+    if (action == "acquire" && restart_direct_emergency_stop_for_control_session()) {
+      publish_arbiter_output();
+    }
     publish_control_status_if_changed();
   }
 
@@ -268,13 +1103,40 @@ private:
     publish(control_status_, status);
   }
 
-  void request_locomotion(std::string command)
+  bool actuator_command_is_authorized(
+    const std::string & wire_command, std::string & command, std::string & client_id)
   {
+    const auto separator = wire_command.find(':');
+    command = wire_command.substr(0, separator);
+    client_id = separator == std::string::npos ? "" : wire_command.substr(separator + 1);
+    if (!adapter_->requires_control_lease()) {
+      return true;
+    }
+    return valid_client_id(client_id) &&
+           adapter_->control_status() == "acquired:" + client_id;
+  }
+
+  void request_locomotion(std::string wire_command)
+  {
+    std::string command;
+    std::string client_id;
+    if (!actuator_command_is_authorized(wire_command, command, client_id)) {
+      RCLCPP_ERROR(
+        get_logger(), "Locomotion request rejected: client does not own control: %s",
+        safe_reason(client_id).c_str());
+      publish(locomotion_status_, "error:loco:not_control_owner");
+      return;
+    }
     RCLCPP_INFO(get_logger(), "Locomotion command received: command=%s", command.c_str());
     if (command != "loco") {
       RCLCPP_WARN(
         get_logger(), "Locomotion command rejected: unsupported command=%s", command.c_str());
       publish(locomotion_status_, "error:" + safe_reason(command) + ":unsupported_command");
+      return;
+    }
+    if (cmd_vel_arbiter_ && cmd_vel_arbiter_->estop_latched()) {
+      RCLCPP_ERROR(get_logger(), "Locomotion request rejected while software E-stop is latched");
+      publish(locomotion_status_, "error:loco:estop_latched");
       return;
     }
     if (locomotion_busy_.exchange(true)) {
@@ -297,13 +1159,29 @@ private:
       });
   }
 
-  void request_posture(std::string command)
+  void request_posture(std::string wire_command)
   {
+    std::string command;
+    std::string client_id;
+    if (!actuator_command_is_authorized(wire_command, command, client_id)) {
+      RCLCPP_ERROR(
+        get_logger(), "Posture request rejected: client does not own control: %s",
+        safe_reason(client_id).c_str());
+      publish(posture_status_, "error:" + safe_reason(command) + ":not_control_owner");
+      return;
+    }
     RCLCPP_INFO(get_logger(), "Posture command received: command=%s", command.c_str());
     if (command != "stand" && command != "lie_down") {
       RCLCPP_WARN(
         get_logger(), "Posture command rejected: unsupported command=%s", command.c_str());
       publish(posture_status_, "error:" + safe_reason(command) + ":unsupported_command");
+      return;
+    }
+    if (cmd_vel_arbiter_ && cmd_vel_arbiter_->estop_latched()) {
+      RCLCPP_ERROR(
+        get_logger(), "Posture request rejected while software E-stop is latched: %s",
+        command.c_str());
+      publish(posture_status_, "error:" + command + ":estop_latched");
       return;
     }
     if (posture_busy_.exchange(true)) {
@@ -516,10 +1394,23 @@ private:
   bool posture_enabled_{false};
   bool locomotion_enabled_{false};
   bool control_enabled_{false};
+  bool cmd_vel_arbiter_enabled_{false};
+  bool require_estop_monitor_{false};
+  bool estop_monitor_fault_{false};
+  bool last_estop_input_active_{true};
+  direct_estop::Guard direct_estop_guard_;
   std::string mapping_script_;
   std::string mapping_log_;
   std::chrono::seconds mapping_stop_timeout_{30};
   std::chrono::seconds mapping_kill_timeout_{5};
+  std::chrono::milliseconds estop_monitor_timeout_{500};
+  std::chrono::milliseconds arbiter_status_period_{1000};
+  std::chrono::milliseconds adapter_status_period_{1000};
+  std::chrono::milliseconds adapter_telemetry_timeout_{1500};
+  std::chrono::milliseconds adapter_battery_timeout_{15000};
+  std::optional<std::chrono::steady_clock::time_point> last_estop_message_;
+  // Declared before adapter_ so adapter SDK teardown runs before lock release.
+  std::unique_ptr<SdkOwnerLock> sdk_owner_lock_;
   std::unique_ptr<RobotAdapter> adapter_;
   std::atomic_bool posture_busy_{false};
   std::atomic_bool locomotion_busy_{false};
@@ -529,16 +1420,36 @@ private:
   std::chrono::steady_clock::time_point mapping_stop_requested_at_{};
   std::thread mapping_waiter_;
   std::string last_control_status_;
+  std::string arbiter_control_status_;
+  std::string last_arbiter_status_;
+  std::optional<std::chrono::steady_clock::time_point> last_arbiter_status_publish_;
+  uint64_t arbiter_status_sequence_{0};
+  std::unique_ptr<cmd_vel_arbiter::Arbiter> cmd_vel_arbiter_;
 
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_output_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mapping_status_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr posture_status_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr locomotion_status_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr control_status_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr cmd_vel_arbiter_status_;
+  rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_state_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr adapter_diagnostics_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_connection_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_mode_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_sdk_error_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_summary_;
+  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_teleop_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_docking_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_navigation_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr software_estop_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr estop_reset_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mapping_command_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr posture_command_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr locomotion_command_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_;
   rclcpp::TimerBase::SharedPtr control_status_timer_;
+  rclcpp::TimerBase::SharedPtr cmd_vel_arbiter_timer_;
+  rclcpp::TimerBase::SharedPtr adapter_status_timer_;
 };
 
 }  // namespace

@@ -15,12 +15,79 @@
     zsibot.local_ip: 192.168.234.234
     zsibot.local_port: 43988
     zsibot.dog_ip: 192.168.234.1
-    zsibot.velocity_topic: /vel_cmd
+    # Only the in-process arbiter may publish the SDK-facing final command.
+    # Legacy App publishers on /vel_cmd therefore cannot bypass authority.
+    zsibot.velocity_topic: /omni/cmd_vel/final
+    # Safety timeout for the velocity stream. This is intentionally separate
+    # from the 5-second authority lease: a stalled App/joystick must stop
+    # motion within 200-300 ms without giving up SDK ownership immediately.
+    zsibot.safety.cmd_vel_timeout_ms: 250
+    # Product operating envelope. The bridge clamps these values again to the
+    # selected model's SDK hard limits; use 0 to disable an axis.
+    zsibot.safety.max_forward_velocity_mps: 0.6
+    zsibot.safety.max_reverse_velocity_mps: 0.3
+    zsibot.safety.max_lateral_velocity_mps: 0.3
+    zsibot.safety.max_yaw_rate_radps: 0.8
+    # Unified in-process command arbiter. Inputs are intentionally distinct
+    # from the SDK-facing final topic above.
+    cmd_vel_arbiter.enabled: true
+    cmd_vel_arbiter.topics.teleop: /omni/cmd_vel/teleop
+    cmd_vel_arbiter.topics.navigation: /scan_planner/cmd_vel
+    # OpenNav Docking publishes geometry_msgs/Twist; remap its relative
+    # `cmd_vel` output to this canonical topic in the docking bringup.
+    cmd_vel_arbiter.topics.docking: /omni/cmd_vel/docking
+    cmd_vel_arbiter.topics.estop: /omni/safety/estop
+    cmd_vel_arbiter.topics.status: /omni/cmd_vel/arbiter_status
+    cmd_vel_arbiter.services.estop_reset: /omni/safety/reset_estop
+    # Product motion is fail-closed until exactly one safety supervisor sends
+    # a fresh Bool heartbeat. `false` means healthy but never clears a latch;
+    # reset requires the explicit Trigger service above.
+    cmd_vel_arbiter.require_estop_monitor: true
+    cmd_vel_arbiter.estop_monitor_timeout_ms: 500
+    # Independent sole publisher for the Bridge-facing E-stop heartbeat. It
+    # starts latched and never treats a false request as a reset. Recovery is a
+    # two-stage operation: arm this supervisor, then reset the Bridge latch.
+    safety_supervisor.output_period_ms: 100
+    safety_supervisor.heartbeat_deadline_ms: 500
+    safety_supervisor.status_period_ms: 1000
+    safety_supervisor.topics.estop: /omni/safety/estop
+    safety_supervisor.topics.request: /omni/safety/estop_request
+    safety_supervisor.topics.status: /omni/safety/supervisor_status
+    safety_supervisor.services.arm: /omni/safety/arm_supervisor
+    safety_supervisor.services.latch: /omni/safety/latch_estop
+    # Bridge-only publication of adapter-cached telemetry. These callbacks do
+    # not call the SDK; connection/mode are refreshed by poll_sdk every 250 ms
+    # and battery uses its existing diagnostic sampling cadence.
+    adapter_status.publish_period_ms: 1000
+    adapter_status.telemetry_stale_ms: 1500
+    adapter_status.battery_stale_ms: 15000
+    adapter_status.topics.battery: /battery_state
+    adapter_status.topics.diagnostics: /diagnostics
+    adapter_status.topics.connection: /omni/robot/connection
+    adapter_status.topics.mode: /omni/robot/mode
+    adapter_status.topics.sdk_error: /omni/robot/sdk_error
+    adapter_status.topics.summary: /omni/robot/adapter_status
+    cmd_vel_arbiter.teleop_timeout_ms: 250
+    cmd_vel_arbiter.docking_timeout_ms: 250
+    cmd_vel_arbiter.navigation_timeout_ms: 250
+    # Stamped commands still expire by arrival time after 250 ms. These wider
+    # stamp tolerances avoid rejecting normal sub-second phone/robot skew, but
+    # NTP synchronization remains a deployment prerequisite.
+    cmd_vel_arbiter.stamped_max_age_ms: 1000
+    cmd_vel_arbiter.stamped_future_tolerance_ms: 500
+    # Phase 0 records clock skew but uses receipt steady-time as the hard gate.
+    # Turn this on only after Orin/phone NTP health is monitored in bringup.
+    cmd_vel_arbiter.enforce_stamp_freshness: false
+    cmd_vel_arbiter.output_period_ms: 25
+    # Monotonic status heartbeat used by App/deployment stale-state gates.
+    cmd_vel_arbiter.status_period_ms: 1000
     # Touching the joystick automatically stands the dog and waits for mode 1.
     zsibot.auto_stand_on_locomotion: true
     # Keep this below the App's 10-second acknowledgement timeout.
     zsibot.stand_timeout_sec: 8
     # ZSL-1W forbids posture transitions while moving; send one stop first.
+    # Product startup rejects values outside 0-500 ms so configuration cannot
+    # block the single-threaded software E-stop path for an arbitrary duration.
     zsibot.stop_settle_ms: 300
     zsibot.diagnostics_period_sec: 10
     # App sends a heartbeat every second. A lost phone/network automatically
