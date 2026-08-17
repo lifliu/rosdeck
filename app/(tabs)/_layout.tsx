@@ -22,6 +22,7 @@ export default function TabLayout() {
           >
             <Tabs.Screen name="index" />
             <Tabs.Screen name="control" />
+            <Tabs.Screen name="mission" />
             <Tabs.Screen name="settings" />
           </Tabs>
         </View>
@@ -38,6 +39,7 @@ export default function TabLayout() {
     >
       <Tabs.Screen name="index" />
       <Tabs.Screen name="control" />
+      <Tabs.Screen name="mission" />
       <Tabs.Screen name="settings" />
     </Tabs>
   );
