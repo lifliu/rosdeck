@@ -1,6 +1,7 @@
 #include "rosdeck_robot_bridge/robot_adapter.hpp"
 #include "rosdeck_robot_bridge/cmd_vel_arbiter.hpp"
 #include "rosdeck_robot_bridge/direct_estop_guard.hpp"
+#include "rosdeck_robot_bridge/robot_state_aggregator.hpp"
 #include "rosdeck_robot_bridge/sdk_owner_lock.hpp"
 
 #include <algorithm>
@@ -30,6 +31,9 @@
 
 #include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <omni_robot_interfaces/msg/mission_status.hpp>
+#include <omni_robot_interfaces/msg/robot_state.hpp>
+#include <omni_slam_interfaces/msg/slam_status.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
@@ -110,6 +114,29 @@ public:
 
 private:
   std::string adapter_name_;
+};
+
+// Freshness-tracked relay of an upstream status topic. Only the single
+// executor thread of this node touches these states, so no synchronization
+// is needed; staleness is judged against the steady clock at tick time.
+struct SlamRelayState
+{
+  bool known{false};
+  AdapterSteadyTime received_at{};
+  uint8_t mode{omni_slam_interfaces::msg::SlamStatus::MODE_STOPPED};
+  uint8_t state{omni_slam_interfaces::msg::SlamStatus::STATE_STOPPED};
+  std::string map_id;
+  std::string map_version;
+  float fitness{std::numeric_limits<float>::quiet_NaN()};
+};
+
+struct MissionRelayState
+{
+  bool known{false};
+  AdapterSteadyTime received_at{};
+  uint8_t state{omni_robot_interfaces::msg::MissionStatus::MISSION_NONE};
+  std::string mission_id;
+  float progress{std::numeric_limits<float>::quiet_NaN()};
 };
 
 class BridgeNode final : public rclcpp::Node
@@ -240,6 +267,21 @@ public:
     }
     estop_monitor_timeout_ = std::chrono::milliseconds(std::clamp<int64_t>(
         requested_estop_monitor_timeout, 100, adapter_name == "zsibot" ? 500 : 5000));
+
+    robot_state_enabled_ = declare_parameter<bool>("robot_state.enabled", true);
+    const auto robot_state_topic = declare_parameter<std::string>(
+      "robot_state.topics.robot_state", "/omni/robot_state");
+    const auto slam_status_topic = declare_parameter<std::string>(
+      "robot_state.topics.slam_status", "/omni/slam/status");
+    const auto mission_status_topic = declare_parameter<std::string>(
+      "robot_state.topics.mission_status", "/omni/mission/status");
+    robot_state_period_ = bounded_milliseconds(
+      "robot_state.publish_period_ms", 1000, 200, 5000);
+    robot_state_tick_ = bounded_milliseconds("robot_state.tick_period_ms", 250, 50, 1000);
+    robot_state_slam_stale_ = bounded_milliseconds(
+      "robot_state.slam_status_stale_ms", 2000, 500, 30000);
+    robot_state_mission_stale_ = bounded_milliseconds(
+      "robot_state.mission_status_stale_ms", 5000, 1000, 60000);
 
     const AdapterBuildSupport build_support{
 #ifdef ROSDECK_HAS_VBOT_ADAPTER
@@ -476,6 +518,78 @@ public:
       adapter_status_period_, [this]() {publish_adapter_observability();});
     publish_adapter_observability();
 
+    if (robot_state_enabled_) {
+      // Reliable + transient_local keep-last 1, matching both the SLAM
+      // manager's SlamStatus profile and the RobotState topic contract.
+      const auto robot_state_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+      robot_state_ = create_publisher<omni_robot_interfaces::msg::RobotState>(
+        robot_state_topic, robot_state_qos);
+      slam_status_ = create_subscription<omni_slam_interfaces::msg::SlamStatus>(
+        slam_status_topic, robot_state_qos,
+        [this](const omni_slam_interfaces::msg::SlamStatus::SharedPtr message) {
+          slam_relay_.known = true;
+          slam_relay_.received_at = AdapterSteadyClock::now();
+          slam_relay_.mode = message->mode;
+          slam_relay_.state = message->state;
+          slam_relay_.map_id = message->map_id;
+          // SlamStatus carries map_version as uint32; RobotState as string.
+          // An empty map_id means "no map" regardless of the version counter.
+          slam_relay_.map_version =
+            message->map_id.empty() ? "" : std::to_string(message->map_version);
+          slam_relay_.fitness = message->fitness_score;
+        });
+      mission_status_ = create_subscription<omni_robot_interfaces::msg::MissionStatus>(
+        mission_status_topic, robot_state_qos,
+        [this](const omni_robot_interfaces::msg::MissionStatus::SharedPtr message) {
+          mission_relay_.known = true;
+          mission_relay_.received_at = AdapterSteadyClock::now();
+          mission_relay_.state = message->state;
+          mission_relay_.mission_id = message->mission_id;
+          mission_relay_.progress = message->progress;
+        });
+
+      const std::array<std::string, 3> resolved_robot_state_topics{
+        robot_state_->get_topic_name(),
+        slam_status_->get_topic_name(),
+        mission_status_->get_topic_name(),
+      };
+      for (std::size_t index = 0; index < resolved_robot_state_topics.size(); ++index) {
+        if (resolved_robot_state_topics[index].empty()) {
+          throw std::invalid_argument("robot_state topics must be non-empty");
+        }
+        for (std::size_t other = index + 1; other < resolved_robot_state_topics.size();
+          ++other)
+        {
+          if (resolved_robot_state_topics[index] == resolved_robot_state_topics[other]) {
+            throw std::invalid_argument("resolved robot_state topics must be unique");
+          }
+        }
+        if (index == 0) {
+          for (const auto & adapter_topic : resolved_adapter_topics) {
+            if (resolved_robot_state_topics[0] == adapter_topic) {
+              throw std::invalid_argument(
+                      "resolved robot_state output must not alias an adapter topic");
+            }
+          }
+        }
+      }
+
+      robot_state_timer_ = create_wall_timer(
+        robot_state_tick_, [this]() {publish_robot_state();});
+      publish_robot_state();
+      RCLCPP_INFO(
+        get_logger(),
+        "robot_state aggregator enabled: output=%s slam=%s mission=%s period=%ldms "
+        "tick=%ldms stale=(%ld,%ld)ms",
+        robot_state_topic.c_str(), slam_status_topic.c_str(),
+        mission_status_topic.c_str(),
+        static_cast<long>(robot_state_period_.count()),
+        static_cast<long>(robot_state_tick_.count()),
+        static_cast<long>(robot_state_slam_stale_.count()),
+        static_cast<long>(robot_state_mission_stale_.count()));
+    }
+
     RCLCPP_INFO(
       get_logger(),
       "Ready: adapter=%s mapping=%s posture=%s locomotion=%s control_lease=%s arbiter=%s",
@@ -644,6 +758,68 @@ private:
       ";last_error_domain=" << safe_status_field(snapshot.last_error_domain) <<
       ";sequence=" << snapshot.sequence;
     publish(adapter_summary_, summary.str());
+  }
+
+  // Whole-robot snapshot on /omni/robot_state: adapter observability + E-stop
+  // latch + mapping state + control lease, relayed from /omni/slam/status and
+  // /omni/mission/status. Publishes on change plus a 1 Hz heartbeat so a
+  // static robot still announces liveness.
+  void publish_robot_state()
+  {
+    if (!robot_state_) {
+      return;
+    }
+    const auto steady_now = AdapterSteadyClock::now();
+    const AdapterSnapshot snapshot = adapter_->snapshot();
+    const auto health = assess_adapter_health(
+      snapshot, steady_now, adapter_telemetry_timeout_, adapter_battery_timeout_);
+    const bool battery_fresh = snapshot.battery_known && adapter_sample_fresh(
+      snapshot.battery_sample_known, snapshot.battery_sample_at,
+      steady_now, adapter_battery_timeout_);
+    const float unknown = std::numeric_limits<float>::quiet_NaN();
+    const float battery_percentage =
+      battery_fresh && std::isfinite(snapshot.battery_fraction) ?
+      std::clamp(snapshot.battery_fraction, 0.0F, 1.0F) * 100.0F : unknown;
+    bool mapping_active = false;
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      mapping_active = mapping_pid_ > 0;
+    }
+    RobotStateAggregator::Relay relay;
+    relay.slam_fresh = adapter_sample_fresh(
+      slam_relay_.known, slam_relay_.received_at, steady_now, robot_state_slam_stale_);
+    if (relay.slam_fresh) {
+      relay.slam_mode = slam_relay_.mode;
+      relay.slam_state = slam_relay_.state;
+      relay.slam_map_id = slam_relay_.map_id;
+      relay.slam_map_version = slam_relay_.map_version;
+      relay.slam_fitness = slam_relay_.fitness;
+    }
+    relay.mission_fresh = adapter_sample_fresh(
+      mission_relay_.known, mission_relay_.received_at, steady_now,
+      robot_state_mission_stale_);
+    if (relay.mission_fresh) {
+      relay.mission_state = mission_relay_.state;
+      relay.mission_id = mission_relay_.mission_id;
+      relay.mission_progress = mission_relay_.progress;
+    }
+
+    const omni_robot_interfaces::msg::RobotState message = RobotStateAggregator::build(
+      snapshot, health, battery_percentage,
+      cmd_vel_arbiter_ && cmd_vel_arbiter_->estop_latched(),
+      mapping_active, adapter_->control_status(), relay);
+    auto stamped = message;
+    stamped.header.stamp = get_clock()->now();
+    stamped.header.frame_id = "base_link";
+    const bool changed = !last_robot_state_.has_value() ||
+      RobotStateAggregator::effectively_changed(*last_robot_state_, stamped);
+    const bool heartbeat_due = !last_robot_state_publish_.has_value() ||
+      steady_now - *last_robot_state_publish_ >= robot_state_period_;
+    if (changed || heartbeat_due) {
+      last_robot_state_ = stamped;
+      last_robot_state_publish_ = steady_now;
+      robot_state_->publish(stamped);
+    }
   }
 
   static cmd_vel_arbiter::RawTwist raw_twist(const geometry_msgs::msg::Twist & message)
@@ -1402,6 +1578,7 @@ private:
   bool require_estop_monitor_{false};
   bool estop_monitor_fault_{false};
   bool last_estop_input_active_{true};
+  bool robot_state_enabled_{false};
   direct_estop::Guard direct_estop_guard_;
   std::string mapping_script_;
   std::string mapping_log_;
@@ -1412,6 +1589,14 @@ private:
   std::chrono::milliseconds adapter_status_period_{1000};
   std::chrono::milliseconds adapter_telemetry_timeout_{1500};
   std::chrono::milliseconds adapter_battery_timeout_{15000};
+  std::chrono::milliseconds robot_state_period_{1000};
+  std::chrono::milliseconds robot_state_tick_{250};
+  std::chrono::milliseconds robot_state_slam_stale_{2000};
+  std::chrono::milliseconds robot_state_mission_stale_{5000};
+  SlamRelayState slam_relay_;
+  MissionRelayState mission_relay_;
+  std::optional<omni_robot_interfaces::msg::RobotState> last_robot_state_;
+  std::optional<std::chrono::steady_clock::time_point> last_robot_state_publish_;
   std::optional<std::chrono::steady_clock::time_point> last_estop_message_;
   // Declared before adapter_ so adapter SDK teardown runs before lock release.
   std::unique_ptr<SdkOwnerLock> sdk_owner_lock_;
@@ -1442,6 +1627,9 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_mode_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_sdk_error_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr adapter_summary_;
+  rclcpp::Publisher<omni_robot_interfaces::msg::RobotState>::SharedPtr robot_state_;
+  rclcpp::Subscription<omni_slam_interfaces::msg::SlamStatus>::SharedPtr slam_status_;
+  rclcpp::Subscription<omni_robot_interfaces::msg::MissionStatus>::SharedPtr mission_status_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_teleop_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_docking_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_navigation_;
@@ -1454,6 +1642,7 @@ private:
   rclcpp::TimerBase::SharedPtr control_status_timer_;
   rclcpp::TimerBase::SharedPtr cmd_vel_arbiter_timer_;
   rclcpp::TimerBase::SharedPtr adapter_status_timer_;
+  rclcpp::TimerBase::SharedPtr robot_state_timer_;
 };
 
 }  // namespace

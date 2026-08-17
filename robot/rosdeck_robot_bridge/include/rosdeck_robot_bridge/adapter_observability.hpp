@@ -45,6 +45,13 @@ struct AdapterSnapshot
   std::string authority_state{"unknown"};
   std::string authority_owner;
 
+  // Motion-lease timing, when the adapter tracks a lease deadline. Unknown
+  // adapters (vbot has no lease concept) leave the known flag false; the
+  // aggregator then reports a held lease with unknown timing (0.0 in the
+  // RobotState contract).
+  bool authority_lease_remaining_known{false};
+  double authority_lease_remaining_sec{0.0};
+
   bool last_sdk_result_known{false};
   uint32_t last_sdk_result_code{0};
   std::string last_sdk_result{"unknown"};

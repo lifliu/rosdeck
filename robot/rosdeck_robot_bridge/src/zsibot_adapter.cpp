@@ -510,6 +510,12 @@ public:
     value.authority_known = true;
     value.authority_state = authority_state_locked();
     value.authority_owner = control_owner_;
+    value.authority_lease_remaining_known = true;
+    if (control_state_ == ControlState::acquired) {
+      const auto remaining = lease_deadline_ - AdapterSteadyClock::now();
+      value.authority_lease_remaining_sec = std::max(
+        0.0, std::chrono::duration_cast<std::chrono::duration<double>>(remaining).count());
+    }
     value.last_sdk_result_known = last_sdk_result_known_;
     value.last_sdk_result_code = last_sdk_result_code_;
     value.last_sdk_result = last_sdk_result_;

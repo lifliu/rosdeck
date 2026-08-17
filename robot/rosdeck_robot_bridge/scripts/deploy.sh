@@ -12,9 +12,11 @@ CLEAN_CACHE=0
 NODE_NAME="rosdeck_robot_bridge"
 ZSIBOT_SDK=""
 ZSIBOT_MODEL=""
+INTERFACES_DIR=""
+SLAM_DIR=""
 
 usage() {
-  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w] [--clean] [--no-start] [--no-foxglove]"
+  echo "Usage: sudo ./scripts/deploy.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w] [--interfaces-dir PATH] [--slam-dir PATH] [--clean] [--no-start] [--no-foxglove]"
 }
 
 while (($#)); do
@@ -24,6 +26,8 @@ while (($#)); do
     --prefix) INSTALL_PREFIX="${2:?missing install prefix}"; shift 2 ;;
     --zsibot-sdk) ZSIBOT_SDK="${2:?missing Zsibot SDK path}"; shift 2 ;;
     --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
+    --interfaces-dir) INTERFACES_DIR="${2:?missing interfaces dir}"; shift 2 ;;
+    --slam-dir) SLAM_DIR="${2:?missing slam dir}"; shift 2 ;;
     --clean) CLEAN_CACHE=1; shift ;;
     --no-start) ENABLE_SERVICE=0; shift ;;
     --no-foxglove) ENABLE_FOXGLOVE=0; shift ;;
@@ -83,6 +87,12 @@ command -v systemctl >/dev/null 2>&1 || {
 BUILD_ARGS=(--profile "${PROFILE}" --ros-setup "${ROS_SETUP}" --prefix "${INSTALL_PREFIX}")
 if [[ "${PROFILE}" == "zsibot" ]]; then
   BUILD_ARGS+=(--zsibot-sdk "${ZSIBOT_SDK}" --zsibot-model "${ZSIBOT_MODEL}")
+fi
+if [[ -n "${INTERFACES_DIR}" ]]; then
+  BUILD_ARGS+=(--interfaces-dir "${INTERFACES_DIR}")
+fi
+if [[ -n "${SLAM_DIR}" ]]; then
+  BUILD_ARGS+=(--slam-dir "${SLAM_DIR}")
 fi
 if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
   BUILD_ARGS+=(--clean)
