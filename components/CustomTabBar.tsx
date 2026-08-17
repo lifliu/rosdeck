@@ -19,10 +19,11 @@ const TAB_CONFIG: Record<
 > = {
   index: { labelKey: "tabs.connect", icon: "link-outline" },
   control: { labelKey: "tabs.control", icon: "grid-outline" },
+  mission: { labelKey: "tabs.mission", icon: "walk-outline" },
   settings: { labelKey: "tabs.settings", icon: "settings-sharp" },
 };
 
-const TAB_ROUTES = ["index", "control", "settings"];
+const TAB_ROUTES = ["index", "control", "mission", "settings"];
 
 /**
  * Portrait bottom tab bar — rendered via Tabs tabBar prop
@@ -109,7 +110,9 @@ export function LandscapeTabRail() {
   const setEditMode = useLayoutStore((s) => s.setEditMode);
 
   // Determine active tab from route segments
-  const currentSegment = segments[1] || "index"; // segments[0] is "(tabs)"
+  // (expo-router 55 types useSegments() as a 1-tuple by default; the hook
+  // actually returns the full segment array at runtime)
+  const currentSegment = (segments as readonly string[])[1] || "index";
   const activeIndex = TAB_ROUTES.indexOf(currentSegment);
   const isOnControlTab = currentSegment === "control";
 
