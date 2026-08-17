@@ -3,6 +3,10 @@
 Wires MissionMachine (state_machine.py, pure Python) to ROS 2:
 
   - ExecuteInspection action server on /omni/mission/execute
+  - DispatchMission service on /omni/mission/dispatch (App entry point;
+    the foxglove/rosbridge WS bridges do not carry ROS 2 actions, so the
+    App dispatches through this service; same state machine, gates and
+    reason codes as the action)
   - MissionControl service on /omni/mission/control
   - ListRoutes service on /omni/routes/list
   - FollowRoute action client on /omni/navigation/follow_route
@@ -38,6 +42,7 @@ from omni_robot_interfaces.action import ExecuteInspection, FollowRoute
 from omni_robot_interfaces.msg import MissionEvent, MissionStatus, RobotState
 from omni_robot_interfaces.srv import (
     ControlAuthority,
+    DispatchMission,
     ListRoutes,
     MissionControl,
 )
@@ -88,6 +93,8 @@ class MissionManagerNode(Node):
             "control_service", "/omni/mission/control")
         self._routes_service = self._param_str(
             "routes_service", "/omni/routes/list")
+        self._dispatch_service = self._param_str(
+            "dispatch_service", "/omni/mission/dispatch")
         self._authority_service = self._param_str(
             "authority_service", "/omni/control/authority")
         self._lease_sec = float(
@@ -128,6 +135,8 @@ class MissionManagerNode(Node):
             MissionControl, self._control_service, self._on_mission_control)
         self.create_service(
             ListRoutes, self._routes_service, self._on_list_routes)
+        self.create_service(
+            DispatchMission, self._dispatch_service, self._on_dispatch)
         self._authority_client = self.create_client(
             ControlAuthority, self._authority_service)
 
@@ -388,32 +397,40 @@ class MissionManagerNode(Node):
 
     # ---------- ExecuteInspection server ----------
 
-    async def _execute_cb(self, goal_handle):
-        goal = goal_handle.goal
-        outcome = self._machine.dispatch(DispatchGoal(
-            mission_id=goal.mission_id,
-            request_id=goal.request_id,
-            sequence=int(goal.sequence),
-            map_id=goal.map_id,
-            map_version=goal.map_version,
-            route_id=goal.route_id,
-            checkpoint_ids=tuple(goal.checkpoint_ids),
-        ), self._robot_view())
+    def _dispatch_inner(self, dispatch_goal):
+        """Shared dispatch pipeline for both entry points (the
+        ExecuteInspection action and the DispatchMission service), so
+        gates, side effects and reason codes are identical regardless of
+        how the mission was requested.
+
+        Runs: machine dispatch -> event flush -> supersede teardown ->
+        planner-ready check -> authority acquire -> confirm ->
+        FollowRoute goal send.
+
+        Returns (kind, reason_code, reason_text, progress, mission_id,
+        mission) where kind is:
+          "rejected"    no mission was created
+          "duplicate"   replay; mission is the original (terminal or
+                        still active); code/text/progress are its
+                        terminal_result answer
+          "dispatched"  new mission confirmed, follow goal in flight
+          "failed"      mission created but dispatch did not complete
+                        (dropped by abort_created, which also frees the
+                        (request_id, sequence) key for a retry, or
+                        terminated); mission is None once dropped
+        """
+        outcome = self._machine.dispatch(dispatch_goal, self._robot_view())
         self._flush_events()
 
         if outcome.action == "reject":
-            goal_handle.abort()
-            return self._make_result(goal, outcome.reason_code,
-                                     outcome.reason_text, 0.0)
+            return ("rejected", outcome.reason_code, outcome.reason_text,
+                    0.0, "", None)
+
         if outcome.action == "duplicate":
-            ok, code, text, progress = \
+            _, code, text, progress = \
                 self._machine.terminal_result(outcome.mission)
-            if ok:
-                goal_handle.succeed()
-            else:
-                goal_handle.abort()
-            return self._make_result(goal, code, text, progress,
-                                     outcome.mission.mission_id)
+            return ("duplicate", code, text, progress,
+                    outcome.mission.mission_id, outcome.mission)
 
         mission = outcome.mission
         mid = mission.mission_id
@@ -429,8 +446,7 @@ class MissionManagerNode(Node):
             text = "navigation planner is not available"
             self._machine.abort_created(mid, C.REASON_REJECTED, text)
             self._flush_events()
-            goal_handle.abort()
-            return self._make_result(goal, C.REASON_REJECTED, text, 0.0, mid)
+            return ("failed", C.REASON_REJECTED, text, 0.0, mid, None)
 
         resp = self._call_authority(
             C.OP_ACQUIRE, mission.authority_client_id, "dispatch")
@@ -443,9 +459,7 @@ class MissionManagerNode(Node):
                            resp.active_client_id or "?"))
             self._machine.abort_created(mid, C.REASON_CONTROL_DENIED, text)
             self._flush_events()
-            goal_handle.abort()
-            return self._make_result(goal, C.REASON_CONTROL_DENIED,
-                                     text, 0.0, mid)
+            return ("failed", C.REASON_CONTROL_DENIED, text, 0.0, mid, None)
 
         self._machine.confirm_dispatch(mid)
         self._flush_events()
@@ -456,10 +470,36 @@ class MissionManagerNode(Node):
         self._send_follow_goal(mid)
         if mid not in self._follow_sent:
             m = self._machine.get(mid)
-            ok, code, text, progress = \
-                self._machine.terminal_result(m)
-            goal_handle.abort()
-            return self._make_result(goal, code, text, progress, mid)
+            _, code, text, progress = self._machine.terminal_result(m)
+            return ("failed", code, text, progress, mid, m)
+
+        return ("dispatched", C.REASON_OK, "", 0.0, mid,
+                self._machine.get(mid))
+
+    async def _execute_cb(self, goal_handle):
+        goal = goal_handle.goal
+        kind, code, text, progress, mid, mission = self._dispatch_inner(
+            DispatchGoal(
+                mission_id=goal.mission_id,
+                request_id=goal.request_id,
+                sequence=int(goal.sequence),
+                map_id=goal.map_id,
+                map_version=goal.map_version,
+                route_id=goal.route_id,
+                checkpoint_ids=tuple(goal.checkpoint_ids),
+            ))
+
+        if kind != "dispatched":
+            # Terminal answer without a live goal to wait on: success
+            # only for a replay of a mission that already succeeded.
+            ok = kind == "duplicate" and mission is not None and \
+                mission.state == C.MISSION_SUCCEEDED
+            if ok:
+                goal_handle.succeed()
+            else:
+                goal_handle.abort()
+            return self._make_result(goal, code, text, progress,
+                                     mid or None)
 
         canceled_by_user = False
         while rclpy.ok():
@@ -520,6 +560,44 @@ class MissionManagerNode(Node):
         r.mission_id = mission_id if mission_id is not None \
             else (goal.mission_id or "")
         return r
+
+    # ---------- DispatchMission service (App entry point) ----------
+
+    def _on_dispatch(self, request, response):
+        """App-facing dispatch over the foxglove/rosbridge WS bridges,
+        which do not carry ROS 2 actions. Shares _dispatch_inner with
+        the action, so idempotency keys, precondition gates and reason
+        codes are identical. Fire-and-forget: accepted means the
+        mission is PENDING and the FollowRoute goal has been (or is
+        being) sent; the outcome is tracked on /omni/mission/status and
+        /omni/mission/events, not returned by this call."""
+        kind, code, text, _progress, mid, mission = self._dispatch_inner(
+            DispatchGoal(
+                mission_id=request.mission_id,
+                request_id=request.request_id,
+                sequence=int(request.sequence),
+                map_id=request.map_id,
+                map_version=request.map_version,
+                route_id=request.route_id,
+                checkpoint_ids=tuple(request.checkpoint_ids),
+            ))
+
+        if kind == "dispatched":
+            response.accepted = True
+        elif kind == "duplicate":
+            # A replay mirrors the original dispatch outcome: a terminal
+            # original is reported as its outcome, an active one as
+            # accepted (REASON_DUPLICATE signals the no-op re-dispatch).
+            response.accepted = mission is not None and \
+                (mission.state == C.MISSION_SUCCEEDED or
+                 not mission.is_terminal)
+        else:
+            response.accepted = False
+        response.reason_code = code
+        response.reason_text = text
+        response.mission_id = mid or request.mission_id
+        self._publish_status()
+        return response
 
     # ---------- MissionControl service ----------
 
