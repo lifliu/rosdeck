@@ -2,17 +2,24 @@
 set -euo pipefail
 
 INSTALL_PREFIX="@INSTALL_PREFIX@"
-UNIT_NAME="rosdeck-robot-bridge.service"
-UNIT_SOURCE="${INSTALL_PREFIX}/systemd/${UNIT_NAME}"
-UNIT_RUNTIME="/run/systemd/system/${UNIT_NAME}"
+BRIDGE_UNIT="rosdeck-robot-bridge.service"
+MANAGER_UNIT="omni-mission-manager.service"
+BRIDGE_SOURCE="${INSTALL_PREFIX}/systemd/${BRIDGE_UNIT}"
+MANAGER_SOURCE="${INSTALL_PREFIX}/systemd/${MANAGER_UNIT}"
+UNIT_RUNTIME="/run/systemd/system"
 
-install -d "${INSTALL_PREFIX}/log" /run/systemd/system
+install -d "${INSTALL_PREFIX}/log" "${UNIT_RUNTIME}"
 
 for attempt in $(seq 1 30); do
   if systemctl show-environment >/dev/null 2>&1; then
-    install -m 0644 "${UNIT_SOURCE}" "${UNIT_RUNTIME}"
+    install -m 0644 "${BRIDGE_SOURCE}" "${UNIT_RUNTIME}/${BRIDGE_UNIT}"
+    install -m 0644 "${MANAGER_SOURCE}" "${UNIT_RUNTIME}/${MANAGER_UNIT}"
     systemctl daemon-reload
-    systemctl start "${UNIT_NAME}"
+    systemctl start "${BRIDGE_UNIT}"
+    # The mission manager is ordered After= the bridge; give the bridge a
+    # moment so recovery + bringup run against a live gateway.
+    sleep 3
+    systemctl start "${MANAGER_UNIT}"
     exit 0
   fi
   sleep 1
