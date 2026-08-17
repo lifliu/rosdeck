@@ -2,7 +2,7 @@
   "expo": {
     "name": "OmniDeck",
     "slug": "omnideck",
-    "version": "1.0.0",
+    "version": "1.2.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "omnideck",
@@ -25,7 +25,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "net.aiomni.rosdeck",
-      "versionCode": 1
+      "versionCode": 4
     },
     "web": {
       "bundler": "metro",

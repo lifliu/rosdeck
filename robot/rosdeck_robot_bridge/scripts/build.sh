@@ -130,8 +130,11 @@ echo "Building rosdeck_robot_bridge (${PROFILE}) with ${ROS_SETUP}"
 colcon --log-base "${INSTALL_PREFIX}/log" build "${COLCON_ARGS[@]}"
 
 BINARY="${INSTALL_PREFIX}/install/lib/rosdeck_robot_bridge/rosdeck_robot_bridge_node"
-if [[ ! -x "${BINARY}" ]]; then
-  echo "Build completed but the node executable was not installed: ${BINARY}" >&2
-  exit 1
-fi
-echo "Build successful: ${BINARY}"
+SUPERVISOR_BINARY="${INSTALL_PREFIX}/install/lib/rosdeck_robot_bridge/rosdeck_safety_supervisor_node"
+for runtime_binary in "${BINARY}" "${SUPERVISOR_BINARY}"; do
+  if [[ ! -x "${runtime_binary}" ]]; then
+    echo "Build completed but a product runtime executable was not installed: ${runtime_binary}" >&2
+    exit 1
+  fi
+done
+echo "Build successful: ${BINARY}, ${SUPERVISOR_BINARY}"

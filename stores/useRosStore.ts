@@ -7,6 +7,7 @@ import { FoxgloveTransport } from '../lib/foxglove-transport';
 import { DemoTransport } from '../lib/demo-transport';
 import { DEFAULTS } from '../constants/defaults';
 import { buildWebSocketUrl } from '../lib/ros';
+import { bestEffortReleaseControl } from '../lib/control-authority';
 
 interface ConnectionState {
   url: string;
@@ -251,6 +252,7 @@ export const useRosStore = create<RosStore>((set, get) => ({
     if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
     // Clear state first so the onStatus callback won't trigger auto-reconnect
     const transport = state.transport;
+    bestEffortReleaseControl(transport);
     set({
       transport: null,
       connection: { ...initialConnection },

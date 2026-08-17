@@ -36,7 +36,7 @@ export interface WidgetConfigField {
   label: string;
   type: 'topic' | 'text' | 'number' | 'boolean' | 'select' | 'series-editor' | 'axis-mapping' | 'slider';
   topicMessageTypes?: string[];
-  options?: Array<{ label: string; value: string }>;
+  options?: Array<{ label: string; value: string | number }>;
   placeholder?: string;
   /** Slider config */
   min?: number;

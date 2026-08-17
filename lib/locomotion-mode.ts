@@ -1,10 +1,11 @@
 import type { Subscription, Transport } from './transport';
 import { useLocomotionModeStore } from '../stores/useLocomotionModeStore';
+import { CONTROL_CLIENT_ID } from './control-authority';
 
 export const LOCOMOTION_COMMAND_TOPIC = '/rosdeck/locomotion_command';
 export const LOCOMOTION_STATUS_TOPIC = '/rosdeck/locomotion_status';
 export const LOCOMOTION_MESSAGE_TYPE = 'std_msgs/msg/String';
-export const LOCOMOTION_COMMAND = { data: 'loco' } as const;
+export const LOCOMOTION_COMMAND = { data: `loco:${CONTROL_CLIENT_ID}` } as const;
 
 const ACK_TIMEOUT_MS = 10000;
 const RETRY_DELAY_MS = 2000;
@@ -61,7 +62,7 @@ function requestBridgeLocoMode(transport: Transport): Promise<void> {
       (message) => {
         if (typeof message?.data !== 'string') return;
         const [result, command, ...details] = message.data.split(':');
-        if (command !== LOCOMOTION_COMMAND.data) return;
+        if (command !== 'loco') return;
         if (result === 'success') {
           finish();
         } else if (result === 'error') {

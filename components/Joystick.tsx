@@ -17,6 +17,7 @@ import { useGamepadStore } from '../stores/useGamepadStore';
 import type { WidgetProps } from "../types/layout";
 import { registerTouchEntry, unregisterTouchEntry, updateTouchBounds } from "../lib/touch-dispatcher";
 import { useTranslation } from '../lib/i18n';
+import { defaultUsesTwistStamped, getTeleopSafetyPolicy } from '../lib/teleop';
 
 const lightTick = () => {
   if (Platform.OS === "ios") {
@@ -54,7 +55,8 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const [showHint, setShowHint] = useState(true);
 
   const cmdVelTopic = props?.config?.topic || DEFAULTS.cmdVelTopic;
-  const useTwistStamped = props?.config?.useTwistStamped ?? false;
+  const useTwistStamped = props?.config?.useTwistStamped ??
+    defaultUsesTwistStamped(cmdVelTopic);
   const frameId = props?.config?.frameId || "base_link";
   const xAxisGroup: 'linear' | 'angular' = props?.config?.xAxisGroup ?? 'angular';
   const xAxisComponent: 'x' | 'y' | 'z' = props?.config?.xAxisComponent ?? 'z';
@@ -64,7 +66,10 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const yAxisScale: number = props?.config?.yAxisScale ?? 0.5;
   const xAxisField = `${xAxisGroup}.${xAxisComponent}` as TwistField;
   const yAxisField = `${yAxisGroup}.${yAxisComponent}` as TwistField;
-  const requireLocoMode = props?.config?.requireLocoMode ?? cmdVelTopic === '/vel_cmd';
+  const requireLocoMode = getTeleopSafetyPolicy(
+    cmdVelTopic,
+    props?.config?.requireLocoMode,
+  ).requireLocomotionMode;
   const { t } = useTranslation();
 
   const setAxes = useCmdVelStore((s) => s.setAxes);
@@ -73,6 +78,7 @@ export function Joystick(props?: Partial<WidgetProps>) {
     prepareLocomotion,
     locoStatus,
     locoError,
+    controlBlocked,
   } = useCmdVelPublisher(cmdVelTopic, useTwistStamped, frameId, requireLocoMode);
 
   const gamepadConnected = useGamepadStore((s) => s.connected);
@@ -290,7 +296,13 @@ export function Joystick(props?: Partial<WidgetProps>) {
             <Text style={styles.stickBadgeText}>{stickLabel}</Text>
           </View>
         )}
-        {requireLocoMode && locoStatus !== 'idle' && (
+        {controlBlocked ? (
+          <View style={[styles.locoBadge, styles.controlBlockedBadge]}>
+            <Text style={[styles.locoBadgeText, styles.controlBlockedText]} numberOfLines={1}>
+              {t('joystick.takeControl')}
+            </Text>
+          </View>
+        ) : requireLocoMode && locoStatus !== 'idle' && (
           <View style={styles.locoBadge}>
             <Text style={[
               styles.locoBadgeText,
@@ -420,6 +432,12 @@ const styles = StyleSheet.create({
   },
   locoErrorText: {
     color: theme.colors.statusError,
+  },
+  controlBlockedBadge: {
+    backgroundColor: theme.colors.statusConnecting + '22',
+  },
+  controlBlockedText: {
+    color: theme.colors.statusConnecting,
   },
   locoErrorDetail: {
     fontFamily: 'SpaceMono',

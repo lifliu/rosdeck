@@ -4,6 +4,8 @@ import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { theme } from '../constants/theme';
 import { useTranslation, type TranslationKey } from '../lib/i18n';
 import { useRosStore } from '../stores/useRosStore';
+import { CONTROL_CLIENT_ID } from '../lib/control-authority';
+import { useControlAuthorityStore } from '../stores/useControlAuthorityStore';
 
 export const POSTURE_COMMAND_TOPIC = '/rosdeck/posture_command';
 export const POSTURE_STATUS_TOPIC = '/rosdeck/posture_status';
@@ -12,6 +14,10 @@ export const POSTURE_COMMANDS = {
   stand: { data: 'stand' },
   lieDown: { data: 'lie_down' },
 } as const;
+
+export function buildPostureCommand(command: PostureCommand) {
+  return { data: `${POSTURE_COMMANDS[command].data}:${CONTROL_CLIENT_ID}` };
+}
 
 export type PostureCommand = keyof typeof POSTURE_COMMANDS;
 
@@ -29,6 +35,8 @@ export function PostureControl({ compact = false }: { compact?: boolean }) {
   const transport = useRosStore((state) => state.transport);
   const url = useRosStore((state) => state.connection.url);
   const { t } = useTranslation();
+  const authorityStatus = useControlAuthorityStore((state) => state.status);
+  const authorityOwner = useControlAuthorityStore((state) => state.ownerId);
   const [pending, setPending] = useState<PostureCommand | null>(null);
   const pendingRef = useRef<PostureCommand | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -80,7 +88,11 @@ export function PostureControl({ compact = false }: { compact?: boolean }) {
     }
     pendingRef.current = command;
     setPending(command);
-    transport.publish(POSTURE_COMMAND_TOPIC, POSTURE_MESSAGE_TYPE, POSTURE_COMMANDS[command]);
+    transport.publish(
+      POSTURE_COMMAND_TOPIC,
+      POSTURE_MESSAGE_TYPE,
+      buildPostureCommand(command),
+    );
     clearTimeoutRef();
     timeoutRef.current = setTimeout(() => {
       pendingRef.current = null;
@@ -103,7 +115,10 @@ export function PostureControl({ compact = false }: { compact?: boolean }) {
     );
   }, [sendCommand, t]);
 
-  const disabled = status !== 'connected' || !transport || url?.startsWith('demo://') || pending !== null;
+  const authorityReady = authorityStatus === 'unsupported' ||
+    (authorityStatus === 'acquired' && authorityOwner === CONTROL_CLIENT_ID);
+  const disabled = status !== 'connected' || !transport || url?.startsWith('demo://') ||
+    !authorityReady || pending !== null;
 
   return (
     <View style={styles.container}>

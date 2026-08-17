@@ -32,6 +32,7 @@ describe('DemoTransport', () => {
     const topics = await transport.getTopics();
     expect(topics.length).toBeGreaterThan(0);
     const names = topics.map((t) => t.name);
+    expect(names).toContain('/omni/cmd_vel/teleop');
     expect(names).toContain('/vel_cmd');
     expect(names).toContain('/camera/image_raw/compressed');
     expect(names).toContain('/map');

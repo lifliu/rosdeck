@@ -81,7 +81,7 @@ set +u
 source "${ROS_SETUP}"
 set -u
 command -v colcon >/dev/null 2>&1 || {
-  echo "colcon is required on the S100 development board." >&2
+  echo "colcon is required on the development/build host (not on the deployment target)." >&2
   exit 1
 }
 
@@ -164,15 +164,23 @@ fi
   "${BUILD_ARGS[@]}"
 
 BINARY="${BUILD_ROOT}/install/lib/rosdeck_robot_bridge/rosdeck_robot_bridge_node"
+SUPERVISOR_BINARY="${BUILD_ROOT}/install/lib/rosdeck_robot_bridge/rosdeck_safety_supervisor_node"
 set +u
 source "${BUILD_ROOT}/install/setup.bash"
 set -u
-if LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
-  ldd "${BINARY}" | grep -q 'not found'; then
-  echo "The compiled node has unresolved shared-library dependencies:" >&2
-  LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" ldd "${BINARY}" >&2
-  exit 1
-fi
+for runtime_binary in "${BINARY}" "${SUPERVISOR_BINARY}"; do
+  if [[ ! -x "${runtime_binary}" ]]; then
+    echo "Build completed but a product runtime executable is missing: ${runtime_binary}" >&2
+    exit 1
+  fi
+  if LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
+    ldd "${runtime_binary}" | grep -q 'not found'; then
+    echo "A product runtime executable has unresolved shared-library dependencies:" >&2
+    LD_LIBRARY_PATH="${BUILD_ROOT}/install/lib:${LD_LIBRARY_PATH:-}" \
+      ldd "${runtime_binary}" >&2
+    exit 1
+  fi
+done
 
 VERSION="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' "${PACKAGE_DIR}/package.xml" | head -1)"
 ARCH="$(uname -m)"
@@ -191,10 +199,13 @@ install -m 0644 "${PACKAGE_DIR}/config/${PROFILE}.yaml" "${STAGE}/config/bridge.
 install -m 0755 "${PACKAGE_DIR}/scripts/deploy-prebuilt.sh" "${STAGE}/deploy.sh"
 install -m 0755 "${PACKAGE_DIR}/scripts/uninstall.sh" "${STAGE}/uninstall.sh"
 install -m 0644 "${PACKAGE_DIR}/scripts/run-prebuilt.in" "${STAGE}/templates/run-bridge.in"
+install -m 0644 "${PACKAGE_DIR}/scripts/run-foxglove.in" "${STAGE}/templates/run-foxglove.in"
 install -m 0644 "${PACKAGE_DIR}/scripts/bootstrap-service.in" \
   "${STAGE}/templates/bootstrap-service.in"
 install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   "${STAGE}/templates/rosdeck-robot-bridge.service.in"
+install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
+  "${STAGE}/templates/rosdeck-foxglove-bridge.service.in"
 
 cat > "${STAGE}/manifest.env" <<EOF
 BUNDLE_VERSION=${VERSION}

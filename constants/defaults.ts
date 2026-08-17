@@ -1,9 +1,12 @@
+import { OMNI_TELEOP_TOPIC } from '../lib/teleop';
+
 export const DEFAULTS = {
   rosbridgePort: 9090,
   foxglovePort: 8765,
   mjpegPort: 8080,
-  // VBot Humble locomotion_exec subscribes to geometry_msgs/msg/Twist here.
-  cmdVelTopic: '/vel_cmd',
+  // Unified manual-control input consumed by cmd_vel_arbiter.
+  cmdVelTopic: OMNI_TELEOP_TOPIC,
+  cmdVelUseTwistStamped: true,
   cameraTopic: '/camera/image_raw/compressed',
   maxLinearVel: 0.5,
   maxAngularVel: 1.0,

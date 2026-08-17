@@ -10,6 +10,7 @@ jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
 import {
   parsePostureStatus,
+  buildPostureCommand,
   POSTURE_COMMANDS,
   POSTURE_COMMAND_TOPIC,
   POSTURE_MESSAGE_TYPE,
@@ -25,6 +26,11 @@ describe('PostureControl protocol', () => {
       stand: { data: 'stand' },
       lieDown: { data: 'lie_down' },
     });
+  });
+
+  it('binds actuator commands to this App control client', () => {
+    expect(buildPostureCommand('stand').data).toMatch(/^stand:app-/);
+    expect(buildPostureCommand('lieDown').data).toMatch(/^lie_down:app-/);
   });
 
   it('parses success and error acknowledgements', () => {

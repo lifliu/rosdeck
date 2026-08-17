@@ -6,8 +6,12 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 option(ROSDECK_BUILD_VBOT_ADAPTER "Build the VBot service adapter" ON)
 option(ROSDECK_BUILD_ZSIBOT_ADAPTER "Build the Zsibot native SDK adapter" OFF)
 set(ROSDECK_ZSIBOT_SDK_ROOT "" CACHE PATH "Path to the Zsibot SDK root")
@@ -25,7 +29,6 @@ if(ROSDECK_BUILD_ZSIBOT_ADAPTER)
   if(NOT ROSDECK_ZSIBOT_SDK_ROOT)
     message(FATAL_ERROR "ROSDECK_ZSIBOT_SDK_ROOT is required for the Zsibot adapter")
   endif()
-  find_package(geometry_msgs REQUIRED)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(ROSDECK_ZSIBOT_ARCH "aarch64")
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
@@ -50,7 +53,15 @@ add_executable(rosdeck_robot_bridge_node
   src/zsibot_adapter.cpp
 )
 target_include_directories(rosdeck_robot_bridge_node PRIVATE include)
-ament_target_dependencies(rosdeck_robot_bridge_node rclcpp std_msgs)
+ament_target_dependencies(
+  rosdeck_robot_bridge_node diagnostic_msgs geometry_msgs rclcpp sensor_msgs std_msgs std_srvs)
+
+add_executable(rosdeck_safety_supervisor_node
+  src/safety_supervisor_node.cpp
+)
+target_include_directories(rosdeck_safety_supervisor_node PRIVATE include)
+ament_target_dependencies(rosdeck_safety_supervisor_node rclcpp std_msgs std_srvs)
+target_compile_options(rosdeck_safety_supervisor_node PRIVATE -Wall -Wextra -Wpedantic)
 
 if(ROSDECK_BUILD_ZSIBOT_ADAPTER)
   target_include_directories(rosdeck_robot_bridge_node PRIVATE
@@ -63,7 +74,6 @@ if(ROSDECK_BUILD_ZSIBOT_ADAPTER)
   else()
     target_compile_definitions(rosdeck_robot_bridge_node PRIVATE ROSDECK_ZSIBOT_MODEL_ZSL1W=1)
   endif()
-  ament_target_dependencies(rosdeck_robot_bridge_node geometry_msgs)
   install(FILES "${ROSDECK_ZSIBOT_SDK_LIBRARY}" DESTINATION lib)
   message(STATUS "Building Rosdeck Zsibot adapter: ${ROSDECK_ZSIBOT_MODEL}/${ROSDECK_ZSIBOT_ARCH}")
 else()
@@ -83,10 +93,55 @@ endif()
 
 target_compile_options(rosdeck_robot_bridge_node PRIVATE -Wall -Wextra -Wpedantic)
 
-install(TARGETS rosdeck_robot_bridge_node
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  ament_add_gtest(test_velocity_safety test/test_velocity_safety.cpp)
+  target_include_directories(test_velocity_safety PRIVATE include)
+  target_compile_options(test_velocity_safety PRIVATE -Wall -Wextra -Wpedantic)
+  ament_add_gtest(test_cmd_vel_arbiter test/test_cmd_vel_arbiter.cpp)
+  target_include_directories(test_cmd_vel_arbiter PRIVATE include)
+  target_compile_options(test_cmd_vel_arbiter PRIVATE -Wall -Wextra -Wpedantic)
+  ament_add_gtest(test_sdk_owner_lock test/test_sdk_owner_lock.cpp)
+  target_include_directories(test_sdk_owner_lock PRIVATE include)
+  target_compile_options(test_sdk_owner_lock PRIVATE -Wall -Wextra -Wpedantic)
+  ament_add_gtest(test_safety_supervisor test/test_safety_supervisor.cpp)
+  target_include_directories(test_safety_supervisor PRIVATE include)
+  target_compile_options(test_safety_supervisor PRIVATE -Wall -Wextra -Wpedantic)
+  ament_add_gtest(test_adapter_observability test/test_adapter_observability.cpp)
+  target_include_directories(test_adapter_observability PRIVATE include)
+  target_compile_options(test_adapter_observability PRIVATE -Wall -Wextra -Wpedantic)
+  ament_add_gtest(test_direct_estop_guard test/test_direct_estop_guard.cpp)
+  target_include_directories(test_direct_estop_guard PRIVATE include)
+  target_compile_options(test_direct_estop_guard PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(
+    NAME test_product_bringup
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_product_bringup.py
+  )
+  set_tests_properties(test_product_bringup PROPERTIES TIMEOUT 30)
+  add_test(
+    NAME test_safety_supervisor_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_safety_supervisor_contract.py
+  )
+  set_tests_properties(test_safety_supervisor_contract PROPERTIES TIMEOUT 30)
+  add_test(
+    NAME test_adapter_observability_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_adapter_observability_contract.py
+  )
+  set_tests_properties(test_adapter_observability_contract PROPERTIES TIMEOUT 30)
+endif()
+
+install(TARGETS rosdeck_robot_bridge_node rosdeck_safety_supervisor_node
   DESTINATION lib/${PROJECT_NAME}
 )
-install(DIRECTORY config launch
+install(PROGRAMS
+  scripts/assert-no-legacy-zsibot-owner.sh
+  scripts/assert-product-bringup-health.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(DIRECTORY config launch doc
   DESTINATION share/${PROJECT_NAME}
 )
 

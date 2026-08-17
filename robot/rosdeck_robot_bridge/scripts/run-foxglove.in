@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# ROS 2 Humble setup files legitimately probe optional, unset variables such
+# as AMENT_TRACE_SETUP_FILES.  Keep pipe/error checking, but do not enable
+# nounset while sourcing the ROS environment.
+set -eo pipefail
+
+source "@ROS_SETUP@"
+if [[ -f "@INSTALL_PREFIX@/runtime/local_setup.bash" ]]; then
+  source "@INSTALL_PREFIX@/runtime/local_setup.bash"
+elif [[ -f "@INSTALL_PREFIX@/install/setup.bash" ]]; then
+  source "@INSTALL_PREFIX@/install/setup.bash"
+fi
+
+exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml \
+  address:="${FOXGLOVE_ADDRESS:-0.0.0.0}" \
+  port:="${FOXGLOVE_PORT:-8765}"

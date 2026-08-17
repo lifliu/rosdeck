@@ -30,7 +30,8 @@
 
 ## Features
 
-- **Teleop joystick** — virtual thumbstick publishing `Twist` / `TwistStamped` with configurable axes and velocity scaling
+- **Teleop joystick** — virtual thumbstick publishing `Twist` / `TwistStamped`; new layouts use `/omni/cmd_vel/teleop` (`TwistStamped`), while topic detection retains `/vel_cmd` (`Twist`) for older VBot deployments
+- **Fail-closed safety panel** — shows live Safety Supervisor and velocity-arbiter health, rejects stale status, and requires two independent confirmations before arming the supervisor and resetting the Bridge E-stop
 - **Bluetooth gamepad support** — connect an Xbox, PS5, or generic BT controller; auto-maps sticks to joystick widgets with configurable deadzone and layout
 - **Live camera** — subscribe to `CompressedImage` topics or connect to an MJPEG stream
 - **2D map** — render `OccupancyGrid`, overlay `LaserScan` point clouds, show robot pose from TF
@@ -97,6 +98,9 @@ an architecture-compatible development board, then copy its offline bundle to
 the target. The production target does not need colcon. VBot packages install
 under `/userdata` and register through `/userdata/startup.sh`; Zsibot packages use
 the official ZSL-1/ZSL-1W SDK, install under `/opt`, and use normal systemd.
+The Zsibot Gateway and deprecated same-host SDK owners share an exclusive,
+root-owned `/run/lock/omni/zsibot_sdk_owner.lock`; override the path consistently with
+`OMNI_ZSIBOT_SDK_OWNER_LOCK` only when the service sandbox requires it.
 The allowlisted adapters do not expose arbitrary shell execution or arbitrary service calls. See
 [`robot/README.md`](robot/README.md) for details.
 

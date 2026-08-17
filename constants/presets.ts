@@ -22,7 +22,8 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
         }),
         createWidgetNode('joystick', {
           topic: DEFAULTS.cmdVelTopic,
-          useTwistStamped: false,
+          useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
+          requireLocoMode: true,
           frameId: 'base_link',
           xAxisGroup: 'angular',
           xAxisComponent: 'z',
@@ -37,7 +38,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
   {
     id: 'drive',
     name: 'Drive',
-    buildTree: () => createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
+    buildTree: () => createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
   },
   {
     id: 'drive-camera',
@@ -45,7 +46,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('vertical',
         createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'mjpeg', mjpegPort: DEFAULTS.mjpegPort }),
-        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
+        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
         0.6
       ),
   },
@@ -60,7 +61,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('vertical',
         createWidgetNode('map', { topic: '/map', enableNav2Goal: false, nav2GoalTopic: '/goal_pose' }),
-        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
+        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
         0.6
       ),
   },
@@ -88,7 +89,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
               ],
               windowSec: 30,
             }),
-            createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: false, frameId: 'base_link' }),
+            createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
             0.5
           ),
           0.35

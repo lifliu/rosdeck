@@ -11,6 +11,15 @@ import {
   resetLocomotionModeState,
 } from '../lib/locomotion-mode';
 import { useLocomotionModeStore } from '../stores/useLocomotionModeStore';
+import {
+  useControlAuthorityStore,
+} from '../stores/useControlAuthorityStore';
+import {
+  defaultUsesTwistStamped,
+  getTeleopSafetyPolicy,
+  teleopPublishIsBlockedForConnection,
+} from '../lib/teleop';
+import { CONTROL_CLIENT_ID } from '../lib/control-authority';
 
 // Module-level singletons — one interval per topic, shared across all joystick instances.
 // Using a Set of publish fns so that when one joystick unmounts, the interval
@@ -57,23 +66,40 @@ export function useCmdVelPublisher(
   topic: string,
   useTwistStamped: boolean,
   frameId: string,
-  requireLocoMode = topic === '/vel_cmd',
+  requireLocoMode = false,
 ): {
   publishNow: () => void;
   prepareLocomotion: () => void;
   locoStatus: ReturnType<typeof useLocomotionModeStore.getState>['status'];
   locoError: string | null;
+  controlBlocked: boolean;
 } {
   const ros = useRosStore((s) => s.connection.ros);
+  const connectionUrl = useRosStore((s) => s.connection.url);
   const transport = useRosStore((s) => s.transport);
   const status = useRosStore((s) => s.connection.status);
   const locoStatus = useLocomotionModeStore((s) => s.status);
   const locoError = useLocomotionModeStore((s) => s.error);
+  const authorityStatus = useControlAuthorityStore((s) => s.status);
+  const authorityOwner = useControlAuthorityStore((s) => s.ownerId);
   const roslibTopicRef = useRef<any>(null);
   // Track which messageType the current roslibTopic was advertised with,
   // so we can guard against the render→effect race and config mismatches.
   const roslibTopicTypeRef = useRef<string | null>(null);
+  const roslibTopicNameRef = useRef<string | null>(null);
+  const roslibRosRef = useRef<any>(null);
   const previousTransportRef = useRef(transport);
+  const safetyPolicy = getTeleopSafetyPolicy(topic, requireLocoMode);
+  // The product arbiter exposes only TwistStamped on the unified input. A
+  // stale/custom layout flag must not silently advertise the wrong schema.
+  const publishTwistStamped = defaultUsesTwistStamped(topic) || useTwistStamped;
+  const isDemoConnection = connectionUrl.startsWith('demo://');
+  const controlBlocked = teleopPublishIsBlockedForConnection(
+    topic,
+    { status: authorityStatus, ownerId: authorityOwner },
+    CONTROL_CLIENT_ID,
+    connectionUrl,
+  );
 
   useEffect(() => {
     if (previousTransportRef.current !== transport || status !== 'connected') {
@@ -88,34 +114,56 @@ export function useCmdVelPublisher(
     roslibTopicRef.current?.unadvertise?.();
     roslibTopicRef.current = null;
     roslibTopicTypeRef.current = null;
+    roslibTopicNameRef.current = null;
+    roslibRosRef.current = null;
 
     if (ros && status === 'connected') {
-      const messageType = useTwistStamped
+      const messageType = publishTwistStamped
         ? 'geometry_msgs/msg/TwistStamped'
         : 'geometry_msgs/msg/Twist';
-      roslibTopicRef.current = createCmdVelTopic(ros, topic, useTwistStamped);
+      roslibTopicRef.current = createCmdVelTopic(ros, topic, publishTwistStamped);
       roslibTopicTypeRef.current = messageType;
+      roslibTopicNameRef.current = topic;
+      roslibRosRef.current = ros;
     }
 
     return () => {
       roslibTopicRef.current?.unadvertise?.();
       roslibTopicRef.current = null;
       roslibTopicTypeRef.current = null;
+      roslibTopicNameRef.current = null;
+      roslibRosRef.current = null;
     };
-  }, [ros, status, topic, useTwistStamped]);
+  }, [ros, status, topic, publishTwistStamped]);
 
   // publishRef is updated every render so the interval always calls fresh logic.
   const publishRef = useRef<() => void>(() => {});
   publishRef.current = () => {
+    // The interval outlives individual React renders. Re-read authority for
+    // every message so a release/takeover takes effect immediately. Block all
+    // regular publications, including zero, from non-owners: without a source
+    // identity on Twist, another connected App's zero stream could otherwise
+    // override the real owner's teleop stream.
+    const currentAuthority = useControlAuthorityStore.getState();
+    if (safetyPolicy.requireControlAuthority && teleopPublishIsBlockedForConnection(
+      topic,
+      { status: currentAuthority.status, ownerId: currentAuthority.ownerId },
+      CONTROL_CLIENT_ID,
+      connectionUrl,
+    )) {
+      return;
+    }
+
     const axes = useCmdVelStore.getState().topics[topic] ?? {};
     const twist = buildTwistFromAxes(axes);
-    const msg = useTwistStamped ? buildTwistStampedMessage(twist, frameId) : twist;
-    const messageType = useTwistStamped
+    const msg = publishTwistStamped ? buildTwistStampedMessage(twist, frameId) : twist;
+    const messageType = publishTwistStamped
       ? 'geometry_msgs/msg/TwistStamped'
       : 'geometry_msgs/msg/Twist';
 
     const hasMotion = Object.values(axes).some((value) => Math.abs(value ?? 0) > 0.0001);
-    if (requireLocoMode && hasMotion && transport && status === 'connected' &&
+    if (safetyPolicy.requireLocomotionMode && !isDemoConnection && hasMotion && transport &&
+        status === 'connected' &&
         !isLocoModeReady(transport)) {
       void ensureLocoMode(transport)
         .then(() => publishRef.current())
@@ -125,7 +173,10 @@ export function useCmdVelPublisher(
 
     // Only publish via roslib Topic if its advertised type still matches the
     // current config — guards the render→effect race window.
-    if (roslibTopicRef.current && roslibTopicTypeRef.current === messageType) {
+    if (roslibTopicRef.current &&
+        roslibTopicTypeRef.current === messageType &&
+        roslibTopicNameRef.current === topic &&
+        roslibRosRef.current === ros) {
       roslibTopicRef.current.publish(msg);
     } else if (transport && status === 'connected') {
       transport.publish(topic, messageType, msg);
@@ -167,14 +218,17 @@ export function useCmdVelPublisher(
   }, [topic]);
 
   const prepareLocomotion = useCallback(() => {
-    if (!requireLocoMode || !transport || status !== 'connected') return;
+    if (!safetyPolicy.requireLocomotionMode || isDemoConnection || !transport ||
+      status !== 'connected' ||
+      controlBlocked) return;
     void ensureLocoMode(transport).catch(() => {});
-  }, [requireLocoMode, transport, status]);
+  }, [safetyPolicy.requireLocomotionMode, isDemoConnection, transport, status, controlBlocked]);
 
   return {
     publishNow: () => publishRef.current(),
     prepareLocomotion,
     locoStatus,
     locoError,
+    controlBlocked,
   };
 }

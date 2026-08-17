@@ -3,23 +3,41 @@ import React, { useCallback, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { theme } from '../constants/theme';
 import { useTranslation } from '../lib/i18n';
+import type { Transport } from '../lib/transport';
 import { useRosStore } from '../stores/useRosStore';
-import type { TwistMessage } from '../types/ros';
 
 /**
- * Emergency stop fires the LowlevelAction service (SAFE_LAYDOWN_SEQUENCE)
- * via the bridge posture command topic, and also publishes zero-velocity
- * Twist to cmd_vel topics as a best-effort safety net.
- *
- * LowlevelAction mode: SAFE_LAYDOWN_SEQUENCE = 4
- * Bridge path: /rosdeck/posture_command (std_msgs/msg/String) → "emergency_stop"
+ * The canonical request is consumed by the safety supervisor/velocity arbiter.
+ * The posture command remains as a VBot compatibility path for safe laydown.
  */
+export const EMERGENCY_STOP_REQUEST_TOPIC = '/omni/safety/estop_request';
+export const EMERGENCY_STOP_REQUEST_MESSAGE_TYPE = 'std_msgs/msg/Bool';
+export const EMERGENCY_STOP_REQUEST_MESSAGE = { data: true } as const;
+export const VBOT_EMERGENCY_STOP_TOPIC = '/rosdeck/posture_command';
+export const VBOT_EMERGENCY_STOP_MESSAGE_TYPE = 'std_msgs/msg/String';
+export const VBOT_EMERGENCY_STOP_MESSAGE = { data: 'emergency_stop' } as const;
 
-/** Common cmd_vel topic names for zero-velocity fallback. */
-const CMD_VEL_TOPICS = ['/cmd_vel', '/robot/cmd_vel', '/diff_drive/cmd_vel'];
+export function publishEmergencyStop(transport: Pick<Transport, 'publish'>): void {
+  // Publish the fail-safe request first. The arbiter owns all velocity outputs;
+  // the App must never bypass it by writing to arbitrary cmd_vel topics.
+  transport.publish(
+    EMERGENCY_STOP_REQUEST_TOPIC,
+    EMERGENCY_STOP_REQUEST_MESSAGE_TYPE,
+    EMERGENCY_STOP_REQUEST_MESSAGE,
+  );
+  transport.publish(
+    VBOT_EMERGENCY_STOP_TOPIC,
+    VBOT_EMERGENCY_STOP_MESSAGE_TYPE,
+    VBOT_EMERGENCY_STOP_MESSAGE,
+  );
+}
 
-function zeroTwist(): TwistMessage {
-  return { linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } };
+export function emergencyStopIsEnabled(
+  connectionStatus: string,
+  transport: Pick<Transport, 'publish'> | null,
+  url: string | null | undefined,
+): boolean {
+  return connectionStatus === 'connected' && Boolean(transport) && !url?.startsWith('demo://');
 }
 
 export function EmergencyStop({ compact = false }: { compact?: boolean }) {
@@ -29,27 +47,11 @@ export function EmergencyStop({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
   const [pressed, setPressed] = useState(false);
 
-  const disabled = status !== 'connected' || !transport || url?.startsWith('demo://');
+  const disabled = !emergencyStopIsEnabled(status, transport, url);
 
   const sendEStop = useCallback(() => {
     if (!transport || disabled) return;
-
-    // 1. Fire the LowlevelAction SAFE_LAYDOWN_SEQUENCE via the bridge posture topic.
-    transport.publish(
-      '/rosdeck/posture_command',
-      'std_msgs/msg/String',
-      { data: 'emergency_stop' },
-    );
-
-    // 2. Best-effort zero-velocity Twist to cmd_vel topics as a safety net.
-    const twist = zeroTwist();
-    for (const topic of CMD_VEL_TOPICS) {
-      try {
-        transport.publish(topic, 'geometry_msgs/msg/Twist', twist);
-      } catch {
-        // topic may not exist — ignore
-      }
-    }
+    publishEmergencyStop(transport);
 
     // Brief visual feedback
     setPressed(true);
