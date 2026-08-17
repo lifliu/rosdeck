@@ -11,11 +11,12 @@ ZSIBOT_SDK=""
 ZSIBOT_MODEL="zsl-1"
 INTERFACES_DIR=""
 SLAM_DIR=""
+MISSION_MANAGER_DIR=""
 OMNI_ROBOT_INTERFACES_REPO="${OMNI_ROBOT_INTERFACES_REPO:-https://github.com/lifliu/omni_robot_interfaces.git}"
 OMNI_SLAM_REPO="${OMNI_SLAM_REPO:-https://github.com/YanYaoyuan/omni_slam.git}"
 
 usage() {
-  echo "Usage: ./scripts/build.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH] [--zsibot-model zsl-1|zsl-1w] [--interfaces-dir PATH] [--slam-dir PATH] [--clean]"
+  echo "Usage: ./scripts/build.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH] [--zsibot-model zsl-1|zsl-1w] [--interfaces-dir PATH] [--slam-dir PATH] [--mission-manager-dir PATH] [--clean]"
 }
 
 while (($#)); do
@@ -27,6 +28,7 @@ while (($#)); do
     --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
     --interfaces-dir) INTERFACES_DIR="${2:?missing interfaces dir}"; shift 2 ;;
     --slam-dir) SLAM_DIR="${2:?missing slam dir}"; shift 2 ;;
+    --mission-manager-dir) MISSION_MANAGER_DIR="${2:?missing mission manager dir}"; shift 2 ;;
     --clean) CLEAN_CACHE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -127,6 +129,23 @@ sync_omni_robot_interfaces() {
   fi
 }
 
+sync_omni_mission_manager() {
+  local src_dir
+  if [[ -n "${MISSION_MANAGER_DIR}" && -d "${MISSION_MANAGER_DIR}" ]]; then
+    src_dir="${MISSION_MANAGER_DIR}"
+  elif [[ -d "${SCRIPT_DIR}/../../omni_mission_manager" ]]; then
+    # Default: sibling of rosdeck_robot_bridge under robot/.
+    src_dir="${SCRIPT_DIR}/../../omni_mission_manager"
+  else
+    echo "omni_mission_manager sources not found; pass --mission-manager-dir PATH" >&2
+    exit 1
+  fi
+  rm -rf "${INSTALL_PREFIX}/src/omni_mission_manager"
+  cp -r "${src_dir}" "${INSTALL_PREFIX}/src/omni_mission_manager"
+  rm -rf "${INSTALL_PREFIX}/src/omni_mission_manager/.git"
+  echo "Synced omni_mission_manager from ${src_dir}"
+}
+
 sync_omni_slam_interfaces() {
   local dest="${INSTALL_PREFIX}/src/omni_slam_interfaces"
   if [[ -n "${SLAM_DIR}" ]]; then
@@ -156,13 +175,14 @@ sync_omni_slam_interfaces() {
 
 sync_omni_robot_interfaces
 sync_omni_slam_interfaces
+sync_omni_mission_manager
 
 COLCON_ARGS=(
   --base-paths "${INSTALL_PREFIX}/src"
   --build-base "${INSTALL_PREFIX}/build"
   --install-base "${INSTALL_PREFIX}/install"
   --merge-install
-  --packages-select rosdeck_robot_bridge omni_robot_interfaces omni_slam_interfaces
+  --packages-select rosdeck_robot_bridge omni_robot_interfaces omni_slam_interfaces omni_mission_manager
 )
 if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
   COLCON_ARGS+=(--cmake-clean-cache)

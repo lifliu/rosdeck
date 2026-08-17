@@ -1,0 +1,20 @@
+[Unit]
+Description=Omni inspection mission manager
+Wants=rosdeck-robot-bridge.service
+After=rosdeck-robot-bridge.service network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
+ExecStart=@INSTALL_PREFIX@/bin/run-omni-mission-manager
+# A SIGTERM triggers the node's graceful shutdown (active missions become
+# INTERRUPTED in SQLite, leases are released); systemd never restarts an
+# explicit stop.
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

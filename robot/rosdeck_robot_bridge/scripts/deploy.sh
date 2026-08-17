@@ -155,6 +155,12 @@ sed \
   -e "s#@PROFILE@#${PROFILE}#g" \
   "${PACKAGE_DIR}/scripts/run-bridge.in" > "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
 chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-robot-bridge"
+sed \
+  -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
+  -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+  "${PACKAGE_DIR}/scripts/run-mission-manager.in" \
+  > "${INSTALL_PREFIX}/bin/run-omni-mission-manager"
+chmod 0755 "${INSTALL_PREFIX}/bin/run-omni-mission-manager"
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
   sed \
     -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
@@ -172,6 +178,9 @@ chmod 0755 "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
 sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   > "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service"
+sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+  "${PACKAGE_DIR}/systemd/omni-mission-manager.service.in" \
+  > "${INSTALL_PREFIX}/systemd/omni-mission-manager.service"
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
   sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
     "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
@@ -192,12 +201,17 @@ if [[ "${PROFILE}" == "vbot" ]]; then
   chmod 0755 /userdata/startup.sh
   install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
     /run/systemd/system/rosdeck-robot-bridge.service
+  install -m 0644 "${INSTALL_PREFIX}/systemd/omni-mission-manager.service" \
+    /run/systemd/system/omni-mission-manager.service
 else
   install -d /etc/systemd/system
 fi
 install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service" \
   /etc/systemd/system/rosdeck-robot-bridge.service
 chmod 0644 /etc/systemd/system/rosdeck-robot-bridge.service
+install -m 0644 "${INSTALL_PREFIX}/systemd/omni-mission-manager.service" \
+  /etc/systemd/system/omni-mission-manager.service
+chmod 0644 /etc/systemd/system/omni-mission-manager.service
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
   install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-foxglove-bridge.service" \
     /etc/systemd/system/rosdeck-foxglove-bridge.service
@@ -214,6 +228,11 @@ if [[ "${PROFILE}" == "vbot" ]]; then
 else
   systemctl enable --now rosdeck-robot-bridge.service
 fi
+if [[ "${PROFILE}" == "vbot" ]]; then
+  systemctl restart omni-mission-manager.service
+else
+  systemctl enable --now omni-mission-manager.service
+fi
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
   systemctl enable --now rosdeck-foxglove-bridge.service
 fi
@@ -221,6 +240,11 @@ sleep 2
 if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
   echo "Bridge failed to stay active. Recent logs:" >&2
   journalctl -u rosdeck-robot-bridge.service -n 80 --no-pager >&2 || true
+  exit 1
+fi
+if ! systemctl is-active --quiet omni-mission-manager.service; then
+  echo "Mission manager failed to stay active. Recent logs:" >&2
+  journalctl -u omni-mission-manager.service -n 80 --no-pager >&2 || true
   exit 1
 fi
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && \
