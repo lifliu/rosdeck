@@ -277,15 +277,17 @@ class MissionMachine:
                 "reject", C.REASON_ROUTE_NOT_FOUND,
                 "route unreadable: %s" % exc)
 
-        # Map resolution: goal > route binding. In V1 route files are
-        # unbound, so the effective map is the goal's (usually "").
+        # Map resolution: goal > route binding (sidecar). An empty goal
+        # field falls back to the route's binding; an empty map_version
+        # means "current version". Unbound routes (no sidecar) leave the
+        # effective identity to the goal alone, as before.
         if goal.map_id and route.map_id and goal.map_id != route.map_id:
             return GoalOutcome(
                 "reject", C.REASON_MAP_MISMATCH,
                 "route %s is bound to map %s, goal requests %s"
                 % (goal.route_id, route.map_id, goal.map_id))
         effective_map = goal.map_id or route.map_id
-        effective_version = goal.map_version
+        effective_version = goal.map_version or route.map_version
 
         if not robot.fresh:
             return GoalOutcome(
