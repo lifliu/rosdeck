@@ -121,6 +121,53 @@ class DispatchGateTests(unittest.TestCase):
         out = self.machine.dispatch(goal(), robot())
         self.assertEqual(out.action, "accept")
 
+    def _bind(self, map_id, map_version=""):
+        self.machine._routes.bind("r1", map_id, map_version)
+
+    def test_bound_route_inherited_into_mission(self):
+        self._bind("mapA")
+        out = self.machine.dispatch(goal(), robot())
+        self.assertEqual(out.action, "accept")
+        m = out.mission
+        self.assertEqual(m.map_id, "mapA")  # from the route sidecar
+        self.assertEqual(m.map_version, "")  # current version
+
+    def test_bound_route_version_inherited(self):
+        self._bind("mapA", "v1")
+        ok = self.machine.dispatch(goal(), robot(map_version="v1"))
+        self.assertEqual(ok.action, "accept")
+        self.assertEqual(ok.mission.map_version, "v1")
+        out = self.machine.dispatch(goal(request_id="req2"),
+                                    robot(map_version="v2"))
+        self.assertEqual(out.action, "reject")
+        self.assertEqual(out.reason_code, C.REASON_MAP_MISMATCH)
+        self.assertIn("version", out.reason_text)
+
+    def test_goal_overrides_bound_route_version(self):
+        self._bind("mapA", "v1")
+        out = self.machine.dispatch(goal(map_version="v2"),
+                                    robot(map_version="v2"))
+        self.assertEqual(out.action, "accept")
+        self.assertEqual(out.mission.map_version, "v2")
+
+    def test_goal_map_conflicts_with_bound_route(self):
+        self._bind("mapA")
+        out = self.machine.dispatch(goal(map_id="mapB"), robot())
+        self.assertEqual(out.action, "reject")
+        self.assertEqual(out.reason_code, C.REASON_MAP_MISMATCH)
+        self.assertIn("bound to map mapA", out.reason_text)
+
+    def test_malformed_sidecar_rejected_at_dispatch(self):
+        routes_dir = os.path.join(self.tmp.name, "routes")
+        with open(os.path.join(routes_dir, "r2.txt"), "w") as f:
+            f.write(SAMPLE_ROUTE)
+        with open(os.path.join(routes_dir, "r2.route.json"), "w") as f:
+            f.write("corrupted")
+        out = self.machine.dispatch(goal(route_id="r2"), robot())
+        self.assertEqual(out.action, "reject")
+        self.assertEqual(out.reason_code, C.REASON_ROUTE_NOT_FOUND)
+        self.assertIn("unreadable", out.reason_text)
+
 
 class IdempotencyTests(unittest.TestCase):
     def setUp(self):
