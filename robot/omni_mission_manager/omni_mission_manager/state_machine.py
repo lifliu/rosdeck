@@ -36,6 +36,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import constants as C
+from .checkpoints import (CheckpointsMalformed, CheckpointPlan,
+                          CheckpointStore, plan_segments)
 from .event_store import EventStore
 from .route_store import RouteMalformed, RouteNotFound, RouteStore
 
@@ -105,6 +107,10 @@ class Mission:
     created_at: str
     updated_at: str
     terminated_at: Optional[str]
+    # In-memory only (never persisted: missions are not auto-resumed).
+    # The checkpoint currently running, or "" — surfaced in the
+    # ExecuteInspection feedback (current_checkpoint_id, Phase 3).
+    current_checkpoint_id: str = ""
 
     @property
     def authority_client_id(self) -> str:
@@ -164,11 +170,15 @@ class MissionMachine:
     """Owns all mission state transitions for one Manager process."""
 
     def __init__(self, store: EventStore, route_store: RouteStore,
-                 now_fn=None):
+                 now_fn=None, checkpoint_store: Optional[CheckpointStore] = None):
         self._store = store
         self._routes = route_store
+        self._checkpoints = checkpoint_store
         self._now = now_fn or _default_now
         self._missions: Dict[str, Mission] = {}
+        # Per-mission segment plan (in-memory; the node consumes it to
+        # drive FollowRoute leg by leg). Popped on terminal / abort.
+        self._plans: Dict[str, CheckpointPlan] = {}
         self._pending_events: List[MissionEventRecord] = []
         for row in self._store.get_all_missions():
             m = Mission.from_row(row)
@@ -190,6 +200,14 @@ class MissionMachine:
         evs = self._pending_events
         self._pending_events = []
         return evs
+
+    def get_plan(self, mission_id: str) -> Optional[CheckpointPlan]:
+        """The mission's segment plan (None once it is terminal/dropped).
+
+        The node builds a SegmentController from it; the plan itself is
+        immutable (frozen dataclass), so sharing the reference is safe.
+        """
+        return self._plans.get(mission_id)
 
     # ---------- internal helpers ----------
 
@@ -230,6 +248,8 @@ class MissionMachine:
         m.reason_text = reason_text
         self._record_event(m, event, now, reason_code, reason_text)
         self._persist(m, now, terminated=True)
+        m.current_checkpoint_id = ""
+        self._plans.pop(m.mission_id, None)
 
     def _default_mission_id(self, sequence: int, now: str) -> str:
         try:
@@ -254,15 +274,11 @@ class MissionMachine:
         """Run the precondition gates and create/resolve the mission.
 
         Gate order (fail fast, documented in the IDL):
-          checkpoints / request_id -> route exists -> map resolution and
-          mismatch -> robot state fresh -> localization ready ->
-          idempotency / active-mission checks -> create.
+          request_id -> route exists -> checkpoint selection -> map
+          resolution and mismatch -> robot state fresh -> localization
+          ready -> idempotency / active-mission checks -> create.
         """
         # --- precondition gates (fail fast) ---
-        if goal.checkpoint_ids:
-            return GoalOutcome(
-                "reject", C.REASON_REJECTED,
-                "checkpoint execution is not available in V1")
         if not goal.request_id:
             return GoalOutcome(
                 "reject", C.REASON_REJECTED, "request_id is required")
@@ -276,6 +292,32 @@ class MissionMachine:
             return GoalOutcome(
                 "reject", C.REASON_ROUTE_NOT_FOUND,
                 "route unreadable: %s" % exc)
+
+        # --- checkpoint selection (Phase 3) ---
+        # Empty goal.checkpoint_ids + a sidecar present -> run all defined
+        # checkpoints; a non-empty list selects that exact subset (unknown
+        # ids are a dispatch-time reject). No sidecar -> no checkpoints
+        # (V1 single-segment behavior); a non-empty list then names unknown
+        # ids and is rejected the same way. A malformed sidecar fails
+        # closed: the mission is rejected, never run without its
+        # checkpoints.
+        try:
+            defined = (self._checkpoints.load(goal.route_id)
+                       if self._checkpoints is not None else ())
+        except CheckpointsMalformed as exc:
+            return GoalOutcome(
+                "reject", C.REASON_ROUTE_NOT_FOUND,
+                "route checkpoints unreadable: %s" % exc)
+        selected = list(defined)
+        if goal.checkpoint_ids:
+            known = {cp.id for cp in defined}
+            unknown = [cid for cid in goal.checkpoint_ids if cid not in known]
+            if unknown:
+                return GoalOutcome(
+                    "reject", C.REASON_REJECTED,
+                    "unknown checkpoint id(s): %s" % ", ".join(unknown))
+            selected = [cp for cp in defined
+                        if cp.id in set(goal.checkpoint_ids)]
 
         # Map resolution: goal > route binding (sidecar). An empty goal
         # field falls back to the route's binding; an empty map_version
@@ -377,6 +419,9 @@ class MissionMachine:
         self._store.begin_mission(
             mission_id, goal.request_id, goal.sequence, goal.route_id,
             effective_map, effective_version, now)
+        # Segment plan: one FollowRoute leg per checkpoint interval. With
+        # no checkpoints this is a single full-route leg (V1 behavior).
+        self._plans[mission_id] = plan_segments(route.num_points, selected)
         return GoalOutcome("accept", mission=mission, superseded=superseded)
 
     def abort_created(self, mission_id: str, reason_code: int,
@@ -385,6 +430,7 @@ class MissionMachine:
         DISPATCHED event): planner unavailable or authority denied. The
         (request_id, sequence) key is freed for retry."""
         self._missions.pop(mission_id, None)
+        self._plans.pop(mission_id, None)
         self._store.delete_mission(mission_id)
 
     def confirm_dispatch(self, mission_id: str) -> Optional[Mission]:
@@ -468,6 +514,49 @@ class MissionMachine:
         self._terminate(
             m, C.MISSION_FAILED, C.EVENT_FAILED, self._now(),
             C.REASON_MISSION_FAILED, reason_text)
+        return m
+
+    # ---------- checkpoints (Phase 3) ----------
+
+    def on_checkpoint_started(self, mission_id: str,
+                              checkpoint_id: str) -> None:
+        """The robot is at the checkpoint and its actions are starting.
+
+        A mission that has not reached planner EXECUTING yet (e.g. a
+        checkpoint at route point 0) starts here.
+        """
+        m = self._missions.get(mission_id)
+        if m is None or not m.is_active:
+            return
+        now = self._now()
+        m.current_checkpoint_id = checkpoint_id
+        started = False
+        if m.state == C.MISSION_PENDING:
+            m.state = C.MISSION_EXECUTING
+            started = True
+        if started:
+            self._record_event(m, C.EVENT_STARTED, now)
+        self._persist(m, now)
+
+    def on_checkpoint_finished(self, mission_id: str) -> None:
+        m = self._missions.get(mission_id)
+        if m is None or not m.is_active:
+            return
+        if m.current_checkpoint_id:
+            m.current_checkpoint_id = ""
+            self._persist(m, self._now())
+
+    def on_checkpoint_failed(self, mission_id: str, checkpoint_id: str,
+                             reason: str) -> Optional[Mission]:
+        """A checkpoint's `on_failure` is "fail" and its evidence actions
+        exhausted their attempts: the mission ends FAILED."""
+        m = self._missions.get(mission_id)
+        if m is None or not m.is_active:
+            return None
+        self._terminate(
+            m, C.MISSION_FAILED, C.EVENT_FAILED, self._now(),
+            C.REASON_MISSION_FAILED,
+            "checkpoint %s failed: %s" % (checkpoint_id, reason))
         return m
 
     # ---------- MissionControl ----------
