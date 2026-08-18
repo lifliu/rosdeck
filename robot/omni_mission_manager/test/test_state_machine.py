@@ -87,9 +87,11 @@ class DispatchGateTests(unittest.TestCase):
         self.assertEqual(ev["event"], C.EVENT_DISPATCHED)
 
     def test_checkpoints_rejected(self):
+        # No sidecar on r1: any named checkpoint is unknown.
         out = self.machine.dispatch(goal(checkpoint_ids=("c1",)), robot())
         self.assertEqual(out.action, "reject")
         self.assertEqual(out.reason_code, C.REASON_REJECTED)
+        self.assertIn("unknown checkpoint id(s): c1", out.reason_text)
 
     def test_missing_request_id_rejected(self):
         out = self.machine.dispatch(goal(request_id=""), robot())

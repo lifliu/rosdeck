@@ -4,14 +4,18 @@ Pure Python (sqlite3 stdlib, no ROS imports) so the core is unit-testable
 off the robot. Timestamps are ISO-8601 UTC strings supplied by the caller
 (the node uses the wall clock; tests use fixed values).
 
-All access happens on the rclpy executor thread (single-threaded node),
-so no locking is needed.
+All access happens on the rclpy executor thread except
+`append_checkpoint_result`, which is also called from the checkpoint worker
+thread; the node serializes both with one lock (the sqlite3 connection is
+NOT shared between threads otherwise).
 
 Schema:
-  missions        one row per dispatched mission (terminal rows are kept)
-  mission_events  append-only per-mission event stream (PK
-                  (mission_id, sequence); sequence starts at 1)
-  idempotency     (request_id, sequence) -> mission_id
+  missions            one row per dispatched mission (terminal rows are kept)
+  mission_events      append-only per-mission event stream (PK
+                      (mission_id, sequence); sequence starts at 1)
+  idempotency         (request_id, sequence) -> mission_id
+  checkpoint_results  durable evidence history per mission (Phase 3; the
+                      live view is /omni/mission/checkpoint_results)
 """
 
 import sqlite3
@@ -55,6 +59,26 @@ CREATE TABLE IF NOT EXISTS idempotency (
   mission_id TEXT NOT NULL,
   PRIMARY KEY (request_id, sequence)
 );
+CREATE TABLE IF NOT EXISTS checkpoint_results (
+  mission_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,          -- per-mission record order, from 1
+  checkpoint_id TEXT NOT NULL,
+  action_type TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL DEFAULT '',
+  artifact_path TEXT NOT NULL DEFAULT '',
+  result_json TEXT NOT NULL DEFAULT '',
+  pose_x REAL NOT NULL DEFAULT 0.0,
+  pose_y REAL NOT NULL DEFAULT 0.0,
+  pose_z REAL NOT NULL DEFAULT 0.0,
+  pose_yaw REAL NOT NULL DEFAULT 0.0,
+  map_id TEXT NOT NULL DEFAULT '',
+  map_version TEXT NOT NULL DEFAULT '',
+  software_version TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (mission_id, sequence)
+);
 """
 
 
@@ -63,7 +87,11 @@ class EventStore:
         self.db_path = str(db_path)
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False: the node also appends checkpoint records
+        # from the checkpoint worker thread. All callers (executor thread
+        # and worker thread) hold the node's store lock, which serializes
+        # the connection.
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(SCHEMA)
@@ -192,6 +220,42 @@ class EventStore:
             "SELECT COALESCE(MAX(sequence), 0) AS s FROM idempotency "
             "WHERE request_id = ?", (request_id,)).fetchone()
         return int(row["s"])
+
+    # --- checkpoint results (Phase 3 evidence) ---
+
+    def append_checkpoint_result(self, mission_id, checkpoint_id,
+                                 action_type, status, attempts, reason,
+                                 artifact_path, result_json, pose,
+                                 map_id, map_version, software_version, now):
+        """Append one evidence record. `pose` is (x, y, z, yaw) or None.
+
+        Callers must hold the node's store lock (executor thread or the
+        checkpoint worker thread).
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) AS s FROM "
+            "checkpoint_results WHERE mission_id = ?",
+            (mission_id,)).fetchone()
+        sequence = int(row["s"]) + 1
+        x, y, z, yaw = (pose if pose is not None else (0.0, 0.0, 0.0, 0.0))
+        self._conn.execute(
+            "INSERT INTO checkpoint_results (mission_id, sequence, "
+            "checkpoint_id, action_type, status, attempts, reason, "
+            "artifact_path, result_json, pose_x, pose_y, pose_z, pose_yaw, "
+            "map_id, map_version, software_version, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mission_id, sequence, checkpoint_id, action_type, int(status),
+             int(attempts), reason, artifact_path, result_json,
+             float(x), float(y), float(z), float(yaw), map_id or "",
+             map_version or "", software_version or "", now))
+        self._conn.commit()
+
+    def get_checkpoint_results(self, mission_id) -> List[Dict[str, Any]]:
+        """All records for a mission in time order ([] if none)."""
+        rows = self._conn.execute(
+            "SELECT * FROM checkpoint_results WHERE mission_id = ? "
+            "ORDER BY sequence", (mission_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
         try:
