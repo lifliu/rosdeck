@@ -167,3 +167,48 @@ ros2 topic info -v /omni/cmd_vel/final
 ros2 topic echo /omni/cmd_vel/arbiter_status
 ros2 topic echo /omni/safety/supervisor_status
 ```
+
+## 7. 电池状态与充电确认
+
+`/battery_state` 由 Bridge 合并内核 BMS 与厂商 SDK：
+
+- 电压、电流、温度、`power_supply_status`、`power_supply_health` 和 sysfs
+  `present` 来自 `/sys/class/power_supply`（1 秒 TTL 缓存；设备默认自动探测
+  带 `voltage_now` 的 `Battery`，可用 `adapter_status.battery.power_supply_device`
+  固定）；
+- SDK 只提供 0–100 SOC，仍是 `percentage` 的主来源；SDK 采样过期时回落到
+  sysfs `capacity`，而不是置空；
+- `charging` 的判定优先级：BMS `power_supply_status`（CHARGING 确认，FULL
+  视为已充满）> 带符号电流（阈值 `adapter_status.battery.charge_current_threshold_a`，
+  符号 `adapter_status.battery.current_sign`）> SOC 趋势
+  （`adapter_status.battery.soc_trend_*`，仅当 BMS 不报 status 时启用）；
+- 充电连接状态由 BMS status 推导（CHARGING / FULL / NOT_CHARGING 表示充电器
+  已连接）；
+- 读取 fail-closed：power-supply 设备缺失或损坏时退回 SOC-only 行为
+  （电气字段 NaN/UNKNOWN），不会报错。
+
+Docking 的充电确认（`omni_docking` 的 ChargeMonitor）优先采用
+`power_supply_status`：回桩后 BMS 报 CHARGING（或 FULL）即判定“确认充电”成功；
+status 为 UNKNOWN 时回落到电流/功率推断，与旧行为一致。
+
+实机验证步骤：
+
+```bash
+# 1. 确认 BMS 被读到（voltage/current/temperature 非 NaN，status 非 unknown）。
+ros2 topic echo /battery_state --once
+
+# 2. 诊断里核对电流符号：charging 时 battery_current_a 的符号应与
+#    current_sign 一致；若 BMS 界面显示在充电而 VerifyCharge 报
+#    “not charging”，把 adapter_status.battery.current_sign 翻为 -1.0。
+ros2 topic echo /diagnostics --once
+
+# 3. 自动探测到错误设备时固定设备名。
+#    ros2 param set /rosdeck_robot_bridge adapter_status.battery.power_supply_device bat0
+```
+
+回桩—确认充电的验收：Docking 任务停稳后，在 `charge_window_sec`（默认 30 秒）
+阶段窗口内等待一个新鲜（≤2 秒）的 `/battery_state` 采样确认充电，CHARGING/FULL
+即成功；阶段窗口耗尽仍未确认，任务以 `CHARGE_NOT_CONFIRMED`（3005）失败，不会
+无限重试。失败时先看 `/battery_state` 是否有新鲜采样（诊断里的 `battery_fresh`），
+再看 `battery_status_source`（`sysfs` / `soc_trend` / `none`）定位是 BMS 未报
+status 还是电流符号问题。

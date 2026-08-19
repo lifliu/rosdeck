@@ -17,14 +17,16 @@ namespace
 omni_robot_interfaces::msg::RobotState build_message(
   const bridge::AdapterSnapshot & snapshot = {},
   const bridge::AdapterHealth & health = {},
+  float battery_voltage = std::numeric_limits<float>::quiet_NaN(),
   float battery_percentage = std::numeric_limits<float>::quiet_NaN(),
+  bool charging = false,
   bool estop_latched = false, bool mapping_active = false,
   const std::string & control_status = "",
   const RobotStateAggregator::Relay & relay = {})
 {
   return RobotStateAggregator::build(
-    snapshot, health, battery_percentage, estop_latched, mapping_active,
-    control_status, relay);
+    snapshot, health, battery_voltage, battery_percentage, charging,
+    estop_latched, mapping_active, control_status, relay);
 }
 
 RobotStateAggregator::Relay executing_mission_relay()
@@ -239,8 +241,8 @@ TEST(RobotStateAggregator, BuildAppliesRelaysAndMotionAuthorization)
     relay.slam_map_id = "floor1";
     relay.slam_map_version = "12";
     relay.slam_fitness = 0.8F;
-    const auto message = build_message({}, {}, 50.0F, false, false,
-      "acquired:app-1", relay);
+    const auto message = build_message({}, {}, 12.4F, 50.0F, false, false,
+      false, "acquired:app-1", relay);
     EXPECT_EQ(message.map_id, "floor1");
     EXPECT_EQ(message.map_version, "12");
     EXPECT_FLOAT_EQ(message.localization_fitness_score, 0.8F);
@@ -258,7 +260,7 @@ TEST(RobotStateAggregator, BuildAppliesRelaysAndMotionAuthorization)
     relay.slam_fresh = false;
     relay.slam_map_id = "floor1";
     relay.slam_fitness = 0.8F;
-    const auto message = build_message({}, {}, 50.0F, false, false, "", relay);
+    const auto message = build_message({}, {}, 12.4F, 50.0F, false, false, false, "", relay);
     EXPECT_TRUE(message.map_id.empty());
     EXPECT_TRUE(message.map_version.empty());
     EXPECT_TRUE(std::isnan(message.localization_fitness_score));
@@ -270,7 +272,7 @@ TEST(RobotStateAggregator, BuildAppliesRelaysAndMotionAuthorization)
   // Fresh executing mission populates mission fields; stale relay does not.
   {
     RobotStateAggregator::Relay relay = executing_mission_relay();
-    const auto message = build_message({}, {}, 50.0F, false, false, "", relay);
+    const auto message = build_message({}, {}, 12.4F, 50.0F, false, false, false, "", relay);
     EXPECT_EQ(message.mission_state, RobotState::MISSION_EXECUTING);
     EXPECT_EQ(message.mission_id, "m-1");
     EXPECT_FLOAT_EQ(message.mission_progress, 0.25F);
@@ -279,7 +281,7 @@ TEST(RobotStateAggregator, BuildAppliesRelaysAndMotionAuthorization)
   {
     RobotStateAggregator::Relay relay = executing_mission_relay();
     relay.mission_fresh = false;
-    const auto message = build_message({}, {}, 50.0F, false, false, "", relay);
+    const auto message = build_message({}, {}, 12.4F, 50.0F, false, false, false, "", relay);
     EXPECT_EQ(message.mission_state, RobotState::MISSION_NONE);
     EXPECT_TRUE(message.mission_id.empty());
     EXPECT_TRUE(std::isnan(message.mission_progress));
@@ -287,20 +289,27 @@ TEST(RobotStateAggregator, BuildAppliesRelaysAndMotionAuthorization)
 
   // E-stop latch: fault, no motion, MODE_ESTOP.
   {
-    const auto message = build_message({}, {}, 50.0F, true, false,
-      "acquired:app-1", {});
+    const auto message = build_message({}, {}, 12.4F, 50.0F, false,
+      true, false, "acquired:app-1", {});
     EXPECT_EQ(message.health_level, RobotState::HEALTH_FAULT);
     EXPECT_FALSE(message.motion_authorized);
     EXPECT_EQ(message.operational_mode, RobotState::MODE_ESTOP);
     EXPECT_EQ(message.health_summary, "estop_latched;adapter_state_unknown");
   }
 
-  // V1 has no voltage source: always NaN, charging always false.
+  // Battery fields pass through from the merged BMS state: a known voltage
+  // and the charging bit are published as-is; unknown stays NaN/false.
   {
-    const auto message = build_message({}, {}, 50.0F, false, false, "", {});
-    EXPECT_TRUE(std::isnan(message.battery_voltage));
+    const auto message = build_message({}, {}, 12.35F, 50.0F, true,
+      false, false, "", {});
+    EXPECT_FLOAT_EQ(message.battery_voltage, 12.35F);
     EXPECT_FLOAT_EQ(message.battery_percentage, 50.0F);
-    EXPECT_FALSE(message.charging);
+    EXPECT_TRUE(message.charging);
+
+    const auto unknown = build_message();
+    EXPECT_TRUE(std::isnan(unknown.battery_voltage));
+    EXPECT_TRUE(std::isnan(unknown.battery_percentage));
+    EXPECT_FALSE(unknown.charging);
   }
 }
 
@@ -323,8 +332,8 @@ TEST(RobotStateAggregator, EffectivelyChanged)
 
   // Mode change -> changed.
   {
-    const auto current = build_message({}, {}, 50.0F, false, false,
-      "acquired:app-1", {});
+    const auto current = build_message({}, {}, 12.4F, 50.0F, false,
+      false, false, "acquired:app-1", {});
     EXPECT_TRUE(RobotStateAggregator::effectively_changed(previous, current));
   }
 
@@ -333,7 +342,15 @@ TEST(RobotStateAggregator, EffectivelyChanged)
     RobotStateAggregator::Relay relay;
     relay.slam_fresh = true;
     relay.slam_fitness = 0.5F;
-    const auto current = build_message({}, {}, 50.0F, false, false, "", relay);
+    const auto current = build_message(
+      {}, {}, 12.4F, 50.0F, false, false, false, "", relay);
+    EXPECT_TRUE(RobotStateAggregator::effectively_changed(previous, current));
+  }
+
+  // BMS voltage / charging-bit change -> changed.
+  {
+    const auto current = build_message({}, {}, 12.9F, 50.0F, true,
+      false, false, "", {});
     EXPECT_TRUE(RobotStateAggregator::effectively_changed(previous, current));
   }
 

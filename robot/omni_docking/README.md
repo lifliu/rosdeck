@@ -97,11 +97,14 @@ its own** (acceptance: failures are diagnosable and never loop):
 | docked, no charge in 30 s | `REASON_CHARGE_NOT_CONFIRMED` |
 | cancel() | `REASON_USER_CANCELED` |
 
-Charge confirmation infers charging from the BMS electricals
-(`sensor_msgs/BatteryState` has no charging flag): `current` above
-`charge_current_a` (sign per `charge_current_sign`), falling back to
-`power > 0`; samples older than `max_age_sec` (default 2 s) are
-rejected.
+Charge confirmation is decided in priority order
+(`sensor_msgs/BatteryState` has no dedicated charging flag):
+`power_supply_status` when the BMS reports a known state (CHARGING
+confirms; FULL counts as charge-confirmed; DISCHARGING / NOT_CHARGING /
+EMPTY do not), then `current` above `charge_current_a` (sign per
+`charge_current_sign`), then `power > 0`; UNKNOWN status falls through to
+the electrical inferences. Samples older than `max_age_sec` (default 2 s)
+are rejected.
 
 `DockStatus` states: `IDLE`, `UNDOCKING`, `RETURNING` (ops whose client
 id carries the mission-manager `rtd-` prefix), `FINAL_APPROACH` (dock

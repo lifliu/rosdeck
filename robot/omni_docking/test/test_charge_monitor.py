@@ -12,7 +12,8 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from omni_docking.charge_monitor import (  # noqa: E402
-    BatterySample, ChargeMonitor)
+    BatterySample, ChargeMonitor, STATUS_CHARGING, STATUS_DISCHARGING,
+    STATUS_EMPTY, STATUS_FULL, STATUS_NOT_CHARGING, STATUS_UNKNOWN)
 
 
 class NoSampleTest(unittest.TestCase):
@@ -149,6 +150,109 @@ class PowerFallbackTest(unittest.TestCase):
         self.assertTrue(v.ok)  # fresh sample exists
         self.assertFalse(v.charging)
         self.assertIn("unconfirmed", v.message)
+
+
+class StatusBasisTest(unittest.TestCase):
+    def test_charging_status_confirms(self):
+        m = ChargeMonitor()
+        m.update(BatterySample(current=float("nan"),
+                               power_supply_status=STATUS_CHARGING,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.ok)
+        self.assertTrue(v.charging)
+        self.assertIn("status", v.message)
+
+    def test_full_status_confirms_charge(self):
+        # A full battery on the dock means the charge objective is met,
+        # even though no current is flowing.
+        m = ChargeMonitor()
+        m.update(BatterySample(current=0.0,
+                               power_supply_status=STATUS_FULL, stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.ok)
+        self.assertTrue(v.charging)
+        self.assertIn("full", v.message)
+
+    def test_discharging_status_not_charging(self):
+        m = ChargeMonitor()
+        m.update(BatterySample(current=float("nan"),
+                               power_supply_status=STATUS_DISCHARGING,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.ok)
+        self.assertFalse(v.charging)
+        self.assertIn("not charging", v.message)
+
+    def test_not_charging_and_empty_status(self):
+        for status in (STATUS_NOT_CHARGING, STATUS_EMPTY):
+            m = ChargeMonitor()
+            m.update(BatterySample(power_supply_status=status, stamp=0.0))
+            self.assertFalse(m.verify(now=0.0).charging)
+
+    def test_unknown_status_falls_back_to_current(self):
+        m = ChargeMonitor()
+        m.update(BatterySample(current=1.8,
+                               power_supply_status=STATUS_UNKNOWN,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.charging)
+        self.assertIn("current", v.message)
+
+    def test_unknown_status_falls_back_to_power(self):
+        m = ChargeMonitor()
+        m.update(BatterySample(current=float("nan"), power=40.0,
+                               power_supply_status=STATUS_UNKNOWN,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.charging)
+        self.assertIn("power", v.message)
+
+    def test_unknown_status_all_invalid_unconfirmed(self):
+        m = ChargeMonitor()
+        m.update(BatterySample(power_supply_status=STATUS_UNKNOWN,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.ok)
+        self.assertFalse(v.charging)
+        self.assertIn("unconfirmed", v.message)
+
+    def test_status_overrides_conflicting_current(self):
+        # BMS says CHARGING; the (flipped-sign) current would say
+        # otherwise. The status is authoritative.
+        m = ChargeMonitor(charge_current_sign=-1.0)
+        m.update(BatterySample(current=2.0,
+                               power_supply_status=STATUS_CHARGING,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.charging)
+        self.assertIn("status", v.message)
+        # And the reverse: DISCHARGING status beats a "charging" current.
+        m.update(BatterySample(current=-2.0,
+                               power_supply_status=STATUS_DISCHARGING,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertFalse(v.charging)
+        self.assertIn("status", v.message)
+
+    def test_garbage_status_falls_through(self):
+        # A status value outside the enum is treated as unavailable,
+        # not as "not charging" — the electrical inferences still apply.
+        m = ChargeMonitor()
+        m.update(BatterySample(current=1.8, power_supply_status=99,
+                               stamp=0.0))
+        v = m.verify(now=0.0)
+        self.assertTrue(v.charging)
+        self.assertIn("current", v.message)
+
+    def test_stale_status_sample_rejected(self):
+        m = ChargeMonitor()
+        m.update(BatterySample(power_supply_status=STATUS_CHARGING,
+                               stamp=10.0))
+        v = m.verify(now=13.0)
+        self.assertFalse(v.ok)
+        self.assertFalse(v.charging)
+        self.assertIn("stale", v.message)
 
 
 class VerdictValuesTest(unittest.TestCase):

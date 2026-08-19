@@ -1,3 +1,4 @@
+#include "rosdeck_robot_bridge/battery_source.hpp"
 #include "rosdeck_robot_bridge/robot_adapter.hpp"
 #include "rosdeck_robot_bridge/cmd_vel_arbiter.hpp"
 #include "rosdeck_robot_bridge/direct_estop_guard.hpp"
@@ -221,6 +222,21 @@ public:
       "adapter_status.telemetry_stale_ms", 1500, 500, 10000);
     adapter_battery_timeout_ = bounded_milliseconds(
       "adapter_status.battery_stale_ms", 15000, 1000, 120000);
+    power_supply_root_ = declare_parameter<std::string>(
+      "adapter_status.battery.power_supply_root", "/sys/class/power_supply");
+    power_supply_device_ = declare_parameter<std::string>(
+      "adapter_status.battery.power_supply_device", "");
+    battery_current_sign_ = declare_parameter<double>(
+      "adapter_status.battery.current_sign", 1.0);
+    charge_current_threshold_a_ = declare_parameter<double>(
+      "adapter_status.battery.charge_current_threshold_a", 0.05);
+    const auto soc_trend_window_sec = declare_parameter<int64_t>(
+      "adapter_status.battery.soc_trend_window_sec", 30);
+    const auto soc_trend_min_delta_percent = declare_parameter<double>(
+      "adapter_status.battery.soc_trend_min_delta_percent", 1.0);
+    soc_trend_charger_ = SocTrendCharger(
+      std::chrono::seconds(std::max<int64_t>(1, soc_trend_window_sec)),
+      soc_trend_min_delta_percent);
     cmd_vel_arbiter::Config arbiter_config;
     arbiter_config.teleop_timeout = bounded_milliseconds(
       "cmd_vel_arbiter.teleop_timeout_ms", 250, 100, 300);
@@ -514,6 +530,16 @@ public:
       publish_control_status_if_changed(true);
     }
 
+    RCLCPP_INFO(
+      get_logger(),
+      "battery source: power_supply_root=%s device=%s current_sign=%g "
+      "trend_window=%lds trend_min_delta=%g%% charge_current_threshold=%gA",
+      power_supply_root_.c_str(),
+      power_supply_device_.empty() ? "auto" : power_supply_device_.c_str(),
+      battery_current_sign_,
+      static_cast<long>(soc_trend_window_sec), soc_trend_min_delta_percent,
+      charge_current_threshold_a_);
+
     adapter_status_timer_ = create_wall_timer(
       adapter_status_period_, [this]() {publish_adapter_observability();});
     publish_adapter_observability();
@@ -634,19 +660,24 @@ private:
     const auto health = assess_adapter_health(
       snapshot, steady_now, adapter_telemetry_timeout_, adapter_battery_timeout_);
 
+    const BatteryMergedState battery_state =
+      compute_battery_state(snapshot, steady_now);
     const float unknown = std::numeric_limits<float>::quiet_NaN();
     sensor_msgs::msg::BatteryState battery;
     battery.header.stamp = ros_now;
-    battery.voltage = unknown;
-    battery.temperature = unknown;
-    battery.current = unknown;
+    battery.voltage = battery_state.voltage_known ? battery_state.voltage : unknown;
+    battery.temperature =
+      battery_state.temperature_known ? battery_state.temperature : unknown;
+    battery.current = battery_state.current_known ? battery_state.current : unknown;
     battery.charge = unknown;
     battery.capacity = unknown;
     battery.design_capacity = unknown;
-    battery.percentage = battery_fresh && std::isfinite(snapshot.battery_fraction) ?
-      std::clamp(snapshot.battery_fraction, 0.0F, 1.0F) : unknown;
-    battery.power_supply_status = sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_UNKNOWN;
-    battery.power_supply_health = sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN;
+    // Phase 0 wire convention kept: this field carries the normalized 0..1
+    // fraction (merged.percentage is 0..100 per the sensor_msgs scale).
+    battery.percentage = battery_state.percentage_known ?
+      battery_state.percentage / 100.0F : unknown;
+    battery.power_supply_status = static_cast<uint8_t>(battery_state.status);
+    battery.power_supply_health = static_cast<uint8_t>(battery_state.health);
     battery.power_supply_technology =
       sensor_msgs::msg::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
     // BatteryState has no tri-state presence field. False is therefore used
@@ -690,6 +721,35 @@ private:
         std::to_string(snapshot.battery_fraction) : "unknown"),
       diagnostic_value("battery_fresh", boolean(battery_fresh)),
       diagnostic_value("battery_age_ms", std::to_string(battery_age)),
+      diagnostic_value(
+        "power_supply_device", power_supply_resolved_device_.empty() ?
+        "none" : power_supply_resolved_device_),
+      diagnostic_value(
+        "power_supply_present", !power_supply_reading_.has_value() ||
+        !power_supply_reading_->present_known ? "unknown" :
+        boolean(power_supply_reading_->present)),
+      diagnostic_value(
+        "power_supply_type", power_supply_reading_.has_value() &&
+        power_supply_reading_->type_known ?
+        power_supply_reading_->type : "unknown"),
+      diagnostic_value(
+        "battery_status", power_supply_status_name(battery_state.status)),
+      diagnostic_value("battery_status_source", battery_state.status_source),
+      diagnostic_value("battery_charging", boolean(battery_state.charging)),
+      diagnostic_value("charger_connected", boolean(battery_state.charger_connected)),
+      diagnostic_value(
+        "battery_voltage_v", battery_state.voltage_known ?
+        std::to_string(battery_state.voltage) : "unknown"),
+      diagnostic_value(
+        "battery_current_a", battery_state.current_known ?
+        std::to_string(battery_state.current) : "unknown"),
+      diagnostic_value(
+        "battery_current_raw_a", power_supply_reading_.has_value() &&
+        power_supply_reading_->current_a ?
+        std::to_string(*power_supply_reading_->current_a) : "unknown"),
+      diagnostic_value(
+        "battery_temperature_c", battery_state.temperature_known ?
+        std::to_string(battery_state.temperature) : "unknown"),
       diagnostic_value("control_mode_known", boolean(snapshot.control_mode_known)),
       diagnostic_value("control_mode", snapshot.control_mode),
       diagnostic_value("posture_known", boolean(snapshot.posture_known)),
@@ -760,6 +820,50 @@ private:
     publish(adapter_summary_, summary.str());
   }
 
+  /**
+   * Merged battery state shared by /battery_state and /omni/robot_state.
+   *
+   * Real BMS electrical data (voltage / current / temperature / status /
+   * health) comes from the Linux power-supply class, cached with a 1 s TTL so
+   * the 1 Hz adapter timer and the 4 Hz robot_state tick share one read. The
+   * vendor SDK only provides SOC: it stays the primary percentage source and
+   * feeds the SOC-trend fallback for the charging direction. The read is
+   * fail-closed: an absent or broken power-supply device degrades back to the
+   * Phase 0 SOC-only behavior instead of erroring.
+   */
+  BatteryMergedState compute_battery_state(
+    const AdapterSnapshot & snapshot, AdapterSteadyTime steady_now)
+  {
+    if (!power_supply_reading_.has_value() ||
+      steady_now - power_supply_read_at_.value() >= battery_sysfs_ttl_)
+    {
+      const std::string device = power_supply_device_.empty() ?
+        find_power_supply_device(power_supply_root_) : power_supply_device_;
+      power_supply_resolved_device_ = device;
+      power_supply_reading_ = read_power_supply(power_supply_root_, device);
+      power_supply_read_at_ = steady_now;
+    }
+    const bool battery_fresh = snapshot.battery_known && adapter_sample_fresh(
+      snapshot.battery_sample_known, snapshot.battery_sample_at,
+      steady_now, adapter_battery_timeout_);
+    const bool sdk_soc_known = battery_fresh && std::isfinite(snapshot.battery_fraction);
+    if (sdk_soc_known) {
+      // The adapter re-exposes the same 10 s SDK sample on each poll; the
+      // charger dedupes on the sample timestamp, so this is safe to call per
+      // tick.
+      soc_trend_charger_.update(
+        snapshot.battery_fraction * 100.0, snapshot.battery_sample_at);
+    }
+    std::optional<PowerSupplyStatus> trend_status;
+    if (!power_supply_reading_->status.has_value()) {
+      trend_status = soc_trend_charger_.status();
+    }
+    return merge_battery_state(
+      sdk_soc_known, static_cast<double>(snapshot.battery_fraction),
+      *power_supply_reading_, trend_status,
+      battery_current_sign_, charge_current_threshold_a_);
+  }
+
   // Whole-robot snapshot on /omni/robot_state: adapter observability + E-stop
   // latch + mapping state + control lease, relayed from /omni/slam/status and
   // /omni/mission/status. Publishes on change plus a 1 Hz heartbeat so a
@@ -773,13 +877,14 @@ private:
     const AdapterSnapshot snapshot = adapter_->snapshot();
     const auto health = assess_adapter_health(
       snapshot, steady_now, adapter_telemetry_timeout_, adapter_battery_timeout_);
-    const bool battery_fresh = snapshot.battery_known && adapter_sample_fresh(
-      snapshot.battery_sample_known, snapshot.battery_sample_at,
-      steady_now, adapter_battery_timeout_);
+    const BatteryMergedState battery_state =
+      compute_battery_state(snapshot, steady_now);
     const float unknown = std::numeric_limits<float>::quiet_NaN();
-    const float battery_percentage =
-      battery_fresh && std::isfinite(snapshot.battery_fraction) ?
-      std::clamp(snapshot.battery_fraction, 0.0F, 1.0F) * 100.0F : unknown;
+    // The merged percentage falls back to the sysfs capacity when the SDK
+    // sample is stale, so a dead SDK poller no longer blanks the robot
+    // state percentage while a real BMS is still reporting.
+    const float battery_percentage = battery_state.percentage_known ?
+      battery_state.percentage : unknown;
     bool mapping_active = false;
     {
       std::lock_guard<std::mutex> lock(mapping_mutex_);
@@ -805,7 +910,9 @@ private:
     }
 
     const omni_robot_interfaces::msg::RobotState message = RobotStateAggregator::build(
-      snapshot, health, battery_percentage,
+      snapshot, health,
+      battery_state.voltage_known ? battery_state.voltage : unknown,
+      battery_percentage, battery_state.charging,
       cmd_vel_arbiter_ && cmd_vel_arbiter_->estop_latched(),
       mapping_active, adapter_->control_status(), relay);
     auto stamped = message;
@@ -1589,6 +1696,15 @@ private:
   std::chrono::milliseconds adapter_status_period_{1000};
   std::chrono::milliseconds adapter_telemetry_timeout_{1500};
   std::chrono::milliseconds adapter_battery_timeout_{15000};
+  std::chrono::milliseconds battery_sysfs_ttl_{1000};
+  std::filesystem::path power_supply_root_;
+  std::string power_supply_device_;  // "" = auto-detect the Battery device
+  std::string power_supply_resolved_device_;
+  double battery_current_sign_{1.0};
+  double charge_current_threshold_a_{0.05};
+  SocTrendCharger soc_trend_charger_;
+  std::optional<PowerSupplyReading> power_supply_reading_;
+  std::optional<AdapterSteadyTime> power_supply_read_at_;
   std::chrono::milliseconds robot_state_period_{1000};
   std::chrono::milliseconds robot_state_tick_{250};
   std::chrono::milliseconds robot_state_slam_stale_{2000};
