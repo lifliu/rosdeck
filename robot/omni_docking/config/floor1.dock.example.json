@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "map_id": "floor1",
+  "map_version": "",
+  "dock_id": "dock-a",
+  "pose": [3.2, -1.1, 1.5707963267948966],
+  "approach_distance": 0.6
+}

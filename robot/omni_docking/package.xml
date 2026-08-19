@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>omni_docking</name>
+  <version>0.1.0</version>
+  <description>
+    Charging-dock controller for the omni inspection robot (V1): serves
+    the Dock/Undock actions and the VerifyCharge/GetDockConfig
+    services, holds the DOCKING control lease via the gateway string
+    protocol, publishes the only /omni/cmd_vel/docking twist (through
+    the velocity arbiter) and the /omni/docking/status snapshot.
+    Fail-closed: estop, stale pose/robot state or lease loss abort the
+    active op; the lease is always released and velocity zeroed on
+    terminal.
+  </description>
+  <maintainer email="maintainer@example.com">Rosdeck Maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>action_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>omni_robot_interfaces</depend>
+
+  <test_depend>python3-unittest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
