@@ -6,4 +6,4 @@ unit-testable off the robot. The rclpy wiring lives in
 mission_manager_node.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
