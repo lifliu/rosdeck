@@ -54,7 +54,10 @@ public:
   /**
    * Assemble the RobotState message.
    *
+   * @param battery_voltage    volts, NaN when unknown (BMS power-supply read).
    * @param battery_percentage 0..100, NaN when unknown or stale.
+   * @param charging           BMS reports active charging (status CHARGING,
+   *                           or the signed-current fallback).
    * @param estop_latched      the arbiter's fail-closed software E-stop latch
    *                           (false when the arbiter is disabled).
    * @param mapping_active     the bridge's mapping process is running.
@@ -62,7 +65,8 @@ public:
    */
   static RobotState build(
     const AdapterSnapshot & snapshot, const AdapterHealth & health,
-    float battery_percentage, bool estop_latched, bool mapping_active,
+    float battery_voltage, float battery_percentage, bool charging,
+    bool estop_latched, bool mapping_active,
     const std::string & control_status, const Relay & relay)
   {
     RobotState message;
@@ -88,10 +92,9 @@ public:
       message.mission_id = relay.mission_id;
       message.mission_progress = relay.mission_progress;
     }
-    // V1 has no voltage or charging source yet; both stay explicitly unknown.
-    message.battery_voltage = std::numeric_limits<float>::quiet_NaN();
+    message.battery_voltage = battery_voltage;
     message.battery_percentage = battery_percentage;
-    message.charging = false;
+    message.charging = charging;
     return message;
   }
 

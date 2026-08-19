@@ -317,18 +317,45 @@ measure worst-case latency while vendor SDK calls are delayed or unresponsive.
 The Bridge publishes a thread-safe copy of telemetry already cached by each
 adapter. Publishing never calls `checkConnect()`, `getCurrentCtrlmode()`,
 `getBatteryPower()`, or another vendor API. Zsibot connection and mode samples
-come from its existing 250 ms SDK poll; battery percentage reuses the existing
-diagnostic sampling pass and is normalized from 0–100 to 0.0–1.0.
+come from its existing 250 ms SDK poll.
+
+`/battery_state` merges the kernel BMS with the vendor SDK:
+
+- Real electrical data — `voltage`, `current`, `temperature`,
+  `power_supply_status`, `power_supply_health`, and sysfs `present` — comes
+  from the Linux power-supply class (`/sys/class/power_supply`), read with a
+  1 s TTL so the 1 Hz adapter timer and the 4 Hz `/omni/robot_state` tick
+  share one read. The device is auto-detected (the `Battery` type exposing
+  `voltage_now`) unless `adapter_status.battery.power_supply_device` pins one.
+- The vendor SDK only provides SOC (0–100). It stays the primary
+  `percentage` source and feeds the SOC-trend fallback; when the SDK sample
+  is stale, the percentage falls back to the sysfs `capacity` instead of
+  blanking.
+- The `charging` bit is confirmed in priority order: BMS
+  `power_supply_status` (CHARGING confirms, FULL counts as charge-confirmed),
+  then the signed current against
+  `adapter_status.battery.charge_current_threshold_a` (sign flip via
+  `adapter_status.battery.current_sign`), then the SOC trend
+  (`adapter_status.battery.soc_trend_*`: ≥ min_delta % over the window). The
+  trend is consulted only when the BMS exposes no status.
+- `charger_connected`-equivalent state is derived from the BMS status
+  (CHARGING / FULL / NOT_CHARGING mean the charger is connected).
+- The read is fail-closed: an absent or broken power-supply device degrades
+  back to the SOC-only behavior (electrical fields NaN/UNKNOWN) instead of
+  erroring, and every merged field carries a `*_known` flag internally.
 
 Standard ROS consumers should use:
 
-- `/battery_state` (`sensor_msgs/msg/BatteryState`): `percentage` is NaN when
-  the battery sample is unavailable or stale, rather than reporting a fake 0%.
-  Physical `present` is tracked separately, so an old percentage never makes a
-  known installed battery appear absent;
+- `/battery_state` (`sensor_msgs/msg/BatteryState`): BMS voltage/current/
+  temperature/status/health with the merged percentage; `percentage` is NaN
+  when no source is available, rather than reporting a fake 0%. Physical
+  `present` is tracked separately, so an old percentage never makes a known
+  installed battery appear absent;
 - `/diagnostics` (`diagnostic_msgs/msg/DiagnosticArray`): connection, sample
-  freshness, battery, mode/posture, authority owner, last SDK result, and last
-  adapter error are grouped under `omni/robot_adapter`.
+  freshness, battery (including `battery_status`, `battery_status_source`,
+  `battery_charging`, `charger_connected`, raw `battery_current_a` for
+  verifying `current_sign`), mode/posture, authority owner, last SDK result,
+  and last adapter error, grouped under `omni/robot_adapter`.
 
 Simple transient-local compatibility topics are also published at
 `/omni/robot/connection`, `/omni/robot/mode`, `/omni/robot/sdk_error`, and
@@ -399,7 +426,7 @@ the Android app does not contain or link the Zsibot SDK.
 | Safety source → supervisor | `/omni/safety/estop_request` | `std_msgs/msg/Bool` | `true` latches; `false` never resets |
 | Supervisor → Bridge | `/omni/safety/estop` | `std_msgs/msg/Bool` | Reliable heartbeat; `true` stop, `false` healthy/armed |
 | Supervisor → observers | `/omni/safety/supervisor_status` | `std_msgs/msg/String` | Latch reason, heartbeat health and transition counters |
-| Adapter → ROS | `/battery_state` | `sensor_msgs/msg/BatteryState` | Physical presence independent from normalized 0.0–1.0 percentage; percentage is NaN if unknown/stale |
+| Adapter → ROS | `/battery_state` | `sensor_msgs/msg/BatteryState` | Merged BMS+SDK: voltage/current/temperature/status/health from sysfs power_supply, percentage from SDK SOC (sysfs capacity fallback); NaN when no source is available |
 | Adapter → ROS diagnostics | `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | Connection, freshness, battery, mode, authority and SDK errors |
 | Adapter → simple observers | `/omni/robot/adapter_status` | `std_msgs/msg/String` | Compact cached adapter snapshot; never a safety reset signal |
 

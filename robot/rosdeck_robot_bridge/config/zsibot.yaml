@@ -61,6 +61,23 @@
     adapter_status.publish_period_ms: 1000
     adapter_status.telemetry_stale_ms: 1500
     adapter_status.battery_stale_ms: 15000
+    # /battery_state is merged from the kernel BMS (sysfs) first and the SDK
+    # SOC second. voltage/current/temperature/status/health come from
+    # power_supply; the SDK's 0-100 SOC is the primary percentage and falls
+    # back to sysfs capacity. charger_connected is derived from BMS status.
+    # power_supply_device empty = auto-detect the Battery with voltage_now.
+    adapter_status.battery.power_supply_root: /sys/class/power_supply
+    adapter_status.battery.power_supply_device: ""
+    # Sign of the BMS current channel while charging (+1 per the sensor_msgs
+    # convention). Flip to -1 if VerifyCharge says "not charging" while the
+    # BMS UI shows a charge; the diagnostics summary reports the raw value.
+    adapter_status.battery.current_sign: 1.0
+    # Signed-current fallback used only when the BMS reports no status.
+    adapter_status.battery.charge_current_threshold_a: 0.05
+    # SOC-trend fallback for the charging bit when the BMS exposes no
+    # status: >=min_delta percent over the window -> charging.
+    adapter_status.battery.soc_trend_window_sec: 30
+    adapter_status.battery.soc_trend_min_delta_percent: 1.0
     adapter_status.topics.battery: /battery_state
     adapter_status.topics.diagnostics: /diagnostics
     adapter_status.topics.connection: /omni/robot/connection

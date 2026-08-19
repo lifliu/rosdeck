@@ -462,11 +462,13 @@ class DockingNode(Node):
 
 def _battery_sample(msg):
     from .charge_monitor import BatterySample
+    # sensor_msgs/BatteryState has no power field; the BMS status carried
+    # on power_supply_status is the authoritative charge confirmation.
     return BatterySample(
         voltage=msg.voltage,
         percentage=msg.percentage,
         current=msg.current if msg.current is not None else float("nan"),
-        power=msg.power if msg.power is not None else float("nan"),
+        power_supply_status=int(msg.power_supply_status),
         stamp=time.monotonic())
 
 
