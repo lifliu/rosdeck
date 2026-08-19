@@ -1,0 +1,49 @@
+# omni_docking node parameters. Values are the production defaults;
+# override per-robot as needed (the launch file loads this file).
+omni_docking:
+  ros__parameters:
+    # Per-map dock files: <map_id>.dock.json (see README / the
+    # config/floor1.dock.example.json template).
+    docks_dir: /var/lib/omni/docks
+
+    # Map frame: docking poses are expressed in this frame, and the pose
+    # topic must publish in it.
+    map_frame: lio_map
+    # Global pose stream (nav_msgs/Odometry). This is the stream the
+    # SLAM manager monitors (its default odom_topic).
+    pose_topic: /state_estimation_global
+
+    # Topics / services (defaults match the V1 contract map).
+    robot_state_topic: /omni/robot_state
+    battery_topic: /battery_state
+    control_command_topic: /rosdeck/control_command
+    control_status_topic: /rosdeck/control_status
+    cmd_vel_docking_topic: /omni/cmd_vel/docking
+    status_topic: /omni/docking/status
+    dock_action: /omni/docking/dock
+    undock_action: /omni/docking/undock
+    verify_charge_service: /omni/docking/verify_charge
+    config_service: /omni/docking/config
+
+    # Timing (seconds / ms)
+    servo_rate_hz: 20.0
+    robot_state_stale_ms: 2000.0
+    pose_stale_ms: 500.0
+    pose_stale_sec: 1.0        # mid-op: pose quiet this long -> abort
+    pose_start_timeout_sec: 5.0  # no pose at all after the servo starts
+    state_stale_sec: 2.0       # mid-op: robot state quiet this long
+    approach_timeout_sec: 45.0
+    move_timeout_sec: 45.0
+    charge_window_sec: 30.0    # docked: confirm charge within this window
+
+    # Servo tuning (the pure-pursuit controller, see approach.py)
+    standoff_speed: 0.15       # m/s outside the final band
+    final_speed: 0.05          # m/s inside the final band
+    pos_tolerance: 0.15        # m
+    yaw_tolerance: 0.25        # rad
+
+    # BMS charge inference (sensor_msgs/BatteryState has no charging
+    # flag). Sign is +1 per the sensor_msgs convention (current positive
+    # while charging); set -1.0 if this BMS reports the opposite.
+    charge_current_a: 0.05
+    charge_current_sign: 1.0
