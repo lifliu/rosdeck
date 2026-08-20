@@ -2,11 +2,13 @@ name: CI
 
 # Phase 4 (reliability/ops): first CI for the rosdeck monorepo.
 #   python  -> ruff lint + no-ROS unit tests (omni_docking, omni_mission_manager)
-#   robot-cpp -> ROS 2 Humble colcon build + gtest/contract tests for the
-#                C++ bridge (same container recipe as omni_robot_interfaces'
-#                and SCAN-Planner's ros2-humble-ci.yml)
 #   app     -> tsc typecheck + jest
 # Job-level path gates via dorny/paths-filter so a docs-only PR is cheap.
+#
+# The C++ bridge build/test jobs live in ci-robot-cpp.yml (manual only for
+# now): they need a CI_GIT_TOKEN repo secret because GITHUB_TOKEN cannot
+# read the private interface repos (lifliu/omni_robot_interfaces,
+# YanYaoyuan/omni_slam).
 on:
   push:
     branches: [main]
@@ -85,133 +87,6 @@ jobs:
         run: python3 -m unittest discover -s robot/omni_docking/test -v
       - name: omni_mission_manager
         run: python3 -m unittest discover -s robot/omni_mission_manager/test -v
-
-  robot-cpp:
-    name: ROS 2 Humble build + test (C++ bridge)
-    runs-on: ubuntu-22.04
-    container: ros:humble-ros-base-jammy
-    needs: changes
-    if: needs.changes.outputs.robot == 'true'
-    defaults:
-      run:
-        shell: bash
-    env:
-      ROS_WS: ${{ github.workspace }}/ws
-    steps:
-      - name: Checkout rosdeck
-        uses: actions/checkout@v4
-        with:
-          path: ws
-      - name: Install build tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential cmake git python3-colcon-common-extensions
-      # The private interface repos go in beside rosdeck inside ws/; ws/ is the
-      # colcon workspace root (colcon discovers packages at any depth).
-      # actions/checkout manages token auth for private repos in the container.
-      - name: Checkout omni_robot_interfaces (private)
-        uses: actions/checkout@v4
-        with:
-          repository: lifliu/omni_robot_interfaces
-          ref: main
-          fetch-depth: 1
-          path: ws/omni_robot_interfaces
-      - name: Checkout omni_slam interfaces (private)
-        uses: actions/checkout@v4
-        with:
-          repository: YanYaoyuan/omni_slam
-          ref: main
-          fetch-depth: 1
-          path: ws/omni_slam
-      - name: Build
-        run: |
-          . /opt/ros/humble/setup.bash
-          cd "${ROS_WS}"
-          colcon build \
-            --packages-select omni_robot_interfaces omni_slam_interfaces rosdeck_robot_bridge \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release \
-              -DROSDECK_BUILD_VBOT_ADAPTER=OFF -DROSDECK_BUILD_ZSIBOT_ADAPTER=OFF \
-            --event-handlers console_direct+
-      - name: Test
-        run: |
-          . /opt/ros/humble/setup.bash
-          cd "${ROS_WS}"
-          colcon test --packages-select rosdeck_robot_bridge \
-            --event-handlers console_direct+
-          colcon test-result --verbose
-      - name: Upload colcon logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: colcon-logs-${{ github.run_id }}
-          path: "${ROS_WS}/log"
-          retention-days: 3
-
-  robot-cpp-asan:
-    name: ROS 2 Humble ASan/UBSan build + test
-    runs-on: ubuntu-22.04
-    container: ros:humble-ros-base-jammy
-    needs: changes
-    if: needs.changes.outputs.robot == 'true'
-    defaults:
-      run:
-        shell: bash
-    env:
-      ROS_WS: ${{ github.workspace }}/ws
-    steps:
-      - name: Checkout rosdeck
-        uses: actions/checkout@v4
-        with:
-          path: ws
-      - name: Install build tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential cmake git python3-colcon-common-extensions \
-            libasan5 libubsan1
-      # The private interface repos go in beside rosdeck inside ws/; ws/ is the
-      # colcon workspace root (colcon discovers packages at any depth).
-      # actions/checkout manages token auth for private repos in the container.
-      - name: Checkout omni_robot_interfaces (private)
-        uses: actions/checkout@v4
-        with:
-          repository: lifliu/omni_robot_interfaces
-          ref: main
-          fetch-depth: 1
-          path: ws/omni_robot_interfaces
-      - name: Checkout omni_slam interfaces (private)
-        uses: actions/checkout@v4
-        with:
-          repository: YanYaoyuan/omni_slam
-          ref: main
-          fetch-depth: 1
-          path: ws/omni_slam
-      - name: Build (ASan + UBSan)
-        run: |
-          . /opt/ros/humble/setup.bash
-          cd "${ROS_WS}"
-          colcon build \
-            --packages-select omni_robot_interfaces omni_slam_interfaces rosdeck_robot_bridge \
-            --cmake-args -DCMAKE_BUILD_TYPE=Debug \
-              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
-              -DROSDECK_BUILD_VBOT_ADAPTER=OFF -DROSDECK_BUILD_ZSIBOT_ADAPTER=OFF \
-            --event-handlers console_direct+
-      - name: Test (ASan + UBSan)
-        run: |
-          . /opt/ros/humble/setup.bash
-          cd "${ROS_WS}"
-          colcon test --packages-select rosdeck_robot_bridge \
-            --event-handlers console_direct+
-          colcon test-result --verbose
-      - name: Upload colcon logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: colcon-logs-asan-${{ github.run_id }}
-          path: "${ROS_WS}/log"
-          retention-days: 3
 
   app:
     name: App typecheck + unit tests
