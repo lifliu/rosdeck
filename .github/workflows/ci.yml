@@ -109,11 +109,12 @@ jobs:
           mkdir -p "${ROS_WS}/src"
           # cp (not rsync): the ros:humble image has no rsync
           cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
+          # private repos: clone with the workflow GITHUB_TOKEN (contents: read)
           git clone --depth 1 --branch main \
-            https://github.com/lifliu/omni_robot_interfaces.git \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/lifliu/omni_robot_interfaces.git" \
             "${ROS_WS}/src/omni_robot_interfaces"
           git clone --depth 1 --branch main \
-            https://github.com/YanYaoyuan/omni_slam.git \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/YanYaoyuan/omni_slam.git" \
             "${ROS_WS}/src/omni_slam"
       - name: Build
         run: |
@@ -163,11 +164,12 @@ jobs:
           mkdir -p "${ROS_WS}/src"
           # cp (not rsync): the ros:humble image has no rsync
           cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
+          # private repos: clone with the workflow GITHUB_TOKEN (contents: read)
           git clone --depth 1 --branch main \
-            https://github.com/lifliu/omni_robot_interfaces.git \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/lifliu/omni_robot_interfaces.git" \
             "${ROS_WS}/src/omni_robot_interfaces"
           git clone --depth 1 --branch main \
-            https://github.com/YanYaoyuan/omni_slam.git \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/YanYaoyuan/omni_slam.git" \
             "${ROS_WS}/src/omni_slam"
       - name: Build (ASan + UBSan)
         run: |
