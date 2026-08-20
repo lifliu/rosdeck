@@ -591,7 +591,7 @@ TEST(BatterySource, MergeChargerAndCharging)
     ps.status = status;
     const auto m = bridge::merge_battery_state(
       false, 0.0, ps, std::nullopt, 1.0, 0.05);
-    EXPECT_TRUE(m.charger_connected) << status;
+    EXPECT_TRUE(m.charger_connected) << bridge::power_supply_status_name(status);
   }
   for (const auto status : {PowerSupplyStatus::discharging,
            PowerSupplyStatus::empty, PowerSupplyStatus::unknown})
@@ -600,7 +600,7 @@ TEST(BatterySource, MergeChargerAndCharging)
     ps.status = status;
     const auto m = bridge::merge_battery_state(
       false, 0.0, ps, std::nullopt, 1.0, 0.05);
-    EXPECT_FALSE(m.charger_connected) << status;
+    EXPECT_FALSE(m.charger_connected) << bridge::power_supply_status_name(status);
   }
 
   // Charging with a known status: the status is authoritative (FULL is not
