@@ -142,6 +142,12 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_adapter_observability_contract.py
   )
   set_tests_properties(test_adapter_observability_contract PROPERTIES TIMEOUT 30)
+  add_test(
+    NAME test_release_artifacts
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_release_artifacts.py
+  )
+  set_tests_properties(test_release_artifacts PROPERTIES TIMEOUT 180)
 endif()
 
 install(TARGETS rosdeck_robot_bridge_node rosdeck_safety_supervisor_node
