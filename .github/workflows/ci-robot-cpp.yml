@@ -64,9 +64,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install shellcheck
+        # Runs on the raw runner (no container), so steps execute as the
+        # non-root `runner` user — apt needs sudo here, unlike the
+        # containerized robot-cpp jobs.
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends shellcheck
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
       - name: Shellcheck build/deploy scripts
         # --severity=error: the scripts source variable ROS setup paths,
         # which shellcheck cannot follow (SC1090/SC1091) by design; only
