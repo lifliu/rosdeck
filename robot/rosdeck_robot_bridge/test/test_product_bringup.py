@@ -89,6 +89,60 @@ class ProductBringupStaticTest(unittest.TestCase):
         self.assertIn("Restart=always", unit)
         self.assertNotIn("Restart=on-failure", unit)
 
+    def test_units_run_hardened_non_root(self):
+        for unit_name in (
+            "rosdeck-robot-bridge.service.in",
+            "omni-mission-manager.service.in",
+            "rosdeck-foxglove-bridge.service.in",
+        ):
+            with self.subTest(unit=unit_name):
+                unit = _source(PACKAGE_ROOT / "systemd" / unit_name)
+                self.assertIn("User=rosdeck", unit)
+                self.assertIn("Group=rosdeck", unit)
+                self.assertNotIn("User=root", unit)
+                self.assertIn("NoNewPrivileges=yes", unit)
+                self.assertIn("ProtectSystem=strict", unit)
+                self.assertIn("RestrictAddressFamilies=", unit)
+                self.assertIn("Restart=always", unit)
+
+        bridge = _source(
+            PACKAGE_ROOT / "systemd" / "rosdeck-robot-bridge.service.in"
+        )
+        self.assertIn("RuntimeDirectory=lock/omni", bridge)
+        self.assertIn("@VBOT_ONLY@ReadWritePaths=/userdata", bridge)
+        self.assertIn("MemoryMax=4G", bridge)
+        # Motion-loop cgroup: deliberately no CPU cap (see unit comment).
+        self.assertNotIn("CPUQuota=", bridge)
+
+        manager = _source(
+            PACKAGE_ROOT / "systemd" / "omni-mission-manager.service.in"
+        )
+        self.assertIn("StateDirectory=omni", manager)
+        self.assertIn(
+            "ExecStartPre=+mkdir -p /var/lib/omni/routes "
+            "/var/lib/omni/mission_manager",
+            manager,
+        )
+        self.assertIn("CapabilityBoundingSet=", manager)
+        self.assertIn("CPUQuota=200%", manager)
+
+    def test_deployers_prepare_non_root_service_account(self):
+        # Both deploy paths (in-place deploy.sh and the A/B core used by
+        # deploy-prebuilt.sh / ota.sh) must create the dedicated account,
+        # own the mission-manager state, and render the profile-conditional
+        # @VBOT_ONLY@ unit directives.
+        for deployer in ("deploy.sh", "deploy-core.sh"):
+            with self.subTest(deployer=deployer):
+                source = _source(PACKAGE_ROOT / "scripts" / deployer)
+                self.assertIn("groupadd --system rosdeck", source)
+                self.assertIn("useradd --system --gid rosdeck", source)
+                self.assertIn("chown -R rosdeck:rosdeck /var/lib/omni", source)
+                self.assertIn("s#@VBOT_ONLY@#", source)
+
+        core = _source(PACKAGE_ROOT / "scripts" / "deploy-core.sh")
+        self.assertIn("rosdeck_user_prepare", core)
+        self.assertIn("ROSDECK_SKIP_USER_PREPARE", core)
+
     def test_docking_output_is_scoped_to_gateway_input(self):
         product = _source(PRODUCT_LAUNCH)
 

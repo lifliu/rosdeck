@@ -355,11 +355,21 @@ rosdeck_glue_render() {
     "${templates}/bootstrap-service.in" \
     > "${prefix}/bin/bootstrap-rosdeck-service"
   chmod 0755 "${prefix}/bin/bootstrap-rosdeck-service"
-  sed "s#@INSTALL_PREFIX@#${prefix}#g" \
+  # @VBOT_ONLY@ marks profile-conditional unit directives (e.g. the vbot
+  # ReadWritePaths=/userdata). For non-vbot profiles the token is replaced
+  # with a leading '#' so the line renders as a comment; for vbot it is
+  # dropped entirely, activating the directive.
+  local vbot_only=""
+  if [[ "${profile}" != "vbot" ]]; then
+    vbot_only="#"
+  fi
+  sed -e "s#@INSTALL_PREFIX@#${prefix}#g" \
+      -e "s#@VBOT_ONLY@#${vbot_only}#g" \
     "${templates}/rosdeck-robot-bridge.service.in" \
     > "${prefix}/systemd/rosdeck-robot-bridge.service"
   if [[ "${foxglove}" -eq 1 ]]; then
-    sed "s#@INSTALL_PREFIX@#${prefix}#g" \
+    sed -e "s#@INSTALL_PREFIX@#${prefix}#g" \
+        -e "s#@VBOT_ONLY@#${vbot_only}#g" \
       "${templates}/rosdeck-foxglove-bridge.service.in" \
       > "${prefix}/systemd/rosdeck-foxglove-bridge.service"
   fi
@@ -402,6 +412,37 @@ rosdeck_config_prepare() {
       > "${prefix}/config/foxglove.env"
     chmod 0644 "${prefix}/config/foxglove.env"
   fi
+}
+
+rosdeck_user_prepare() {
+  # $1 = profile. Creates the dedicated service account and the persistent
+  # state directories the non-root units need. Runs as root (deploy
+  # context) and is idempotent, so re-deploys are a no-op.
+  #
+  # The units run as User=rosdeck. The release tree itself stays
+  # root-owned and world-readable (0644/0755 installs); only the state the
+  # services write at runtime needs the service account as owner:
+  #   /var/lib/omni/          mission manager routes + SQLite DB
+  #   /run/lock/omni/         created per start by RuntimeDirectory=lock/omni
+  # Existing root-owned state from earlier (root-run) deploys is chowned
+  # into the service account so upgrades do not strand it.
+  #
+  # ROSDECK_SKIP_USER_PREPARE=1 (test-only) bypasses this entirely; the
+  # offline E2E harness runs as an unprivileged user with a stubbed
+  # systemctl, where groupadd/useradd would fail.
+  local profile="$1"
+  if [[ "${ROSDECK_SKIP_USER_PREPARE:-0}" == "1" ]]; then
+    return 0
+  fi
+  if ! getent group rosdeck >/dev/null; then
+    groupadd --system rosdeck
+  fi
+  if ! getent passwd rosdeck >/dev/null; then
+    useradd --system --gid rosdeck --home-dir /nonexistent \
+      --shell /usr/sbin/nologin --comment "Rosdeck robot services" rosdeck
+  fi
+  install -d /var/lib/omni/routes /var/lib/omni/mission_manager
+  chown -R rosdeck:rosdeck /var/lib/omni
 }
 
 rosdeck_units_install() {
@@ -614,6 +655,7 @@ rosdeck_install_bundle() {
   rosdeck_glue_render "${bundle_dir}" "${prefix}" "${ros_setup}" \
     "${profile}" "${node_name}" "${foxglove}"
   rosdeck_config_prepare "${prefix}" "${profile}" "${foxglove}"
+  rosdeck_user_prepare "${profile}"
   rosdeck_units_install "${prefix}" "${profile}" "${foxglove}"
   if [[ "${profile}" == "vbot" ]]; then
     rosdeck_vbot_init_hook "${prefix}"

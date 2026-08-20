@@ -5,7 +5,10 @@ After=network-online.target rosdeck-robot-bridge.service
 
 [Service]
 Type=simple
-User=root
+# Dedicated system account, created idempotently by the deployer
+# (deploy-core.sh / deploy.sh). The bridge never runs as root.
+User=rosdeck
+Group=rosdeck
 EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
 EnvironmentFile=-@INSTALL_PREFIX@/config/foxglove.env
 ExecStart=@INSTALL_PREFIX@/bin/run-rosdeck-foxglove-bridge
@@ -13,6 +16,31 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=20
 KillMode=control-group
+
+# --- least-privilege sandbox ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=
+LockPersonality=yes
+# Pure WebSocket proxy on port 8765 (> 1024): no capabilities needed.
+CapabilityBoundingSet=
+
+# --- resource caps ---
+TasksMax=512
+MemoryHigh=512M
+MemoryMax=1G
+CPUQuota=200%
+IOWeight=50
 
 [Install]
 WantedBy=multi-user.target

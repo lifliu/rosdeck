@@ -5,8 +5,16 @@ After=rosdeck-robot-bridge.service network-online.target
 
 [Service]
 Type=simple
-User=root
+# Dedicated system account, created idempotently by the deployer
+# (deploy-core.sh / deploy.sh). The manager never runs as root.
+User=rosdeck
+Group=rosdeck
 EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
+# Self-heal the state subdirectories (route store + SQLite DB) on every
+# start; the parent directory is created and owned by the service account
+# via StateDirectory below. The '+' runs the command as root because the
+# sandbox otherwise refuses to create it.
+ExecStartPre=+mkdir -p /var/lib/omni/routes /var/lib/omni/mission_manager
 ExecStart=@INSTALL_PREFIX@/bin/run-omni-mission-manager
 # A SIGTERM triggers the node's graceful shutdown (active missions become
 # INTERRUPTED in SQLite, leases are released); systemd never restarts an
@@ -15,6 +23,34 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=20
 KillMode=control-group
+
+# --- least-privilege sandbox ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=
+LockPersonality=yes
+# Pure ROS 2 Python node: no capabilities are needed at all.
+CapabilityBoundingSet=
+# Route store + mission DB live here, owned by the service account, and
+# survive reboots (systemd never removes StateDirectory contents).
+StateDirectory=omni
+
+# --- resource caps ---
+TasksMax=512
+MemoryHigh=1G
+MemoryMax=2G
+CPUQuota=200%
+IOWeight=50
 
 [Install]
 WantedBy=multi-user.target

@@ -5,7 +5,10 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=root
+# Dedicated system account, created idempotently by the deployer
+# (deploy-core.sh / deploy.sh). The bridge never runs as root.
+User=rosdeck
+Group=rosdeck
 EnvironmentFile=-@INSTALL_PREFIX@/config/bridge.env
 ExecStart=@INSTALL_PREFIX@/bin/run-rosdeck-robot-bridge
 # ros2 launch can perform an orderly shutdown after a critical child exits.
@@ -15,6 +18,47 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=45
 KillMode=control-group
+
+# --- least-privilege sandbox ---
+# The vendor SDK (zsibot) and the vbot 3D mapping child process run inside
+# this sandbox, so the set is deliberately the conservative, well-trodden
+# one. SystemCallFilter / MemoryDenyWriteExecute / CapabilityBoundingSet
+# are intentionally NOT set until the stack has been HIL-verified under
+# them.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProcSubset=pid
+# ROS discovery (UDP multicast, Zenoh/DDS) plus AF_NETLINK for interface
+# enumeration; every other socket family is refused.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=
+LockPersonality=yes
+# Safety-supervisor instance lock (/run/lock/omni/safety_supervisor.lock):
+# the directory is created per start, owned by the service account, and
+# removed on stop — a stale lock can never outlive the service.
+RuntimeDirectory=lock/omni
+# vbot only: the vendor 3D mapping script runs with cwd /userdata/2_slam
+# and writes map data there. Rendered with a leading '#' for non-vbot
+# profiles (see the @VBOT_ONLY@ sed in the deployers).
+@VBOT_ONLY@ReadWritePaths=/userdata
+
+# --- resource caps ---
+# No CPUQuota on purpose: this cgroup feeds the motion loop (gateway +
+# supervisor, and on vbot the vendor SLAM), and a CPU cap would trade
+# motion safety for accounting. Memory is capped so a leak fails over to
+# a clean restart instead of OOM-striking the whole robot.
+TasksMax=1024
+MemoryHigh=2G
+MemoryMax=4G
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
