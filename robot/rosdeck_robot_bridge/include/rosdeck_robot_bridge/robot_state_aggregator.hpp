@@ -81,6 +81,10 @@ public:
       message.map_id = relay.slam_map_id;
       message.map_version = relay.slam_map_version;
       message.localization_fitness_score = relay.slam_fitness;
+    } else {
+      // Contract (RobotState.msg): NaN when no fresh value. The msg default
+      // is 0, so the stale path must write the NaN explicitly.
+      message.localization_fitness_score = std::numeric_limits<float>::quiet_NaN();
     }
     message.health_level = map_health(health, estop_latched);
     message.health_summary = health_summary(health, estop_latched);
@@ -91,6 +95,10 @@ public:
       message.mission_state = relay.mission_state;
       message.mission_id = relay.mission_id;
       message.mission_progress = relay.mission_progress;
+    } else {
+      // Contract (RobotState.msg): NaN when no mission. Same msg-default
+      // caveat as the slam fitness field above.
+      message.mission_progress = std::numeric_limits<float>::quiet_NaN();
     }
     message.battery_voltage = battery_voltage;
     message.battery_percentage = battery_percentage;
