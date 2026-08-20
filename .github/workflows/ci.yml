@@ -107,7 +107,8 @@ jobs:
       - name: Prepare colcon workspace
         run: |
           mkdir -p "${ROS_WS}/src"
-          rsync -a --exclude='.git' "${GITHUB_WORKSPACE}/robot/" "${ROS_WS}/src/robot/"
+          # cp (not rsync): the ros:humble image has no rsync
+          cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
           git clone --depth 1 --branch main \
             https://github.com/lifliu/omni_robot_interfaces.git \
             "${ROS_WS}/src/omni_robot_interfaces"
@@ -160,7 +161,8 @@ jobs:
       - name: Prepare colcon workspace
         run: |
           mkdir -p "${ROS_WS}/src"
-          rsync -a --exclude='.git' "${GITHUB_WORKSPACE}/robot/" "${ROS_WS}/src/robot/"
+          # cp (not rsync): the ros:humble image has no rsync
+          cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
           git clone --depth 1 --branch main \
             https://github.com/lifliu/omni_robot_interfaces.git \
             "${ROS_WS}/src/omni_robot_interfaces"
