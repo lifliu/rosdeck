@@ -135,6 +135,63 @@ sudo apt update
 sudo apt install ros-humble-foxglove-bridge
 ```
 
+### Release manifest, SBOM and signing
+
+Every generated bundle embeds a machine-readable release description so the
+robot can prove what was shipped without the build machine:
+
+```text
+release-manifest.json     schema, version, profile, arch, ROS distro, pinned
+                          source revisions (git sha + dirty flag, or a tree
+                          content hash for vendor drops), tool versions,
+                          installed ROS system packages, staged workspace
+                          packages, config hash, signing key fingerprint
+sbom.json                 CycloneDX 1.5: workspace packages, system ROS
+                          packages and source repos with VCS references
+tools/release_artifacts.py  the verifier itself, shipped inside the bundle
+```
+
+The archive is deterministic: identical source pins, toolchain, ROS
+distribution and vendor inputs produce a byte-identical `tar.gz` (fixed entry
+order, owner, modes and mtime, timestampless gzip). Metadata time comes from
+`SOURCE_DATE_EPOCH` when set, otherwise from the last rosdeck commit; the
+manifest records which origin was used. Different compiler or ROS patch
+releases are not guaranteed bit-for-bit identical — the manifest is the audit
+record in that case.
+
+Signing is optional. Build with a GPG key id or fingerprint:
+
+```bash
+./scripts/build-package.sh --profile zsibot --zsibot-model zsl-1 \
+  --sign-key <key-id-or-fingerprint>
+```
+
+This writes a detached armored signature next to the archive
+(`<archive>.tar.gz.asc`) and records the key fingerprint in the manifest.
+An existing archive can be signed later on any machine that holds the key:
+
+```bash
+python3 scripts/release_artifacts.py sign <archive>.tar.gz --key <key-id>
+```
+
+Verification on the robot (the tool travels inside the bundle):
+
+```bash
+# Full check: sha256 sidecar, GPG signature (when a .asc is present),
+# embedded manifest consistency and staged package completeness.
+python3 <bundle>/tools/release_artifacts.py verify <archive>.tar.gz
+
+# Deploy-time self-check: deploy.sh runs verify-bundle automatically and
+# aborts before installing anything if the bundle no longer matches its
+# manifest.
+python3 <bundle>/tools/release_artifacts.py verify-bundle <bundle>
+```
+
+Trust the release key by importing its public key on the robot
+(`gpg --import rosdeck-release.pub`); `verify` then checks the signature
+against the keyring. Bundles built before this section existed have no
+`tools/` directory and deploy as before.
+
 Common operations on the production robot:
 
 ```bash
