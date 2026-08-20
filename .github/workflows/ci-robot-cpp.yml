@@ -10,11 +10,17 @@ name: CI (C++ bridge)
 #   cannot read private repos other than the triggering one, so the
 #   checkout steps authenticate with the CI_GIT_TOKEN secret instead.
 #
-#   To enable: create a fine-grained personal access token with READ
-#   (Contents) access to exactly those two repos (Settings -> Developer
-#   settings -> Fine-grained tokens), then in rosdeck:
+#   To enable: CI_GIT_TOKEN must be a token of an account that can read
+#   BOTH repos. A fine-grained PAT only grants repos its owner administers,
+#   so one fine-grained token cannot cover both here (lifliu is only a
+#   collaborator on omni_slam — the repo is unselectable in the UI). Use a
+#   CLASSIC PAT instead (Settings -> Developer settings -> Personal access
+#   tokens -> Tokens (classic) -> Generate new token (classic)), scope:
+#   repo, then in rosdeck:
 #       Settings -> Secrets and variables -> Actions -> New repository secret
 #       CI_GIT_TOKEN = <token>
+#   (Least-privilege alternative: a fine-grained token from each repo
+#   owner and two secrets — the checkout steps would need a second token.)
 #   Run this workflow manually and watch both jobs go green; afterwards it
 #   can be added to the regular CI triggers.
 on:
