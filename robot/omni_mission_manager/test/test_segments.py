@@ -24,7 +24,6 @@ from omni_mission_manager.segments import (  # noqa: E402
     NEXT_SEND,
     PHASE_CHECKPOINT,
     PHASE_DONE,
-    PHASE_IDLE,
     PHASE_MOVING,
     SegmentController,
 )

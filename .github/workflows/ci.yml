@@ -1,0 +1,212 @@
+name: CI
+
+# Phase 4 (reliability/ops): first CI for the rosdeck monorepo.
+#   python  -> ruff lint + no-ROS unit tests (omni_docking, omni_mission_manager)
+#   robot-cpp -> ROS 2 Humble colcon build + gtest/contract tests for the
+#                C++ bridge (same container recipe as omni_robot_interfaces'
+#                and SCAN-Planner's ros2-humble-ci.yml)
+#   app     -> tsc typecheck + jest
+# Job-level path gates via dorny/paths-filter so a docs-only PR is cheap.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-22.04
+    outputs:
+      robot: ${{ steps.filter.outputs.robot }}
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            robot:
+              - 'robot/**'
+              - '.github/workflows/ci.yml'
+            app:
+              - 'app/**'
+              - 'components/**'
+              - 'constants/**'
+              - 'hooks/**'
+              - 'lib/**'
+              - 'modules/**'
+              - 'stores/**'
+              - 'types/**'
+              - 'widgets/**'
+              - '__tests__/**'
+              - '__mocks__/**'
+              - 'assets/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig.json'
+              - 'jest.config.js'
+              - 'jest.setup.js'
+              - '.github/workflows/ci.yml'
+
+  python-lint:
+    name: Python lint (ruff)
+    runs-on: ubuntu-22.04
+    needs: changes
+    if: needs.changes.outputs.robot == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install ruff
+        run: pip install ruff==0.16.3
+      - name: Lint robot Python
+        run: ruff check robot/
+
+  python-test:
+    name: Python unit tests (no ROS)
+    runs-on: ubuntu-22.04
+    needs: changes
+    if: needs.changes.outputs.robot == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: omni_docking
+        run: python3 -m unittest discover -s robot/omni_docking/test -v
+      - name: omni_mission_manager
+        run: python3 -m unittest discover -s robot/omni_mission_manager/test -v
+
+  robot-cpp:
+    name: ROS 2 Humble build + test (C++ bridge)
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
+    needs: changes
+    if: needs.changes.outputs.robot == 'true'
+    defaults:
+      run:
+        shell: bash
+    env:
+      ROS_WS: /tmp/rosdeck_ws
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake git python3-colcon-common-extensions
+      - name: Prepare colcon workspace
+        run: |
+          mkdir -p "${ROS_WS}/src"
+          rsync -a --exclude='.git' "${GITHUB_WORKSPACE}/robot/" "${ROS_WS}/src/robot/"
+          git clone --depth 1 --branch main \
+            https://github.com/lifliu/omni_robot_interfaces.git \
+            "${ROS_WS}/src/omni_robot_interfaces"
+          git clone --depth 1 --branch main \
+            https://github.com/YanYaoyuan/omni_slam.git \
+            "${ROS_WS}/src/omni_slam"
+      - name: Build
+        run: |
+          . /opt/ros/humble/setup.bash
+          cd "${ROS_WS}"
+          colcon build \
+            --packages-select omni_robot_interfaces omni_slam_interfaces rosdeck_robot_bridge \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+              -DROSDECK_BUILD_VBOT_ADAPTER=OFF -DROSDECK_BUILD_ZSIBOT_ADAPTER=OFF \
+            --event-handlers console_direct+
+      - name: Test
+        run: |
+          . /opt/ros/humble/setup.bash
+          cd "${ROS_WS}"
+          colcon test --packages-select rosdeck_robot_bridge \
+            --event-handlers console_direct+
+          colcon test-result --verbose
+      - name: Upload colcon logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colcon-logs-${{ github.run_id }}
+          path: /tmp/rosdeck_ws/log
+          retention-days: 3
+
+  robot-cpp-asan:
+    name: ROS 2 Humble ASan/UBSan build + test
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
+    needs: changes
+    if: needs.changes.outputs.robot == 'true'
+    defaults:
+      run:
+        shell: bash
+    env:
+      ROS_WS: /tmp/rosdeck_ws
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake git python3-colcon-common-extensions \
+            libasan5 libubsan1
+      - name: Prepare colcon workspace
+        run: |
+          mkdir -p "${ROS_WS}/src"
+          rsync -a --exclude='.git' "${GITHUB_WORKSPACE}/robot/" "${ROS_WS}/src/robot/"
+          git clone --depth 1 --branch main \
+            https://github.com/lifliu/omni_robot_interfaces.git \
+            "${ROS_WS}/src/omni_robot_interfaces"
+          git clone --depth 1 --branch main \
+            https://github.com/YanYaoyuan/omni_slam.git \
+            "${ROS_WS}/src/omni_slam"
+      - name: Build (ASan + UBSan)
+        run: |
+          . /opt/ros/humble/setup.bash
+          cd "${ROS_WS}"
+          colcon build \
+            --packages-select omni_robot_interfaces omni_slam_interfaces rosdeck_robot_bridge \
+            --cmake-args -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+              -DROSDECK_BUILD_VBOT_ADAPTER=OFF -DROSDECK_BUILD_ZSIBOT_ADAPTER=OFF \
+            --event-handlers console_direct+
+      - name: Test (ASan + UBSan)
+        run: |
+          . /opt/ros/humble/setup.bash
+          cd "${ROS_WS}"
+          colcon test --packages-select rosdeck_robot_bridge \
+            --event-handlers console_direct+
+          colcon test-result --verbose
+      - name: Upload colcon logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colcon-logs-asan-${{ github.run_id }}
+          path: /tmp/rosdeck_ws/log
+          retention-days: 3
+
+  app:
+    name: App typecheck + unit tests
+    runs-on: ubuntu-22.04
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: npx jest --ci
