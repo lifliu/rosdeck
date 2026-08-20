@@ -40,6 +40,7 @@ import sys
 import tarfile
 import tempfile
 import xml.etree.ElementTree as ET
+import zlib
 
 MANIFEST_SCHEMA = "rosdeck.release-manifest/1"
 SBOM_SPEC_VERSION = "1.5"
@@ -674,10 +675,19 @@ def cmd_verify(args):
     else:
         notes.append("no signature present; signature check skipped")
 
+    if errors:
+        # Do not extract an archive that already failed a content check:
+        # the contents are untrusted, and a corrupt gzip stream can raise
+        # errors tarfile does not wrap (zlib.error on some platforms), so
+        # stop before touching the payload.
+        for error in errors:
+            print("[fail] %s" % error, file=sys.stderr)
+        die("verification FAILED for %s" % archive)
+
     with tempfile.TemporaryDirectory(prefix="rosdeck-verify.") as temp:
         try:
             extract_archive(archive, temp)
-        except tarfile.TarError as exc:
+        except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
             die("cannot extract archive: %s" % exc)
         entries = [entry for entry in os.listdir(temp)
                    if os.path.isdir(os.path.join(temp, entry))]

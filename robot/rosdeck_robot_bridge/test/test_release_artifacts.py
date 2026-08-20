@@ -288,6 +288,20 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("sha256 mismatch", result.stderr)
 
+        # Truncated stream with the sidecar removed: the hash check is
+        # skipped, so the corrupt payload must fail with a clean message,
+        # never an uncaught traceback (zlib-level errors differ across
+        # platforms; truncation fails them all).
+        os.remove(archive + ".sha256")
+        with open(archive, "rb") as handle:
+            blob = handle.read()
+        with open(archive, "wb") as handle:
+            handle.write(blob[:len(blob) // 2])
+        result = run_tool(["verify", archive])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot extract archive", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_verify_bundle_detects_config_tamper(self):
         sources, _ = self.make_sources("vb")
         stage, archive, _ = self.make_bundle("vb", sources)
