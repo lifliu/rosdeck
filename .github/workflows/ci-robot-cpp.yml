@@ -78,7 +78,20 @@ jobs:
           shellcheck --severity=error \
             robot/rosdeck_robot_bridge/scripts/build.sh \
             robot/rosdeck_robot_bridge/scripts/build-package.sh \
-            robot/rosdeck_robot_bridge/scripts/deploy-prebuilt.sh
+            robot/rosdeck_robot_bridge/scripts/deploy-prebuilt.sh \
+            robot/rosdeck_robot_bridge/scripts/deploy-core.sh \
+            robot/rosdeck_robot_bridge/scripts/ota.sh \
+            robot/rosdeck_robot_bridge/test/test_ab_layout.sh \
+            robot/rosdeck_robot_bridge/test/test_ota_e2e.sh
+      - name: A/B release layout tests
+        # Pure filesystem state machine (slots, atomic current/previous
+        # swap, rollback, pruning) — no root/systemd/ROS needed.
+        run: bash robot/rosdeck_robot_bridge/test/test_ab_layout.sh
+      - name: OTA end-to-end tests
+        # Drives ota.sh install/rollback/status end to end with real,
+        # verifiable archives; ros2/systemctl/journalctl/timeout are
+        # stubbed and all write targets are redirected into a temp tree.
+        run: bash robot/rosdeck_robot_bridge/test/test_ota_e2e.sh
       - name: Release artifact tests
         run: python3 -m unittest -v robot/rosdeck_robot_bridge/test/test_release_artifacts.py
 

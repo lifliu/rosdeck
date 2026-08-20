@@ -5,8 +5,8 @@
 set -eo pipefail
 
 source "@ROS_SETUP@"
-if [[ -f "@INSTALL_PREFIX@/runtime/local_setup.bash" ]]; then
-  source "@INSTALL_PREFIX@/runtime/local_setup.bash"
+if [[ -f "@CURRENT@/runtime/local_setup.bash" ]]; then
+  source "@CURRENT@/runtime/local_setup.bash"
 elif [[ -f "@INSTALL_PREFIX@/install/setup.bash" ]]; then
   source "@INSTALL_PREFIX@/install/setup.bash"
 fi
