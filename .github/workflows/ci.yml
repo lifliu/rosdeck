@@ -96,35 +96,34 @@ jobs:
       run:
         shell: bash
     env:
-      ROS_WS: /tmp/rosdeck_ws
+      ROS_WS: ${{ github.workspace }}/ws
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout rosdeck
+        uses: actions/checkout@v4
+        with:
+          path: ws
       - name: Install build tools
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential cmake git python3-colcon-common-extensions
-      - name: Prepare colcon workspace
-        run: |
-          mkdir -p "${ROS_WS}/src"
-          # cp (not rsync): the ros:humble image has no rsync
-          cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
-      # The interface repos are private; actions/checkout handles token auth
-      # inside the container (a plain git clone here gets 401).
+      # The private interface repos go in beside rosdeck inside ws/; ws/ is the
+      # colcon workspace root (colcon discovers packages at any depth).
+      # actions/checkout manages token auth for private repos in the container.
       - name: Checkout omni_robot_interfaces (private)
         uses: actions/checkout@v4
         with:
           repository: lifliu/omni_robot_interfaces
           ref: main
           fetch-depth: 1
-          path: /tmp/rosdeck_ws/src/omni_robot_interfaces
+          path: ws/omni_robot_interfaces
       - name: Checkout omni_slam interfaces (private)
         uses: actions/checkout@v4
         with:
           repository: YanYaoyuan/omni_slam
           ref: main
           fetch-depth: 1
-          path: /tmp/rosdeck_ws/src/omni_slam
+          path: ws/omni_slam
       - name: Build
         run: |
           . /opt/ros/humble/setup.bash
@@ -146,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: colcon-logs-${{ github.run_id }}
-          path: /tmp/rosdeck_ws/log
+          path: "${ROS_WS}/log"
           retention-days: 3
 
   robot-cpp-asan:
@@ -159,36 +158,35 @@ jobs:
       run:
         shell: bash
     env:
-      ROS_WS: /tmp/rosdeck_ws
+      ROS_WS: ${{ github.workspace }}/ws
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout rosdeck
+        uses: actions/checkout@v4
+        with:
+          path: ws
       - name: Install build tools
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential cmake git python3-colcon-common-extensions \
             libasan5 libubsan1
-      - name: Prepare colcon workspace
-        run: |
-          mkdir -p "${ROS_WS}/src"
-          # cp (not rsync): the ros:humble image has no rsync
-          cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
-      # The interface repos are private; actions/checkout handles token auth
-      # inside the container (a plain git clone here gets 401).
+      # The private interface repos go in beside rosdeck inside ws/; ws/ is the
+      # colcon workspace root (colcon discovers packages at any depth).
+      # actions/checkout manages token auth for private repos in the container.
       - name: Checkout omni_robot_interfaces (private)
         uses: actions/checkout@v4
         with:
           repository: lifliu/omni_robot_interfaces
           ref: main
           fetch-depth: 1
-          path: /tmp/rosdeck_ws/src/omni_robot_interfaces
+          path: ws/omni_robot_interfaces
       - name: Checkout omni_slam interfaces (private)
         uses: actions/checkout@v4
         with:
           repository: YanYaoyuan/omni_slam
           ref: main
           fetch-depth: 1
-          path: /tmp/rosdeck_ws/src/omni_slam
+          path: ws/omni_slam
       - name: Build (ASan + UBSan)
         run: |
           . /opt/ros/humble/setup.bash
@@ -212,7 +210,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: colcon-logs-asan-${{ github.run_id }}
-          path: /tmp/rosdeck_ws/log
+          path: "${ROS_WS}/log"
           retention-days: 3
 
   app:
