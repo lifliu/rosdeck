@@ -109,7 +109,6 @@ class SegmentController:
         that one is only for asynchronous transitions), so the node's timer
         cannot fire the same leg twice.
         """
-        st = self._state
         self._begin_current()
         return self._next_action()
 

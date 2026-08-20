@@ -76,7 +76,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from builtin_interfaces.msg import Time
-from geometry_msgs.msg import Pose, PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped, Quaternion
 from nav_msgs.msg import Odometry, Path
 
 from omni_robot_interfaces.action import (

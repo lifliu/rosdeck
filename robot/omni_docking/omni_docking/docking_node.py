@@ -461,7 +461,6 @@ class DockingNode(Node):
 
 
 def _battery_sample(msg):
-    from .charge_monitor import BatterySample
     # sensor_msgs/BatteryState has no power field; the BMS status carried
     # on power_supply_status is the authoritative charge confirmation.
     return BatterySample(
