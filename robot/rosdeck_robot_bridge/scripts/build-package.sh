@@ -9,9 +9,15 @@ OUTPUT_DIR="${PACKAGE_DIR}/dist"
 VBOT_MSGS=""
 ZSIBOT_SDK=""
 ZSIBOT_MODEL=""
+SIGN_KEY=""
 
 usage() {
-  echo "Usage: ./scripts/build-package.sh [--profile vbot|zsibot] [--ros-setup PATH] [--output-dir PATH] [--vbot-msgs PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w]"
+  echo "Usage: ./scripts/build-package.sh [--profile vbot|zsibot] [--ros-setup PATH] [--output-dir PATH] [--vbot-msgs PATH] [--zsibot-sdk PATH --zsibot-model zsl-1|zsl-1w] [--sign-key GPG_KEY]"
+  echo ""
+  echo "The package ships a deterministic release manifest + SBOM (pinned"
+  echo "source revisions, tool versions, ROS distro). Set SOURCE_DATE_EPOCH"
+  echo "to pin build metadata; otherwise the last rosdeck commit time is"
+  echo "used. --sign-key adds a detached GPG signature (<archive>.asc)."
 }
 
 is_vbot_msgs_tree() {
@@ -29,6 +35,7 @@ while (($#)); do
     --vbot-msgs) VBOT_MSGS="${2:?missing vbot_ros2_msgs path}"; shift 2 ;;
     --zsibot-sdk) ZSIBOT_SDK="${2:?missing Zsibot SDK path}"; shift 2 ;;
     --zsibot-model) ZSIBOT_MODEL="${2:?missing Zsibot model}"; shift 2 ;;
+    --sign-key) SIGN_KEY="${2:?missing GPG key}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -192,7 +199,8 @@ fi
 BUNDLE_NAME="rosdeck-robot-bridge-${VERSION}-${PROFILE_LABEL}-${ARCH}-${ROS_VERSION_NAME}"
 STAGE_PARENT="${BUILD_ROOT}/bundle"
 STAGE="${STAGE_PARENT}/${BUNDLE_NAME}"
-install -d "${STAGE}/bin" "${STAGE}/config" "${STAGE}/templates" "${STAGE}/runtime"
+install -d "${STAGE}/bin" "${STAGE}/config" "${STAGE}/templates" \
+  "${STAGE}/runtime" "${STAGE}/tools"
 install -m 0755 "${BINARY}" "${STAGE}/bin/rosdeck_robot_bridge_node"
 cp -a "${BUILD_ROOT}/install/." "${STAGE}/runtime/"
 install -m 0644 "${PACKAGE_DIR}/config/${PROFILE}.yaml" "${STAGE}/config/bridge.yaml"
@@ -207,25 +215,74 @@ install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
 install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
   "${STAGE}/templates/rosdeck-foxglove-bridge.service.in"
 
-cat > "${STAGE}/manifest.env" <<EOF
-BUNDLE_VERSION=${VERSION}
-BUNDLE_PROFILE=${PROFILE}
-BUNDLE_ARCH=${ARCH}
-BUNDLE_ROS_DISTRO=${ROS_VERSION_NAME}
-BUNDLE_ZSIBOT_MODEL=${ZSIBOT_MODEL}
-EOF
+install -m 0755 "${SCRIPT_DIR}/release_artifacts.py" \
+  "${STAGE}/tools/release_artifacts.py"
 
+# Reproducible metadata: honor SOURCE_DATE_EPOCH, else fall back to the
+# last rosdeck commit time, else the package.xml mtime. The origin is
+# recorded in the manifest so a reader knows how strong the guarantee is.
+SOURCE_EPOCH="${SOURCE_DATE_EPOCH:-}"
+EPOCH_ORIGIN=""
+if [[ -n "${SOURCE_EPOCH}" ]]; then
+  EPOCH_ORIGIN="env"
+elif git -C "${PACKAGE_DIR}" log -1 --format=%ct >/dev/null 2>&1; then
+  SOURCE_EPOCH="$(git -C "${PACKAGE_DIR}" log -1 --format=%ct)"
+  EPOCH_ORIGIN="git"
+else
+  SOURCE_EPOCH="$(stat -c %Y "${PACKAGE_DIR}/package.xml")"
+  EPOCH_ORIGIN="file-mtime"
+fi
+
+# Pin every build input into the facts file. Git checkouts pin to their
+# HEAD sha (+ dirty flag); vendor drops without VCS pin to a content hash.
+SOURCES_ARGS=(
+  "rosdeck=${PACKAGE_DIR}|https://github.com/lifliu/rosdeck.git"
+  "omni_robot_interfaces=${BUILD_ROOT}/src/omni_robot_interfaces|https://github.com/lifliu/omni_robot_interfaces.git"
+  "omni_slam_interfaces=${BUILD_ROOT}/src/omni_slam_interfaces|https://github.com/YanYaoyuan/omni_slam.git"
+  "omni_mission_manager=part-of:rosdeck"
+)
+if [[ "${PROFILE}" == "vbot" ]]; then
+  SOURCES_ARGS+=("vbot_ros2_msgs=${VBOT_MSGS}|https://github.com/VitaDynamics/vbot_ros2_msgs.git")
+else
+  SOURCES_ARGS+=("zsibot_sdk=${ZSIBOT_SDK}")
+fi
+
+FACTS_FILE="${BUILD_ROOT}/release-facts.json"
+RELEASE_TOOL_ARGS=(facts
+  --stage "${STAGE}"
+  --bundle-name "${BUNDLE_NAME}"
+  --version "${VERSION}"
+  --profile "${PROFILE}"
+  --arch "${ARCH}"
+  --distro "${ROS_VERSION_NAME}"
+  --epoch "${SOURCE_EPOCH}"
+  --epoch-origin "${EPOCH_ORIGIN}"
+)
+if [[ -n "${ZSIBOT_MODEL}" ]]; then
+  RELEASE_TOOL_ARGS+=(--model "${ZSIBOT_MODEL}")
+fi
+if [[ -n "${SIGN_KEY}" ]]; then
+  RELEASE_TOOL_ARGS+=(--sign-key "${SIGN_KEY}")
+fi
+RELEASE_TOOL_ARGS+=(--output "${FACTS_FILE}")
+RELEASE_TOOL_ARGS+=("${SOURCES_ARGS[@]}")
+python3 "${SCRIPT_DIR}/release_artifacts.py" "${RELEASE_TOOL_ARGS[@]}"
+
+# Manifest + SBOM go into the stage (tied to the bundle by hash), then the
+# deterministic archive + checksum are written to the output directory.
 install -d "${OUTPUT_DIR}"
 OUTPUT_DIR="$(cd -- "${OUTPUT_DIR}" && pwd)"
-ARCHIVE="${OUTPUT_DIR}/${BUNDLE_NAME}.tar.gz"
-tar -C "${STAGE_PARENT}" -czf "${ARCHIVE}" "${BUNDLE_NAME}"
-ARCHIVE_FILE="$(basename "${ARCHIVE}")"
-(
-  cd "${OUTPUT_DIR}"
-  sha256sum "${ARCHIVE_FILE}" > "${ARCHIVE_FILE}.sha256"
-)
+python3 "${SCRIPT_DIR}/release_artifacts.py" make \
+  --facts "${FACTS_FILE}" \
+  --output-dir "${OUTPUT_DIR}"
 
+ARCHIVE="${OUTPUT_DIR}/${BUNDLE_NAME}.tar.gz"
 echo "Offline deployment package created:"
 echo "  ${ARCHIVE}"
 echo "  ${ARCHIVE}.sha256"
-echo "Copy the archive to the robot, extract it, then run: sudo ./deploy.sh"
+if [[ -n "${SIGN_KEY}" ]]; then
+  echo "  ${ARCHIVE}.asc"
+fi
+echo "Copy the archive (+ checksum/signature) to the robot, extract it,"
+echo "then run: sudo ./deploy.sh"
+echo "Verify with: python3 tools/release_artifacts.py verify <archive>.tar.gz"

@@ -48,6 +48,13 @@ if [[ "${BUNDLE_PROFILE}" == "zsibot" && ! "${BUNDLE_ZSIBOT_MODEL}" =~ ^(zsl-1|z
   exit 2
 fi
 
+# Self-check against the embedded release manifest (config hash, source
+# pins, staged packages). Bundles built before the manifest existed have
+# no tools/ directory and deploy as before.
+if [[ -f "${BUNDLE_DIR}/tools/release_artifacts.py" ]] && command -v python3 >/dev/null 2>&1; then
+  python3 "${BUNDLE_DIR}/tools/release_artifacts.py" verify-bundle "${BUNDLE_DIR}"
+fi
+
 if [[ -z "${INSTALL_PREFIX}" ]]; then
   if [[ "${BUNDLE_PROFILE}" == "vbot" ]]; then
     INSTALL_PREFIX="/userdata/rosdeck"
