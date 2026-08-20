@@ -200,7 +200,7 @@ BUNDLE_NAME="rosdeck-robot-bridge-${VERSION}-${PROFILE_LABEL}-${ARCH}-${ROS_VERS
 STAGE_PARENT="${BUILD_ROOT}/bundle"
 STAGE="${STAGE_PARENT}/${BUNDLE_NAME}"
 install -d "${STAGE}/bin" "${STAGE}/config" "${STAGE}/templates" \
-  "${STAGE}/runtime" "${STAGE}/tools"
+  "${STAGE}/runtime" "${STAGE}/tools" "${STAGE}/lib"
 install -m 0755 "${BINARY}" "${STAGE}/bin/rosdeck_robot_bridge_node"
 cp -a "${BUILD_ROOT}/install/." "${STAGE}/runtime/"
 install -m 0644 "${PACKAGE_DIR}/config/${PROFILE}.yaml" "${STAGE}/config/bridge.yaml"
@@ -217,6 +217,12 @@ install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
 
 install -m 0755 "${SCRIPT_DIR}/release_artifacts.py" \
   "${STAGE}/tools/release_artifacts.py"
+
+# A/B release management: the sourceable core library (deploy.sh loads it
+# from lib/) and ota.sh (robot-side install/rollback/status, installed to
+# ${PREFIX}/bin/ by every deploy/OTA run).
+install -m 0644 "${SCRIPT_DIR}/deploy-core.sh" "${STAGE}/lib/deploy-core.sh"
+install -m 0755 "${SCRIPT_DIR}/ota.sh" "${STAGE}/ota.sh"
 
 # Reproducible metadata: honor SOURCE_DATE_EPOCH, else fall back to the
 # last rosdeck commit time, else the package.xml mtime. The origin is
@@ -285,4 +291,6 @@ if [[ -n "${SIGN_KEY}" ]]; then
 fi
 echo "Copy the archive (+ checksum/signature) to the robot, extract it,"
 echo "then run: sudo ./deploy.sh"
+echo "Later upgrades: sudo ${BUNDLE_NAME}/ota.sh install <new-archive>.tar.gz"
+echo "  (or on the robot: sudo /path/to/install-prefix/bin/ota.sh)"
 echo "Verify with: python3 tools/release_artifacts.py verify <archive>.tar.gz"

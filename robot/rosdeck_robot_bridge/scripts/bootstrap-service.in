@@ -13,13 +13,19 @@ install -d "${INSTALL_PREFIX}/log" "${UNIT_RUNTIME}"
 for attempt in $(seq 1 30); do
   if systemctl show-environment >/dev/null 2>&1; then
     install -m 0644 "${BRIDGE_SOURCE}" "${UNIT_RUNTIME}/${BRIDGE_UNIT}"
-    install -m 0644 "${MANAGER_SOURCE}" "${UNIT_RUNTIME}/${MANAGER_UNIT}"
+    # Prebuilt bundles only ship the bridge unit; the mission manager unit
+    # exists in dev (colcon install/) deployments.
+    if [[ -f "${MANAGER_SOURCE}" ]]; then
+      install -m 0644 "${MANAGER_SOURCE}" "${UNIT_RUNTIME}/${MANAGER_UNIT}"
+    fi
     systemctl daemon-reload
     systemctl start "${BRIDGE_UNIT}"
     # The mission manager is ordered After= the bridge; give the bridge a
     # moment so recovery + bringup run against a live gateway.
     sleep 3
-    systemctl start "${MANAGER_UNIT}"
+    if systemctl list-unit-files "${MANAGER_UNIT}" 2>/dev/null | grep -q "${MANAGER_UNIT}"; then
+      systemctl start "${MANAGER_UNIT}"
+    fi
     exit 0
   fi
   sleep 1

@@ -2,15 +2,15 @@
 set -e
 
 source "@ROS_SETUP@"
-if [[ -f "@INSTALL_PREFIX@/runtime/local_setup.bash" ]]; then
-  source "@INSTALL_PREFIX@/runtime/local_setup.bash"
+if [[ -f "@CURRENT@/runtime/local_setup.bash" ]]; then
+  source "@CURRENT@/runtime/local_setup.bash"
 fi
-export LD_LIBRARY_PATH="@INSTALL_PREFIX@/runtime/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="@CURRENT@/runtime/lib:${LD_LIBRARY_PATH:-}"
 
 PROFILE="@PROFILE@"
 ENABLE_SAFETY_SUPERVISOR=false
 if [[ "${PROFILE}" == "zsibot" ]]; then
-  "@INSTALL_PREFIX@/runtime/lib/rosdeck_robot_bridge/assert-no-legacy-zsibot-owner.sh"
+  "@CURRENT@/runtime/lib/rosdeck_robot_bridge/assert-no-legacy-zsibot-owner.sh"
   ENABLE_SAFETY_SUPERVISOR=true
 fi
 
@@ -20,6 +20,6 @@ fi
 # retried without restarting this service.
 
 exec ros2 launch rosdeck_robot_bridge product_bringup.launch.py \
-  config:="@INSTALL_PREFIX@/config/bridge.yaml" \
+  config:="@CURRENT@/config/bridge.yaml" \
   bridge_node_name:=@NODE_NAME@ \
   enable_safety_supervisor:="${ENABLE_SAFETY_SUPERVISOR}"

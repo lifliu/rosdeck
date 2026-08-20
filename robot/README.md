@@ -189,8 +189,75 @@ python3 <bundle>/tools/release_artifacts.py verify-bundle <bundle>
 
 Trust the release key by importing its public key on the robot
 (`gpg --import rosdeck-release.pub`); `verify` then checks the signature
-against the keyring. Bundles built before this section existed have no
-`tools/` directory and deploy as before.
+against the keyring.
+
+### OTA upgrades and rollback (A/B releases)
+
+Production installs are userland A/B release slots: every bundle becomes a
+complete directory under `<install-prefix>/releases/<id>/` and the service
+always runs from `<install-prefix>/current`, a symlink that is swapped
+atomically (temp symlink + `rename`). Shared state — env files, systemd
+units, `ota.sh`, the deploy library, logs — lives outside the slots:
+
+```text
+<install-prefix>/
+  releases/
+    0.1.0-zsl-1-1767225600/   full bundle: bin, runtime, config, tools
+    legacy-20260818120000/    only on converted installs: the old in-place tree
+  current -> releases/<id>    active release
+  previous -> releases/<id>   what was active immediately before current
+  bin/        generated launchers + ota.sh
+  config/     bridge.env, foxglove.env (shared, operator-managed)
+  lib/        deploy-core.sh
+  log/  systemd/
+```
+
+The release id is `<version>[-<model>]-<source_epoch>` from the embedded
+manifest, so it is a content identity: re-deploying the same bundle is a
+no-op, and every slot name is reproducible from the manifest.
+
+**First install** uses the bundle's `deploy.sh` (as before). When an old
+in-place install exists, it is *adopted*: its `runtime/` tree and node binary
+are moved into a `legacy-…` slot and registered as `previous`, so the very
+first A/B upgrade already has a rollback target, and a hand-tuned
+`<install-prefix>/config/bridge.yaml` is carried over into the new slot.
+
+**Upgrades** run on the robot with the installed tool:
+
+```bash
+sudo /opt/rosdeck/bin/ota.sh install /path/to/<new-archive>.tar.gz
+#   --signature <new-archive>.tar.gz.asc   also verify the GPG signature
+#   --keep N                               release slots to retain (default 3)
+#   --no-start                             install + switch without restarting yet
+```
+
+The archive is verified with the **active** release's own verifier (sha256
+sidecar + optional GPG — never with a tool shipped inside the archive being
+installed), the bundle's profile and, for Zsibot, its model must match the
+running release, then a new slot is staged, `current` is swapped, the service
+is restarted and the bringup health check runs. If the new release fails to
+come up or fails the health check, `ota.sh` **rolls back automatically** and
+reports the failure. Slots are pruned to the newest N (current/previous are
+never pruned).
+
+**Manual rollback / inspection:**
+
+```bash
+sudo /opt/rosdeck/bin/ota.sh rollback    # swap current/previous, restart
+/opt/rosdeck/bin/ota.sh status           # current, previous, retained slots
+```
+
+Worst case, the layout is plain files — point `current` at any slot by hand
+and restart:
+
+```bash
+sudo rm /opt/rosdeck/current
+sudo ln -s releases/<id> /opt/rosdeck/current
+sudo systemctl restart rosdeck-robot-bridge
+```
+
+Bundles built before the A/B layout have no `lib/deploy-core.sh` and can no
+longer be deployed by the current `deploy.sh`; rebuild from current rosdeck.
 
 Common operations on the production robot:
 
@@ -224,7 +291,11 @@ board that has colcon. Production deployment should use the generated archive.
 
 ## Configuration
 
-The active configuration is `<install-prefix>/config/bridge.yaml`. The
+The active configuration is `<install-prefix>/current/config/bridge.yaml` —
+the copy owned by the release slot behind `current` (see A/B releases
+above). Pre-A/B installs kept it at `<install-prefix>/config/bridge.yaml`;
+that file is left in place when an install is converted and is carried over
+into the first slot. The
 installer supplies two robot-family profiles under `config/`:
 
 - `vbot.yaml`: complete VBot bridge, deployed on S100;
@@ -514,5 +585,9 @@ environment. Production packages build and embed them automatically.
 sudo ./scripts/uninstall.sh
 ```
 
-The uninstaller disables the service. The profile-specific install directory is
-retained so the installation can be recovered or inspected.
+The uninstaller disables the service and removes the generated units and
+init hook. The profile-specific install directory is retained so the
+installation can be recovered or inspected. In an A/B install the release
+slots under `<install-prefix>/releases/` are left as well; remove individual
+slots with `rm -rf <install-prefix>/releases/<id>` — never the slot that
+`current` points at while the service is still running.
