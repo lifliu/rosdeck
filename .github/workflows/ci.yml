@@ -109,13 +109,22 @@ jobs:
           mkdir -p "${ROS_WS}/src"
           # cp (not rsync): the ros:humble image has no rsync
           cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
-          # private repos: clone with the workflow GITHUB_TOKEN (contents: read)
-          git clone --depth 1 --branch main \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/lifliu/omni_robot_interfaces.git" \
-            "${ROS_WS}/src/omni_robot_interfaces"
-          git clone --depth 1 --branch main \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/YanYaoyuan/omni_slam.git" \
-            "${ROS_WS}/src/omni_slam"
+      # The interface repos are private; actions/checkout handles token auth
+      # inside the container (a plain git clone here gets 401).
+      - name: Checkout omni_robot_interfaces (private)
+        uses: actions/checkout@v4
+        with:
+          repository: lifliu/omni_robot_interfaces
+          ref: main
+          fetch-depth: 1
+          path: /tmp/rosdeck_ws/src/omni_robot_interfaces
+      - name: Checkout omni_slam interfaces (private)
+        uses: actions/checkout@v4
+        with:
+          repository: YanYaoyuan/omni_slam
+          ref: main
+          fetch-depth: 1
+          path: /tmp/rosdeck_ws/src/omni_slam
       - name: Build
         run: |
           . /opt/ros/humble/setup.bash
@@ -164,13 +173,22 @@ jobs:
           mkdir -p "${ROS_WS}/src"
           # cp (not rsync): the ros:humble image has no rsync
           cp -r "${GITHUB_WORKSPACE}/robot" "${ROS_WS}/src/"
-          # private repos: clone with the workflow GITHUB_TOKEN (contents: read)
-          git clone --depth 1 --branch main \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/lifliu/omni_robot_interfaces.git" \
-            "${ROS_WS}/src/omni_robot_interfaces"
-          git clone --depth 1 --branch main \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/YanYaoyuan/omni_slam.git" \
-            "${ROS_WS}/src/omni_slam"
+      # The interface repos are private; actions/checkout handles token auth
+      # inside the container (a plain git clone here gets 401).
+      - name: Checkout omni_robot_interfaces (private)
+        uses: actions/checkout@v4
+        with:
+          repository: lifliu/omni_robot_interfaces
+          ref: main
+          fetch-depth: 1
+          path: /tmp/rosdeck_ws/src/omni_robot_interfaces
+      - name: Checkout omni_slam interfaces (private)
+        uses: actions/checkout@v4
+        with:
+          repository: YanYaoyuan/omni_slam
+          ref: main
+          fetch-depth: 1
+          path: /tmp/rosdeck_ws/src/omni_slam
       - name: Build (ASan + UBSan)
         run: |
           . /opt/ros/humble/setup.bash
