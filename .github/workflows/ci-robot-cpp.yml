@@ -52,6 +52,33 @@ jobs:
               - 'robot/rosdeck_robot_bridge/**'
               - '.github/workflows/ci-robot-cpp.yml'
 
+  # The offline bundle tooling (release manifest, SBOM, deterministic
+  # archive, GPG signing) is pure python + shell and needs no ROS
+  # container, so it gets its own fast job. The unittest also covers the
+  # determinism and tamper-detection guarantees end to end.
+  release-tooling:
+    name: Release tooling (manifest/SBOM/determinism/signing)
+    needs: changes
+    if: needs.changes.outputs.robot-cpp == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends shellcheck
+      - name: Shellcheck build/deploy scripts
+        # --severity=error: the scripts source variable ROS setup paths,
+        # which shellcheck cannot follow (SC1090/SC1091) by design; only
+        # real errors (unquoted expansions, typos) should fail the build.
+        run: |
+          shellcheck --severity=error \
+            robot/rosdeck_robot_bridge/scripts/build.sh \
+            robot/rosdeck_robot_bridge/scripts/build-package.sh \
+            robot/rosdeck_robot_bridge/scripts/deploy-prebuilt.sh
+      - name: Release artifact tests
+        run: python3 -m unittest -v robot/rosdeck_robot_bridge/test/test_release_artifacts.py
+
   robot-cpp:
     name: ROS 2 Humble build + test (C++ bridge)
     needs: changes
