@@ -259,6 +259,50 @@ sudo systemctl restart rosdeck-robot-bridge
 Bundles built before the A/B layout have no `lib/deploy-core.sh` and can no
 longer be deployed by the current `deploy.sh`; rebuild from current rosdeck.
 
+### Service account and unit hardening
+
+All units run as the dedicated `rosdeck` system account, never as root. Both
+deployers (the in-place `deploy.sh` and the A/B core used by the bundle's
+`deploy.sh` / `ota.sh`) create it idempotently before rendering the units — a
+system group and a `nologin` user — and chown existing root-owned state into
+the account on every deploy, so installs that previously ran as root upgrade
+cleanly:
+
+- The release tree stays root-owned and world-readable; no runtime process
+  needs to write into it.
+- Mission manager state (route store under `/var/lib/omni/routes`, SQLite DB
+  under `/var/lib/omni/mission_manager`) is owned by `rosdeck` and survives
+  reboots (`StateDirectory=omni`; an `ExecStartPre` self-heals the
+  subdirectories on every start).
+- The safety-supervisor instance lock lives in `/run/lock/omni`, created per
+  start and removed on stop (`RuntimeDirectory=lock/omni`) — a stale lock can
+  never outlive the service.
+- On VBot only, the bridge unit additionally gets
+  `ReadWritePaths=/userdata` because the vendor 3D mapping child writes map
+  data there; the template renders that line as a comment for every other
+  profile.
+
+Each unit carries the standard conservative sandbox: `NoNewPrivileges`,
+`PrivateTmp`, `PrivateDevices`, `ProtectSystem=strict`, `ProtectHome`,
+kernel-tunables/modules/logs protections, `ProtectControlGroups`,
+`ProtectClock`, `ProcSubset=pid`, and an address-family allowlist (Unix,
+IPv4/IPv6, netlink for interface enumeration). The mission manager and
+Foxglove units additionally drop every capability (`CapabilityBoundingSet=`).
+
+Resource caps: the bridge cgroup gets `TasksMax=1024`, `MemoryHigh=2G`,
+`MemoryMax=4G`, `LimitNOFILE=65536` and deliberately **no** `CPUQuota` — it
+feeds the motion loop, so a CPU cap would trade motion safety for accounting.
+The mission manager is capped at `CPUQuota=200%`, `MemoryMax=2G`; Foxglove at
+`CPUQuota=200%`, `MemoryMax=1G`.
+
+Three directives are intentionally **not** set until the full stack has been
+HIL-verified under them (the unit comments say the same): `SystemCallFilter`
+and `MemoryDenyWriteExecute` on every unit, and `CapabilityBoundingSet` on
+the bridge — the closed-source vendor SDK (Zsibot) and the vendor SLAM child
+(VBot) run inside the bridge cgroup, and none of these has been exercised
+against them yet. The A/B auto-rollback is the safety net for adding them
+later, one at a time, with the health check as the gate.
+
 Common operations on the production robot:
 
 ```bash

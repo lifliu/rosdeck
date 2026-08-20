@@ -84,11 +84,14 @@ chmod 0755 "${STUB_BIN}/ros2" "${STUB_BIN}/systemctl" \
   "${STUB_BIN}/journalctl" "${STUB_BIN}/timeout" "${STUB_BIN}/ldd"
 
 # Redirected write targets + non-root allowance (test-only, see ota.sh).
+# ROSDECK_SKIP_USER_PREPARE bypasses groupadd/useradd + /var/lib/omni
+# ownership, which an unprivileged test user cannot perform.
 ETC="${ROOT}/etc"
 RUN="${ROOT}/run"
 USERDATA="${ROOT}/userdata"
 export ROSDECK_ETC_ROOT="${ETC}" ROSDECK_RUN_ROOT="${RUN}" \
-  ROSDECK_USERDATA_DIR="${USERDATA}" ROSDECK_OTA_ALLOW_NONROOT=1
+  ROSDECK_USERDATA_DIR="${USERDATA}" ROSDECK_OTA_ALLOW_NONROOT=1 \
+  ROSDECK_SKIP_USER_PREPARE=1
 
 PREFIX="${ROOT}/prefix"
 install -d "${PREFIX}"

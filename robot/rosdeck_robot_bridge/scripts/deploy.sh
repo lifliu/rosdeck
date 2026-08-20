@@ -175,14 +175,39 @@ sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
   > "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
 chmod 0755 "${INSTALL_PREFIX}/bin/bootstrap-rosdeck-service"
 
-sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+# --- Service account + persistent state (non-root units) ---
+# The units run as the dedicated 'rosdeck' system account (User=rosdeck),
+# never as root. Idempotent: safe to re-run on every in-place deploy.
+# Mirrors rosdeck_user_prepare in deploy-core.sh (this deployer is the
+# standalone, pre-bundle in-place path and does not source the core).
+if ! getent group rosdeck >/dev/null; then
+  groupadd --system rosdeck
+fi
+if ! getent passwd rosdeck >/dev/null; then
+  useradd --system --gid rosdeck --home-dir /nonexistent \
+    --shell /usr/sbin/nologin --comment "Rosdeck robot services" rosdeck
+fi
+install -d /var/lib/omni/routes /var/lib/omni/mission_manager
+chown -R rosdeck:rosdeck /var/lib/omni
+
+# @VBOT_ONLY@ marks profile-conditional unit directives (e.g. the vbot
+# ReadWritePaths=/userdata): a leading '#' for non-vbot profiles, empty
+# for vbot — same mechanism as deploy-core.sh.
+VBOT_ONLY=""
+if [[ "${PROFILE}" != "vbot" ]]; then
+  VBOT_ONLY="#"
+fi
+sed -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+    -e "s#@VBOT_ONLY@#${VBOT_ONLY}#g" \
   "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   > "${INSTALL_PREFIX}/systemd/rosdeck-robot-bridge.service"
-sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+sed -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+    -e "s#@VBOT_ONLY@#${VBOT_ONLY}#g" \
   "${PACKAGE_DIR}/systemd/omni-mission-manager.service.in" \
   > "${INSTALL_PREFIX}/systemd/omni-mission-manager.service"
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
-  sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+  sed -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+      -e "s#@VBOT_ONLY@#${VBOT_ONLY}#g" \
     "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
     > "${INSTALL_PREFIX}/systemd/rosdeck-foxglove-bridge.service"
 fi
