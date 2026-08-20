@@ -70,7 +70,7 @@ def run_tool(args, env=None):
         capture_output=True, text=True, env=env, check=False)
 
 
-def write_facts(stage, out_path, sources, sign_key=None, model=""):
+def write_facts(stage, out_path, sources, sign_key=None, model="", env=None):
     args = [
         "facts", "--stage", stage, "--bundle-name", BUNDLE_NAME,
         "--version", "0.0.0", "--profile", PROFILE,
@@ -84,7 +84,7 @@ def write_facts(stage, out_path, sources, sign_key=None, model=""):
         args += ["--model", model]
     for spec in sources:
         args += ["--source", spec]
-    result = run_tool(args)
+    result = run_tool(args, env=env)
     if result.returncode != 0:
         raise AssertionError("facts failed:\n%s%s"
                              % (result.stdout, result.stderr))
@@ -99,16 +99,23 @@ class TestReleaseArtifacts(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def make_bundle(self, area, stage_sources, sign_key=None, out_sub="out"):
-        """facts + make in a fresh area; returns (stage, archive, out_dir)."""
+    def make_bundle(self, area, stage_sources, sign_key=None, out_sub="out",
+                    env=None):
+        """facts + make in a fresh area; returns (stage, archive, out_dir).
+
+        env is forwarded to both tool invocations so a test-local GNUPGHOME
+        reaches the gpg calls inside facts (fingerprint) and make (signing).
+        """
         area = os.path.join(self.root, area)
         os.makedirs(area, exist_ok=True)
         stage = os.path.join(area, BUNDLE_NAME)
         make_stage(stage)
         facts_path = os.path.join(area, "facts.json")
-        write_facts(stage, facts_path, stage_sources, sign_key=sign_key)
+        write_facts(stage, facts_path, stage_sources, sign_key=sign_key,
+                    env=env)
         out_dir = os.path.join(area, out_sub)
-        result = run_tool(["make", "--facts", facts_path, "--output-dir", out_dir])
+        result = run_tool(["make", "--facts", facts_path,
+                           "--output-dir", out_dir], env=env)
         if result.returncode != 0:
             raise AssertionError("make failed:\n%s%s"
                                  % (result.stdout, result.stderr))
@@ -363,7 +370,7 @@ class TestReleaseArtifacts(unittest.TestCase):
 
         sources, _ = self.make_sources("gpg")
         _, archive, out_dir = self.make_bundle("gpg", sources,
-                                               sign_key=fingerprint)
+                                               sign_key=fingerprint, env=env)
         asc = archive + ".asc"
         self.assertTrue(os.path.isfile(asc))
 
