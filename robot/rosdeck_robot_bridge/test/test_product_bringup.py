@@ -199,10 +199,20 @@ class ProductBringupStaticTest(unittest.TestCase):
                 self.assertIn('PROFILE="@PROFILE@"', source)
                 self.assertIn("enable_safety_supervisor:", source)
 
+        # The in-place deployer still renders the glue itself; the A/B front
+        # ends (deploy-prebuilt.sh, ota.sh) delegate to the shared core,
+        # which renders @PROFILE@ and the A/B @CURRENT@ slot path.
         deploy = _source(PACKAGE_ROOT / "scripts" / "deploy.sh")
-        offline = _source(PACKAGE_ROOT / "scripts" / "deploy-prebuilt.sh")
+        core = _source(PACKAGE_ROOT / "scripts" / "deploy-core.sh")
         self.assertIn('s#@PROFILE@#${PROFILE}#g', deploy)
-        self.assertIn('s#@PROFILE@#${BUNDLE_PROFILE}#g', offline)
+        self.assertIn('-e "s#@PROFILE@#${profile}#g"', core)
+        self.assertIn('s#@CURRENT@#${prefix}/current#', core)
+        for front_end in ("deploy-prebuilt.sh", "ota.sh"):
+            with self.subTest(front_end=front_end):
+                self.assertIn(
+                    "rosdeck_install_bundle",
+                    _source(PACKAGE_ROOT / "scripts" / front_end),
+                )
 
     def test_deployment_requires_continuous_in_cgroup_product_health(self):
         health = _source(PRODUCT_HEALTH)
@@ -216,11 +226,15 @@ class ProductBringupStaticTest(unittest.TestCase):
         self.assertIn("estop_monitor_fault=false", health)
         self.assertIn('if [[ "${PROFILE}" == "zsibot" ]]', health)
 
-        for deploy_name in ("deploy.sh", "deploy-prebuilt.sh"):
-            deploy = _source(PACKAGE_ROOT / "scripts" / deploy_name)
-            self.assertIn("assert-product-bringup-health.sh", deploy)
-            self.assertIn("timeout 50 bash -c", deploy)
-            self.assertNotIn("for expected_node in", deploy)
+        # The in-place deployer runs the probe inline; the A/B front ends go
+        # through rosdeck_install_bundle in the shared core, which runs the
+        # same probe against the active release slot.
+        for deploy_name in ("deploy.sh", "deploy-core.sh"):
+            with self.subTest(deployer=deploy_name):
+                deploy = _source(PACKAGE_ROOT / "scripts" / deploy_name)
+                self.assertIn("assert-product-bringup-health.sh", deploy)
+                self.assertIn("timeout 50 bash -c", deploy)
+                self.assertNotIn("for expected_node in", deploy)
 
     def test_product_health_probe_checks_live_zsibot_epoch_and_keeps_vbot_compatible(self):
         with tempfile.TemporaryDirectory() as directory:
