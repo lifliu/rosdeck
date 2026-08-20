@@ -3,27 +3,30 @@ name: CI (C++ bridge)
 # Phase 4: ROS 2 Humble colcon build + test for the C++ bridge
 # (rosdeck_robot_bridge), including an ASan/UBSan variant.
 #
-# MANUAL ONLY until the CI_GIT_TOKEN repo secret exists:
+# The workspace needs two PRIVATE repos — lifliu/omni_robot_interfaces
+# and YanYaoyuan/omni_slam (subpackage omni_slam_interfaces). GITHUB_TOKEN
+# cannot read private repos other than the triggering one, so the checkout
+# steps authenticate with the CI_GIT_TOKEN secret instead.
 #
-#   The workspace needs two PRIVATE repos — lifliu/omni_robot_interfaces
-#   and YanYaoyuan/omni_slam (subpackage omni_slam_interfaces). GITHUB_TOKEN
-#   cannot read private repos other than the triggering one, so the
-#   checkout steps authenticate with the CI_GIT_TOKEN secret instead.
+# CI_GIT_TOKEN must be a token of an account that can read BOTH repos. A
+# fine-grained PAT only grants repos its owner administers, so one
+# fine-grained token cannot cover both here (lifliu is only a collaborator
+# on omni_slam — the repo is unselectable in the UI). Use a CLASSIC PAT
+# (Settings -> Developer settings -> Personal access tokens -> Tokens
+# (classic) -> Generate new token (classic)), scope: repo, then in rosdeck:
+#     Settings -> Secrets and variables -> Actions -> New repository secret
+#     CI_GIT_TOKEN = <token>
+# (Least-privilege alternative: a fine-grained token from each repo owner
+# and two secrets — the checkout steps would need a second token.)
 #
-#   To enable: CI_GIT_TOKEN must be a token of an account that can read
-#   BOTH repos. A fine-grained PAT only grants repos its owner administers,
-#   so one fine-grained token cannot cover both here (lifliu is only a
-#   collaborator on omni_slam — the repo is unselectable in the UI). Use a
-#   CLASSIC PAT instead (Settings -> Developer settings -> Personal access
-#   tokens -> Tokens (classic) -> Generate new token (classic)), scope:
-#   repo, then in rosdeck:
-#       Settings -> Secrets and variables -> Actions -> New repository secret
-#       CI_GIT_TOKEN = <token>
-#   (Least-privilege alternative: a fine-grained token from each repo
-#   owner and two secrets — the checkout steps would need a second token.)
-#   Run this workflow manually and watch both jobs go green; afterwards it
-#   can be added to the regular CI triggers.
+# Gated by a path filter: the colcon build is the slow job in the monorepo
+# and only the C++ bridge lives in this workspace (the interface repos are
+# checked out at their main), so it runs only when the bridge changes.
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -34,8 +37,25 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-22.04
+    outputs:
+      robot-cpp: ${{ steps.filter.outputs.robot-cpp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            robot-cpp:
+              - 'robot/rosdeck_robot_bridge/**'
+              - '.github/workflows/ci-robot-cpp.yml'
+
   robot-cpp:
     name: ROS 2 Humble build + test (C++ bridge)
+    needs: changes
+    if: needs.changes.outputs.robot-cpp == 'true'
     runs-on: ubuntu-22.04
     container: ros:humble-ros-base-jammy
     defaults:
@@ -97,6 +117,8 @@ jobs:
 
   robot-cpp-asan:
     name: ROS 2 Humble ASan/UBSan build + test
+    needs: changes
+    if: needs.changes.outputs.robot-cpp == 'true'
     runs-on: ubuntu-22.04
     container: ros:humble-ros-base-jammy
     defaults:

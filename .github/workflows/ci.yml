@@ -5,10 +5,10 @@ name: CI
 #   app     -> tsc typecheck + jest
 # Job-level path gates via dorny/paths-filter so a docs-only PR is cheap.
 #
-# The C++ bridge build/test jobs live in ci-robot-cpp.yml (manual only for
-# now): they need a CI_GIT_TOKEN repo secret because GITHUB_TOKEN cannot
-# read the private interface repos (lifliu/omni_robot_interfaces,
-# YanYaoyuan/omni_slam).
+# The C++ bridge build/test jobs live in ci-robot-cpp.yml: they need a
+# CI_GIT_TOKEN repo secret because GITHUB_TOKEN cannot read the private
+# interface repos (lifliu/omni_robot_interfaces, YanYaoyuan/omni_slam),
+# and are gated to runs where robot/rosdeck_robot_bridge changes.
 on:
   push:
     branches: [main]
