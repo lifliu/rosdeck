@@ -2,7 +2,10 @@
 
 Per-connection lifecycle:
   1. TLS handshake (device certificate).
-  2. HTTP/1.1 -> WebSocket upgrade.
+  2. HTTP/1.1 -> WebSocket upgrade: the client's first requested
+     subprotocol is echoed back (RFC 6455), and the full requested list
+     is passed through to the upstream handshake so client and bridge
+     agree on the framing version.
   3. Login gate: the first data message MUST be ``{"op": "login",
      "user": ..., "token": ...}`` (JSON text or CBOR binary), otherwise
      the connection is closed with 1008.
@@ -98,7 +101,8 @@ class Gateway:
         peer = _peer_str(writer.get_extra_info("peername"))
         upstream: Upstream | None = None
         try:
-            if not await _upgrade_server(reader, writer):
+            protocols = await _upgrade_server(reader, writer)
+            if protocols is None:
                 self.audit.record("upgrade_rejected", peer=peer)
                 return
             self.audit.record("tls_connect", peer=peer)
@@ -111,7 +115,8 @@ class Gateway:
             upstream = Upstream()
             try:
                 await upstream.connect(
-                    self.config.upstream_host, self.config.upstream_port
+                    self.config.upstream_host, self.config.upstream_port,
+                    protocols,
                 )
             except Exception as exc:  # noqa: BLE001 - report and close
                 self.audit.record(
@@ -407,17 +412,34 @@ def _decode_frame(opcode: int, payload: bytes):
         return None
 
 
+def _parse_subprotocols(header: str) -> list[str]:
+    """Parse a ``Sec-WebSocket-Protocol`` header value into a list of
+    valid subprotocol tokens (printable ASCII, no whitespace)."""
+    tokens = []
+    for part in header.split(","):
+        token = part.strip()
+        if token and all(0x21 <= ord(c) <= 0x7e for c in token):
+            tokens.append(token)
+    return tokens
+
+
 async def _upgrade_server(reader: asyncio.StreamReader,
-                          writer: asyncio.StreamWriter) -> bool:
-    """Read the HTTP upgrade request and answer 101. False = rejected."""
+                          writer: asyncio.StreamWriter) -> list[str] | None:
+    """Read the HTTP upgrade request and answer 101.
+
+    Returns the client's requested subprotocols (an empty list when the
+    client sent no ``Sec-WebSocket-Protocol`` header); ``None`` means the
+    upgrade was rejected. The first requested subprotocol is echoed back
+    in the 101 response (RFC 6455 section 4.1).
+    """
     try:
         raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10.0)
     except (asyncio.IncompleteReadError, asyncio.TimeoutError):
-        return False
+        return None
     try:
         head = raw.decode("latin-1")
     except UnicodeDecodeError:
-        return False
+        return None
     lines = head.split("\r\n")
     headers = {}
     for line in lines[1:]:
@@ -425,21 +447,27 @@ async def _upgrade_server(reader: asyncio.StreamReader,
             key, _, value = line.partition(":")
             headers[key.strip().lower()] = value.strip()
     if headers.get("upgrade", "").lower() != "websocket":
-        return False
+        return None
     key = headers.get("sec-websocket-key", "")
     if not key:
-        return False
+        return None
+    protocols = _parse_subprotocols(
+        headers.get("sec-websocket-protocol", ""))
     accept = ws_frames.accept_key(key)
     response = (
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         f"Sec-WebSocket-Accept: {accept}\r\n"
-        "\r\n"
     )
+    if protocols:
+        # Echo the client's first choice; it lists protocols by
+        # preference, so this is the version both ends will speak.
+        response += f"Sec-WebSocket-Protocol: {protocols[0]}\r\n"
+    response += "\r\n"
     writer.write(response.encode("ascii"))
     await writer.drain()
-    return True
+    return protocols
 
 
 async def _send_close(writer: asyncio.StreamWriter, status: int,
@@ -485,11 +513,16 @@ class Upstream:
         self.writer: asyncio.StreamWriter | None = None
         self.buf = bytearray()
 
-    async def connect(self, host: str, port: int) -> None:
+    async def connect(self, host: str, port: int,
+                      protocols: list[str] | None = None) -> None:
         self.reader, self.writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), 10.0
         )
         key = base64.b64encode(os.urandom(16)).decode("ascii")
+        proto_line = (
+            f"Sec-WebSocket-Protocol: {', '.join(protocols)}\r\n"
+            if protocols else ""
+        )
         request = (
             f"GET / HTTP/1.1\r\n"
             f"Host: {host}:{port}\r\n"
@@ -497,6 +530,7 @@ class Upstream:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
+            f"{proto_line}"
             "\r\n"
         )
         self.writer.write(request.encode("ascii"))

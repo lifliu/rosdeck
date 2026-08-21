@@ -332,7 +332,10 @@ gateway's own listen/upstream addresses are fixed in its unit file.
 The app-facing listener is no longer the raw `foxglove_bridge`. A thin
 `omni_ws_gateway` ament_python package terminates TLS in front of it, then
 requires a one-time token login and enforces per-role access control before
-forwarding frames byte-for-byte to the loopback Foxglove port:
+forwarding frames byte-for-byte to the loopback Foxglove port. The
+client's requested WebSocket subprotocol (e.g. `foxglove.sdk.v1`) is
+echoed in the 101 response and passed through to the upstream handshake,
+so the framing version the app negotiates is preserved:
 
 | Service | Listens | What it does |
 | --- | --- | --- |
