@@ -12,11 +12,12 @@ ZSIBOT_MODEL="zsl-1"
 INTERFACES_DIR=""
 SLAM_DIR=""
 MISSION_MANAGER_DIR=""
+WS_GATEWAY_DIR=""
 OMNI_ROBOT_INTERFACES_REPO="${OMNI_ROBOT_INTERFACES_REPO:-https://github.com/lifliu/omni_robot_interfaces.git}"
 OMNI_SLAM_REPO="${OMNI_SLAM_REPO:-https://github.com/YanYaoyuan/omni_slam.git}"
 
 usage() {
-  echo "Usage: ./scripts/build.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH] [--zsibot-model zsl-1|zsl-1w] [--interfaces-dir PATH] [--slam-dir PATH] [--mission-manager-dir PATH] [--clean]"
+  echo "Usage: ./scripts/build.sh [--profile vbot|zsibot] [--ros-setup PATH] [--prefix PATH] [--zsibot-sdk PATH] [--zsibot-model zsl-1|zsl-1w] [--interfaces-dir PATH] [--slam-dir PATH] [--mission-manager-dir PATH] [--ws-gateway-dir PATH] [--clean]"
 }
 
 while (($#)); do
@@ -29,6 +30,7 @@ while (($#)); do
     --interfaces-dir) INTERFACES_DIR="${2:?missing interfaces dir}"; shift 2 ;;
     --slam-dir) SLAM_DIR="${2:?missing slam dir}"; shift 2 ;;
     --mission-manager-dir) MISSION_MANAGER_DIR="${2:?missing mission manager dir}"; shift 2 ;;
+    --ws-gateway-dir) WS_GATEWAY_DIR="${2:?missing ws gateway dir}"; shift 2 ;;
     --clean) CLEAN_CACHE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -146,6 +148,23 @@ sync_omni_mission_manager() {
   echo "Synced omni_mission_manager from ${src_dir}"
 }
 
+sync_omni_ws_gateway() {
+  local src_dir
+  if [[ -n "${WS_GATEWAY_DIR}" && -d "${WS_GATEWAY_DIR}" ]]; then
+    src_dir="${WS_GATEWAY_DIR}"
+  elif [[ -d "${SCRIPT_DIR}/../../omni_ws_gateway" ]]; then
+    # Default: sibling of rosdeck_robot_bridge under robot/.
+    src_dir="${SCRIPT_DIR}/../../omni_ws_gateway"
+  else
+    echo "omni_ws_gateway sources not found; pass --ws-gateway-dir PATH" >&2
+    exit 1
+  fi
+  rm -rf "${INSTALL_PREFIX}/src/omni_ws_gateway"
+  cp -r "${src_dir}" "${INSTALL_PREFIX}/src/omni_ws_gateway"
+  rm -rf "${INSTALL_PREFIX}/src/omni_ws_gateway/.git"
+  echo "Synced omni_ws_gateway from ${src_dir}"
+}
+
 sync_omni_slam_interfaces() {
   local dest="${INSTALL_PREFIX}/src/omni_slam_interfaces"
   if [[ -n "${SLAM_DIR}" ]]; then
@@ -176,13 +195,14 @@ sync_omni_slam_interfaces() {
 sync_omni_robot_interfaces
 sync_omni_slam_interfaces
 sync_omni_mission_manager
+sync_omni_ws_gateway
 
 COLCON_ARGS=(
   --base-paths "${INSTALL_PREFIX}/src"
   --build-base "${INSTALL_PREFIX}/build"
   --install-base "${INSTALL_PREFIX}/install"
   --merge-install
-  --packages-select rosdeck_robot_bridge omni_robot_interfaces omni_slam_interfaces omni_mission_manager
+  --packages-select rosdeck_robot_bridge omni_robot_interfaces omni_slam_interfaces omni_mission_manager omni_ws_gateway
 )
 if [[ "${CLEAN_CACHE}" -eq 1 ]]; then
   COLCON_ARGS+=(--cmake-clean-cache)
@@ -212,10 +232,11 @@ colcon --log-base "${INSTALL_PREFIX}/log" build "${COLCON_ARGS[@]}"
 
 BINARY="${INSTALL_PREFIX}/install/lib/rosdeck_robot_bridge/rosdeck_robot_bridge_node"
 SUPERVISOR_BINARY="${INSTALL_PREFIX}/install/lib/rosdeck_robot_bridge/rosdeck_safety_supervisor_node"
-for runtime_binary in "${BINARY}" "${SUPERVISOR_BINARY}"; do
+GATEWAY_BINARY="${INSTALL_PREFIX}/install/lib/omni_ws_gateway/omni-ws-gateway"
+for runtime_binary in "${BINARY}" "${SUPERVISOR_BINARY}" "${GATEWAY_BINARY}"; do
   if [[ ! -x "${runtime_binary}" ]]; then
     echo "Build completed but a product runtime executable was not installed: ${runtime_binary}" >&2
     exit 1
   fi
 done
-echo "Build successful: ${BINARY}, ${SUPERVISOR_BINARY}"
+echo "Build successful: ${BINARY}, ${SUPERVISOR_BINARY}, ${GATEWAY_BINARY}"

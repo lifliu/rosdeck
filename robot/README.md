@@ -127,8 +127,10 @@ a different environment entry point, install with `./deploy.sh --ros-setup PATH`
 Zsibot does not source the VBot environment and does not modify anything under
 `/userdata`. It uses the standard ROS setup under `/opt/ros/<distro>` and
 `systemctl enable --now`. Its installer also verifies that `foxglove_bridge` is
-installed and enables `rosdeck-foxglove-bridge.service` on port 8765. Install a
-missing Humble package before deployment:
+installed, enables `rosdeck-foxglove-bridge.service` on loopback port 8766, and
+enables the TLS WebSocket gateway `omni-ws-gateway.service`, which owns the
+app-facing `wss://…:8765` (see [Secure mobile access](#secure-mobile-access-ws-gateway)).
+Install a missing Humble package before deployment:
 
 ```bash
 sudo apt update
@@ -293,7 +295,8 @@ Resource caps: the bridge cgroup gets `TasksMax=1024`, `MemoryHigh=2G`,
 `MemoryMax=4G`, `LimitNOFILE=65536` and deliberately **no** `CPUQuota` — it
 feeds the motion loop, so a CPU cap would trade motion safety for accounting.
 The mission manager is capped at `CPUQuota=200%`, `MemoryMax=2G`; Foxglove at
-`CPUQuota=200%`, `MemoryMax=1G`.
+`CPUQuota=200%`, `MemoryMax=1G`; the WS gateway at `CPUQuota=200%`,
+`MemoryMax=512M`, `TasksMax=512`.
 
 Three directives are intentionally **not** set until the full stack has been
 HIL-verified under them (the unit comments say the same): `SystemCallFilter`
@@ -311,13 +314,73 @@ journalctl -u rosdeck-robot-bridge -f
 systemctl restart rosdeck-robot-bridge
 systemctl status rosdeck-foxglove-bridge
 journalctl -u rosdeck-foxglove-bridge -f
+systemctl status omni-ws-gateway
+journalctl -u omni-ws-gateway -f
 ```
 
 Environment overrides are stored under `<install-prefix>/config/bridge.env`.
 For VBot this is `/userdata/rosdeck/config`; for Zsibot it is
 `/opt/rosdeck/config`. Both the robot Bridge and Foxglove systemd services read
 this same file, so `ROS_DOMAIN_ID`, `ROS_LOCALHOST_ONLY`, and an optional
-`RMW_IMPLEMENTATION` cannot silently diverge between them.
+`RMW_IMPLEMENTATION` cannot silently diverge between them. Foxglove also reads
+the sibling `foxglove.env`; the deployer converges it to
+`FOXGLOVE_ADDRESS=127.0.0.1` / `FOXGLOVE_PORT=8766` (idempotent), and the WS
+gateway's own listen/upstream addresses are fixed in its unit file.
+
+### Secure mobile access (WS gateway)
+
+The app-facing listener is no longer the raw `foxglove_bridge`. A thin
+`omni_ws_gateway` ament_python package terminates TLS in front of it, then
+requires a one-time token login and enforces per-role access control before
+forwarding frames byte-for-byte to the loopback Foxglove port:
+
+| Service | Listens | What it does |
+| --- | --- | --- |
+| `omni-ws-gateway` | `0.0.0.0:8765` (wss) | TLS termination on a self-signed ECDSA P-256 device cert, first-message token login, per-role RBAC, append-only JSONL audit |
+| `rosdeck-foxglove-bridge` | `127.0.0.1:8766` (plain ws) | Upstream; receives only what the gateway forwards |
+
+The deployer converges `foxglove.env` to this split idempotently, so a
+pre-gateway install (which ran Foxglove on `0.0.0.0:8765`) upgrades without
+manual editing. The device certificate is generated **once** under
+`/var/lib/omni/tls` — an existing pair is preserved, so the app's SPKI
+certificate pin survives re-deploys and OTA upgrades. The auth store lives in
+`/var/lib/omni/auth`, the audit trail in `/var/lib/omni/audit` (metadata-only
+JSONL, 30-day retention, 10 MiB/day rotation to `.1`).
+
+Pair a phone, then connect the app over `wss://<orin-ip>:8765` and send the
+token as the first message:
+
+```bash
+# A/B install: source the active slot's runtime so ros2 can find the package
+source /opt/ros/humble/setup.bash
+source /opt/rosdeck/current/runtime/local_setup.bash
+
+# create a user; the token is printed ONCE (only its SHA-256 is stored)
+ros2 run omni_ws_gateway omni-auth add-user alice --role operator
+# inspect / revoke
+ros2 run omni_ws_gateway omni-auth list
+ros2 run omni_ws_gateway omni-auth remove-user alice
+# device cert PEM + the SPKI SHA-256 pin the app must trust
+ros2 run omni_ws_gateway omni-auth show-pairing
+```
+
+Roles (fail-closed; anything not explicitly allowed is denied):
+
+- `viewer` — subscribe/unsubscribe only.
+- `operator` — viewer plus publish/advertise on `/omni/cmd_vel/*`,
+  `/omni/safety/*`, `/omni/mission/*`, `/omni/navigation/*`, `/rosdeck/*`, and
+  service calls on those namespaces plus `/omni/routes/*`.
+- `admin` — every op, topic and service.
+
+A JSON policy file at `/var/lib/omni/auth/policy.json` can override the
+built-in defaults per role (partial files merge over the defaults). Denied
+frames are dropped and an `error` op is returned; a login timeout or bad token
+closes the socket with code 1008. Old `ws://…:8765` clients (pre-gateway app
+builds) can no longer connect until the app moves to wss + pairing.
+
+When a rollback restores a release that predates the gateway package, the
+deployer withdraws the gateway unit so it cannot crash-loop against a runtime
+that has no `omni_ws_gateway`.
 
 For the current Zsibot ROS graph, a fresh deployment writes these defaults:
 
@@ -364,7 +427,7 @@ The current two-board Zsibot layout is configured as follows:
 
 | Role | Address | Responsibility |
 | --- | --- | --- |
-| Android app | Connects to Foxglove on Orin port 8765 | Publishes stable Rosdeck topics and unified `TwistStamped` teleop on `/omni/cmd_vel/teleop`; `/vel_cmd` remains the legacy VBot fallback |
+| Android app | Connects to the WS gateway on Orin `wss://…:8765` (pairing token) | Publishes stable Rosdeck topics and unified `TwistStamped` teleop on `/omni/cmd_vel/teleop`; `/vel_cmd` remains the legacy VBot fallback |
 | Orin Bridge/SDK client | `192.168.234.234:43988` | Runs both services and creates the native HighLevel SDK only while mobile control is acquired |
 | RK3588 motion-control computer | `192.168.234.1` | Runs the robot motion-control server |
 
