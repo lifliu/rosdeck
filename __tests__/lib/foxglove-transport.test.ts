@@ -205,3 +205,93 @@ describe('FoxgloveTransport connection', () => {
     await expect(promise).rejects.toThrow('service unavailable');
   });
 });
+
+describe('FoxgloveTransport gateway login', () => {
+  let socket: any;
+  let WebSocketMock: jest.Mock;
+
+  beforeEach(() => {
+    socket = {
+      binaryType: 'blob',
+      protocol: 'foxglove.sdk.v1',
+      close: jest.fn(),
+      send: jest.fn(),
+      onopen: null,
+      onerror: null,
+      onclose: null,
+      onmessage: null,
+    };
+    WebSocketMock = jest.fn(() => socket);
+    global.WebSocket = WebSocketMock as any;
+  });
+
+  it('sends the login frame as the first message when login options are given', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('wss://192.168.1.50:8765', {
+      login: { user: 'alice', token: 'omni_abc' },
+    });
+    socket.onopen?.({});
+    await expect(connecting).resolves.toBeUndefined();
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(socket.send.mock.calls[0][0])).toEqual({
+      op: 'login',
+      user: 'alice',
+      token: 'omni_abc',
+    });
+  });
+
+  it('does not send a login frame when no options are given', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('wss://192.168.1.50:8765');
+    socket.onopen?.({});
+    await expect(connecting).resolves.toBeUndefined();
+
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [1008, 'authentication failed', 'Authentication failed'],
+    [4403, 'rate limited', 'Too many failed logins'],
+  ])('maps close code %i (%s) to a readable terminal error', async (code, gatewayReason, expected) => {
+    const transport = new FoxgloveTransport();
+    const events: Array<{ status: string; error?: string }> = [];
+    transport.onStatus((status, error) => events.push({ status, error }));
+    const connecting = transport.connect('wss://192.168.1.50:8765', {
+      login: { user: 'alice', token: 'omni_bad' },
+    });
+    socket.onopen?.({});
+    await expect(connecting).resolves.toBeUndefined();
+
+    socket.onclose?.({ code, reason: gatewayReason });
+
+    expect(transport.getStatus()).toBe('error');
+    expect(events.at(-1)).toEqual({
+      status: 'error',
+      error: expect.stringContaining(expected),
+    });
+  });
+
+  it('rejects connect with a readable message when login is refused before open', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('wss://192.168.1.50:8765', {
+      login: { user: 'alice', token: 'omni_bad' },
+    });
+
+    socket.onclose?.({ code: 1008, reason: 'login timeout' });
+
+    await expect(connecting).rejects.toThrow('Authentication failed');
+    expect(transport.getStatus()).toBe('error');
+  });
+
+  it('keeps reconnect semantics for non-auth close codes', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('wss://192.168.1.50:8765');
+    socket.onopen?.({});
+    await expect(connecting).resolves.toBeUndefined();
+
+    socket.onclose?.({ code: 1006, reason: '' });
+
+    expect(transport.getStatus()).toBe('disconnected');
+  });
+});

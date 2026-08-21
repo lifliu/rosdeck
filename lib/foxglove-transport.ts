@@ -1,4 +1,4 @@
-import type { Transport, Subscription, TopicInfo, TransportStatus } from './transport';
+import type { Transport, ConnectOptions, Subscription, TopicInfo, TransportStatus } from './transport';
 import { MessageReader, MessageWriter } from '@foxglove/rosmsg2-serialization';
 import { parse as parseMessageDefinition } from '@foxglove/rosmsg';
 import { DEFAULTS, FOXGLOVE_WEBSOCKET_PROTOCOLS } from '../constants/defaults';
@@ -19,6 +19,14 @@ type AdvertisedService = {
   response?: ServiceSchema;
   requestSchema?: string;
   responseSchema?: string;
+};
+
+// Close codes the omni_ws_gateway login gate sends. Mapping them to readable
+// messages keeps "wrong token" distinguishable from a plain network drop;
+// they are also treated as terminal (no auto-reconnect).
+const AUTH_CLOSE_REASONS: Record<number, string> = {
+  1008: 'Authentication failed — check the user and token in the device pairing',
+  4403: 'Too many failed logins — temporarily locked out, try again later',
 };
 
 // Some Humble foxglove_bridge releases advertise only the legacy service
@@ -74,7 +82,7 @@ export class FoxgloveTransport implements Transport {
     this.statusListeners.forEach((cb) => cb(status, error));
   }
 
-  async connect(url: string): Promise<void> {
+  async connect(url: string, options?: ConnectOptions): Promise<void> {
     this.setStatus('connecting');
 
     return new Promise((resolve, reject) => {
@@ -136,6 +144,22 @@ export class FoxgloveTransport implements Transport {
           try { socket.close(); } catch {}
           return;
         }
+        if (options?.login) {
+          // The omni_ws_gateway login gate requires {"op":"login","user",
+          // "token"} as the very first data frame. Send it before reporting
+          // the socket as connected so a failed send still rejects connect().
+          try {
+            socket.send(JSON.stringify({
+              op: 'login',
+              user: options.login.user,
+              token: options.login.token,
+            }));
+          } catch (error: any) {
+            rejectOnce(error?.message || 'Failed to send login');
+            try { socket.close(); } catch {}
+            return;
+          }
+        }
         opened = true;
         settled = true;
         if (timeout) clearTimeout(timeout);
@@ -152,9 +176,15 @@ export class FoxgloveTransport implements Transport {
       socket.onclose = (event) => {
         if (timeout) clearTimeout(timeout);
         if (this.ws === socket) this.ws = null;
-        const reason = event.reason || `WebSocket closed (code: ${event.code})`;
+        const authReason = AUTH_CLOSE_REASONS[event.code];
+        const reason = authReason || event.reason || `WebSocket closed (code: ${event.code})`;
         if (!opened) {
           rejectOnce(reason);
+        } else if (authReason) {
+          // Auth / rate-limit closes are terminal: retrying with the same
+          // credentials cannot succeed, so surface an error instead of
+          // feeding the reconnect loop.
+          this.setStatus('error', reason);
         } else {
           this.setStatus('disconnected', reason);
         }
