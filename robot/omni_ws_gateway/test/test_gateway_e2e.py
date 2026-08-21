@@ -3,6 +3,10 @@ of a fake loopback foxglove upstream (plain WS). No network, no ROS.
 
 Covers the security contract:
   * plaintext TCP is rejected (TLS is mandatory),
+  * subprotocol negotiation: the client's first requested
+    Sec-WebSocket-Protocol is echoed in the 101 and the full list is
+    passed through to the upstream handshake (legacy clients without the
+    header get neither),
   * the first data message MUST be a login (1008 otherwise),
   * bad token / timeout -> close,
   * a full operator session: subscribe forwarded, server data delivered,
@@ -12,6 +16,8 @@ Covers the security contract:
   * CBOR binary login is accepted,
   * upstream down -> close 1011.
 """
+
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -56,19 +62,22 @@ def make_cert(directory: str) -> None:
 
 
 class FakeFoxglove:
-    """Plain-WS server that records every frame the gateway forwards."""
+    """Plain-WS server that records every frame the gateway forwards,
+    plus each handshake request head it receives."""
 
     def __init__(self):
         self.frames: list[tuple[int, bytes]] = []
+        self.request_heads: list[bytes] = []
         self._writer = None
         self.server = None
 
     async def _handle(self, reader, writer):
         try:
-            await reader.readuntil(b"\r\n\r\n")
+            head = await reader.readuntil(b"\r\n\r\n")
         except (asyncio.IncompleteReadError, asyncio.TimeoutError,
                 ConnectionError):
             return
+        self.request_heads.append(head)
         writer.write(
             b"HTTP/1.1 101 Switching Protocols\r\n"
             b"Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
@@ -133,14 +142,20 @@ class FakeFoxglove:
 
 
 class WsClient:
+    DEFAULT_PROTOCOLS = ["foxglove.sdk.v1", "foxglove.websocket.v1"]
+
     def __init__(self, reader, writer):
         self.reader = reader
         self.writer = writer
         self.buf = bytearray()
         self.assembler = ws_frames.MessageAssembler()
+        self.headers: dict[str, str] = {}
 
     @classmethod
-    async def connect(cls, host: str, port: int, timeout: float = 5.0):
+    async def connect(cls, host: str, port: int, timeout: float = 5.0,
+                      protocols: list[str] | None = None):
+        """``protocols=None`` sends DEFAULT_PROTOCOLS; ``[]`` sends no
+        Sec-WebSocket-Protocol header at all (legacy client)."""
         import ssl
 
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -151,11 +166,16 @@ class WsClient:
             asyncio.open_connection(host, port, ssl=ctx), timeout
         )
         client = cls(reader, writer)
-        await client._upgrade()
+        if protocols is None:
+            protocols = cls.DEFAULT_PROTOCOLS
+        await client._upgrade(protocols)
         return client
 
-    async def _upgrade(self):
+    async def _upgrade(self, protocols: list[str]):
         key = base64.b64encode(os.urandom(16)).decode("ascii")
+        proto_line = (
+            f"Sec-WebSocket-Protocol: {', '.join(protocols)}\r\n"
+            if protocols else "")
         self.writer.write(
             (f"GET / HTTP/1.1\r\n"
              f"Host: 127.0.0.1\r\n"
@@ -163,6 +183,7 @@ class WsClient:
              "Connection: Upgrade\r\n"
              f"Sec-WebSocket-Key: {key}\r\n"
              "Sec-WebSocket-Version: 13\r\n"
+             f"{proto_line}"
              "\r\n").encode("ascii")
         )
         await self.writer.drain()
@@ -170,6 +191,16 @@ class WsClient:
         status = head.split(b"\r\n", 1)[0]
         if b"101" not in status:
             raise ConnectionError(f"no 101 from gateway: {status!r}")
+        for line in head.decode("latin-1").split("\r\n")[1:]:
+            if ":" in line:
+                k, _, v = line.partition(":")
+                self.headers[k.strip().lower()] = v.strip()
+        if protocols:
+            echoed = self.headers.get("sec-websocket-protocol")
+            if echoed != protocols[0]:
+                raise AssertionError(
+                    f"gateway did not echo {protocols[0]!r}, got {echoed!r}"
+                )
 
     async def send(self, opcode: int, payload: bytes):
         key = ws_frames.random_key()
@@ -259,6 +290,16 @@ class GatewayE2E(unittest.TestCase):
                         lines.append(json.loads(raw)["event"])
         return lines
 
+    async def _wait_upstream(self, fake, count: int, timeout: float = 5.0):
+        """Wait until the gateway has opened ``count`` upstream
+        connections (one per successful login)."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while len(fake.request_heads) < count:
+            if asyncio.get_event_loop().time() > deadline:
+                break
+            await asyncio.sleep(0.01)
+        self.assertGreaterEqual(len(fake.request_heads), count)
+
     # -- scenarios ----------------------------------------------------------
 
     def test_plain_tcp_rejected(self):
@@ -298,6 +339,57 @@ class GatewayE2E(unittest.TestCase):
                 writer.close()
                 self.assertNotIn(b"101", data)
                 self.assertNotIn(b"Switching Protocols", data)
+            finally:
+                if client is not None:
+                    client.writer.close()
+                server.close()
+                await server.wait_closed()
+                await fake.stop()
+
+        self._scenario(run)
+
+    def test_subprotocol_negotiation(self):
+        async def run():
+            tmp = tempfile.mkdtemp()
+            fake = FakeFoxglove()
+            up_port = await fake.start()
+            gw = self._gateway(tmp, up_port)
+            token = gw.users.add_user("alice", "operator")
+            server = await gw.start()
+            client = None
+            try:
+                port = server.sockets[0].getsockname()[1]
+
+                # 1. A client that requests subprotocols: the gateway
+                #    echoes the first one (checked inside WsClient) and
+                #    passes the full list through to the upstream.
+                client = await WsClient.connect("127.0.0.1", port)
+                self.assertEqual(
+                    "foxglove.sdk.v1",
+                    client.headers.get("sec-websocket-protocol"))
+                await client.send_json(
+                    {"op": "login", "user": "alice", "token": token}
+                )
+                await self._wait_upstream(fake, 1)
+                head = fake.request_heads[0].decode("latin-1")
+                self.assertIn(
+                    "Sec-WebSocket-Protocol: "
+                    "foxglove.sdk.v1, foxglove.websocket.v1", head,
+                )
+                await client.close()
+                client = None
+
+                # 2. A legacy client without the header: no echo back,
+                #    none forwarded upstream either.
+                client = await WsClient.connect(
+                    "127.0.0.1", port, protocols=[])
+                self.assertNotIn("sec-websocket-protocol", client.headers)
+                await client.send_json(
+                    {"op": "login", "user": "alice", "token": token}
+                )
+                await self._wait_upstream(fake, 2)
+                head = fake.request_heads[1].decode("latin-1")
+                self.assertNotIn("Sec-WebSocket-Protocol", head)
             finally:
                 if client is not None:
                     client.writer.close()
