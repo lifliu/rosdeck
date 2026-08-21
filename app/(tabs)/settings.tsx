@@ -4,6 +4,7 @@ import {
   Text,
   ScrollView,
   Switch,
+  TextInput,
   TouchableOpacity,
   Alert,
   StyleSheet,
@@ -13,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { useSettingsStore } from '../../stores/useSettingsStore';
+import { usePairingStore, normalizePairingHost } from '../../stores/usePairingStore';
 import { useRosStore } from '../../stores/useRosStore';
 import { useLayoutStore } from '../../stores/useLayoutStore';
 import { usePresetsStore } from '../../stores/usePresetsStore';
@@ -52,6 +54,52 @@ export default function SettingsScreen() {
 
   const robotUrl = useLayoutStore((s) => s.robotUrl);
   const [showGuide, setShowGuide] = React.useState(false);
+
+  const pairing = usePairingStore((s) => s.pairing);
+  const savePairing = usePairingStore((s) => s.save);
+  const clearPairing = usePairingStore((s) => s.clear);
+  const [pairHost, setPairHost] = React.useState('');
+  const [pairUser, setPairUser] = React.useState('');
+  const [pairToken, setPairToken] = React.useState('');
+  const [pairPin, setPairPin] = React.useState('');
+
+  React.useEffect(() => {
+    usePairingStore.getState().load();
+  }, []);
+  React.useEffect(() => {
+    if (!pairing) return;
+    setPairHost(pairing.host);
+    setPairUser(pairing.user);
+    setPairToken(pairing.token);
+    setPairPin(pairing.pin ?? '');
+  }, [pairing]);
+
+  const handleSavePairing = () => {
+    const host = normalizePairingHost(pairHost);
+    const user = pairUser.trim();
+    const token = pairToken.trim();
+    const pin = pairPin.trim();
+    if (!host || !user || !token) {
+      Alert.alert(t('settings.security'), t('settings.securityInvalid'));
+      return;
+    }
+    savePairing({ host, user, token, ...(pin ? { pin } : {}) });
+    const trimmed = pairHost.trim();
+    const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `wss://${host}`;
+    useRosStore.getState().setTransportType('foxglove');
+    useRosStore.getState().connectToUrl(url);
+  };
+
+  const handleClearPairing = () => {
+    Alert.alert(
+      t('settings.securityClearTitle'),
+      t('settings.securityClearMessage'),
+      [
+        { text: t('settings.cancel'), style: 'cancel' },
+        { text: t('settings.clear'), style: 'destructive', onPress: clearPairing },
+      ],
+    );
+  };
 
   const handleResetLayouts = () => {
     if (!robotUrl) return;
@@ -372,6 +420,72 @@ export default function SettingsScreen() {
     </>
   );
 
+  const securitySection = (
+    <>
+      <Text style={styles.sectionTitle}>{t('settings.security')}</Text>
+      <View style={styles.card}>
+        <Text style={styles.rowSubtitle}>{t('settings.securityHint')}</Text>
+        <Text style={styles.rowTitle}>{t('settings.securityHost')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairHost}
+          onChangeText={setPairHost}
+          placeholder="192.168.1.50"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.rowTitle}>{t('settings.securityUser')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairUser}
+          onChangeText={setPairUser}
+          placeholder="alice"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.rowTitle}>{t('settings.securityToken')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairToken}
+          onChangeText={setPairToken}
+          placeholder="omni_…"
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.rowTitle}>{t('settings.securityPin')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairPin}
+          onChangeText={setPairPin}
+          placeholder="SPKI SHA-256"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <View style={styles.divider} />
+        <TouchableOpacity style={styles.actionRow} onPress={handleSavePairing}>
+          <Ionicons name="key-outline" size={16} color={theme.colors.accentPrimary} />
+          <Text style={styles.actionText}>{t('settings.securitySave')}</Text>
+        </TouchableOpacity>
+        <View style={styles.divider} />
+        <TouchableOpacity
+          style={[styles.actionRow, !pairing && styles.actionRowDisabled]}
+          onPress={handleClearPairing}
+          disabled={!pairing}
+        >
+          <Ionicons
+            name="trash-outline"
+            size={16}
+            color={pairing ? theme.colors.statusError : theme.colors.textMuted}
+          />
+          <Text style={[styles.actionText, styles.actionTextDestructive, !pairing && styles.actionTextDisabled]}>
+            {t('settings.securityClear')}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
   const dataSection = (
     <>
       <Text style={styles.sectionTitle}>{t('settings.data')}</Text>
@@ -434,6 +548,7 @@ export default function SettingsScreen() {
             {preferencesSection}
           </ScrollView>
           <ScrollView style={styles.landscapeColumn} contentContainerStyle={styles.landscapeColumnContent}>
+            {securitySection}
             {fieldPickerSection}
             {dataSection}
           </ScrollView>
@@ -441,6 +556,7 @@ export default function SettingsScreen() {
       ) : (
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
           {preferencesSection}
+          {securitySection}
           {fieldPickerSection}
           {dataSection}
         </ScrollView>
@@ -505,6 +621,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: theme.colors.textMuted,
     marginTop: 2,
+  },
+  input: {
+    fontFamily: 'SpaceMono',
+    fontSize: 13,
+    color: theme.colors.textPrimary,
+    backgroundColor: theme.colors.bgBase,
+    borderColor: theme.colors.borderDefault,
+    borderWidth: 1,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 6,
+    marginBottom: 10,
   },
   divider: {
     height: 1,

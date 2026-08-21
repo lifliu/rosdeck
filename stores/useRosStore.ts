@@ -1,13 +1,15 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ConnectionStatus, SavedConnection } from '../types/ros';
-import type { Transport, TransportType } from '../lib/transport';
+import type { ConnectOptions, Transport, TransportType } from '../lib/transport';
 import { RosbridgeTransport } from '../lib/rosbridge-transport';
 import { FoxgloveTransport } from '../lib/foxglove-transport';
 import { DemoTransport } from '../lib/demo-transport';
 import { DEFAULTS } from '../constants/defaults';
 import { buildWebSocketUrl } from '../lib/ros';
 import { bestEffortReleaseControl } from '../lib/control-authority';
+import { parseConnectionInput } from '../lib/connection-url';
+import { usePairingStore } from './usePairingStore';
 
 interface ConnectionState {
   url: string;
@@ -32,7 +34,7 @@ interface RosStore {
   removeSavedConnection: (url: string) => void;
   loadSavedConnections: () => Promise<void>;
   persistSavedConnections: () => Promise<void>;
-  connectToUrl: (url: string) => void;
+  connectToUrl: (url: string, isReconnect?: boolean) => void;
   handleDisconnect: () => void;
   disconnect: () => void;
   reset: () => void;
@@ -46,6 +48,19 @@ const initialConnection: ConnectionState = {
 };
 
 const STORAGE_KEY_CONNECTIONS = 'ros2mobile_saved_connections';
+
+/**
+ * Attaches the saved device-pairing login to a wss connection whose host
+ * matches the pairing. ws:// (legacy bridges) and mismatched hosts never
+ * send a login frame.
+ */
+function resolveLoginOptions(canonicalUrl: string): ConnectOptions | undefined {
+  const parsed = parseConnectionInput(canonicalUrl);
+  if (parsed.kind !== 'valid' || parsed.scheme !== 'wss') return undefined;
+  const pairing = usePairingStore.getState().pairing;
+  if (!pairing || pairing.host !== parsed.host) return undefined;
+  return { login: { user: pairing.user, token: pairing.token } };
+}
 
 function normalizeSavedConnections(value: unknown): SavedConnection[] {
   if (!Array.isArray(value)) return [];
@@ -158,8 +173,14 @@ export const useRosStore = create<RosStore>((set, get) => ({
     } catch {}
   },
 
-  connectToUrl: async (url: string) => {
-    const { transportType, transport: previousTransport } = get();
+  connectToUrl: async (url: string, isReconnect = false) => {
+    const { transportType, transport: previousTransport, reconnectTimer } = get();
+    if (!isReconnect) {
+      // A user-initiated connect supersedes any pending retry: cancel the
+      // timer and start the backoff sequence over from the first attempt.
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      set({ reconnectAttempts: 0, reconnectTimer: null });
+    }
     const canonicalUrl = transportType === 'demo'
       ? url
       : buildWebSocketUrl(url, transportType === 'foxglove' ? 'foxglove' : 'rosbridge');
@@ -184,10 +205,17 @@ export const useRosStore = create<RosStore>((set, get) => ({
         ? new FoxgloveTransport()
         : new RosbridgeTransport();
 
-    transport.onStatus((status) => {
-      if (get().transport === transport
-        && status === 'disconnected'
-        && get().connection.status === 'connected') {
+    transport.onStatus((status, error) => {
+      if (get().transport !== transport) return;
+      if (status === 'error') {
+        // Terminal error from the transport (e.g. the gateway rejected the
+        // login). Surface it; the reconnect loop must not retry it.
+        set((s) => ({
+          connection: { ...s.connection, status: 'error', error: error ?? 'Connection error' },
+        }));
+        return;
+      }
+      if (status === 'disconnected' && get().connection.status === 'connected') {
         get().handleDisconnect();
       }
     });
@@ -201,7 +229,8 @@ export const useRosStore = create<RosStore>((set, get) => ({
     }
 
     try {
-      await transport.connect(canonicalUrl);
+      const loginOptions = transportType === 'foxglove' ? resolveLoginOptions(canonicalUrl) : undefined;
+      await transport.connect(canonicalUrl, loginOptions);
       if (get().transport !== transport) {
         transport.disconnect();
         return;
@@ -212,6 +241,9 @@ export const useRosStore = create<RosStore>((set, get) => ({
           status: 'connected',
           ros: transportType === 'rosbridge' ? (transport as RosbridgeTransport).getRos() : null,
         },
+        // A live connection resets the backoff sequence.
+        reconnectAttempts: 0,
+        reconnectTimer: null,
       }));
       if (!canonicalUrl.startsWith('demo://')) {
         get().addSavedConnection(canonicalUrl);
@@ -224,6 +256,12 @@ export const useRosStore = create<RosStore>((set, get) => ({
       set((s) => ({
         connection: { ...s.connection, status: 'error', error: err?.message || 'Connection failed' },
       }));
+      if (isReconnect) {
+        // A failed retry never reaches the onStatus 'disconnected' path
+        // (the socket never connected), so re-arm the retry loop here or
+        // it dies after one failed attempt.
+        get().handleDisconnect();
+      }
     }
   },
 
@@ -242,7 +280,7 @@ export const useRosStore = create<RosStore>((set, get) => ({
     );
     const timer = setTimeout(() => {
       set((s) => ({ reconnectAttempts: s.reconnectAttempts + 1 }));
-      get().connectToUrl(state.connection.url);
+      get().connectToUrl(state.connection.url, true);
     }, delay);
     set({ reconnectTimer: timer });
   },

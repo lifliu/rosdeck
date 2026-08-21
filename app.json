@@ -50,7 +50,8 @@
           }
         }
       ],
-      "./plugins/withSwiftConcurrencyFix"
+      "./plugins/withSwiftConcurrencyFix",
+      "./plugins/withNetworkSecurityConfig"
     ],
     "experiments": {
       "typedRoutes": true

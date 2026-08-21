@@ -1,6 +1,8 @@
 import { useRosStore } from '../../stores/useRosStore';
+import { usePairingStore } from '../../stores/usePairingStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FoxgloveTransport } from '../../lib/foxglove-transport';
+import { DEFAULTS } from '../../constants/defaults';
 
 // Reset store between tests
 beforeEach(() => {
@@ -8,6 +10,7 @@ beforeEach(() => {
   (AsyncStorage.getItem as jest.Mock).mockReset().mockResolvedValue(null);
   (AsyncStorage.setItem as jest.Mock).mockClear();
   useRosStore.getState().reset();
+  usePairingStore.setState({ pairing: null, loaded: false });
 });
 
 describe('useRosStore', () => {
@@ -58,7 +61,7 @@ describe('useRosStore', () => {
 
       await (useRosStore.getState().connectToUrl(' 192.168.1.50 ') as any);
 
-      expect(connect).toHaveBeenCalledWith('ws://192.168.1.50:8765');
+      expect(connect).toHaveBeenCalledWith('ws://192.168.1.50:8765', undefined);
       expect(useRosStore.getState().connection.url).toBe('ws://192.168.1.50:8765');
     });
 
@@ -102,6 +105,124 @@ describe('useRosStore', () => {
 
       expect(disconnect).toHaveBeenCalledTimes(1);
       expect(useRosStore.getState().connection.url).toBe('ws://192.168.1.51:8765');
+    });
+  });
+
+  describe('gateway login', () => {
+    beforeEach(() => {
+      useRosStore.getState().setTransportType('foxglove');
+    });
+
+    it('attaches the saved login to a wss connection to the paired host', async () => {
+      usePairingStore.setState({
+        pairing: { host: '192.168.1.50', user: 'alice', token: 'omni_abc' },
+        loaded: true,
+      });
+      const connect = jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+
+      await (useRosStore.getState().connectToUrl('wss://192.168.1.50:8765') as any);
+
+      expect(connect).toHaveBeenCalledWith('wss://192.168.1.50:8765', {
+        login: { user: 'alice', token: 'omni_abc' },
+      });
+    });
+
+    it('does not attach a login to a cleartext ws:// connection', async () => {
+      usePairingStore.setState({
+        pairing: { host: '192.168.1.50', user: 'alice', token: 'omni_abc' },
+        loaded: true,
+      });
+      const connect = jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+
+      await (useRosStore.getState().connectToUrl('ws://192.168.1.50:8765') as any);
+
+      expect(connect).toHaveBeenCalledWith('ws://192.168.1.50:8765', undefined);
+    });
+
+    it('does not attach a login when the host differs from the pairing', async () => {
+      usePairingStore.setState({
+        pairing: { host: '192.168.1.50', user: 'alice', token: 'omni_abc' },
+        loaded: true,
+      });
+      const connect = jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+
+      await (useRosStore.getState().connectToUrl('wss://10.0.0.9:8765') as any);
+
+      expect(connect).toHaveBeenCalledWith('wss://10.0.0.9:8765', undefined);
+    });
+
+    it('does not attach a login when no pairing is saved', async () => {
+      const connect = jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+
+      await (useRosStore.getState().connectToUrl('wss://192.168.1.50:8765') as any);
+
+      expect(connect).toHaveBeenCalledWith('wss://192.168.1.50:8765', undefined);
+    });
+  });
+
+  describe('reconnect', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 20; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve();
+      }
+    };
+
+    it('resets the attempt counter when a user-initiated connect succeeds', async () => {
+      jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+      useRosStore.getState().setTransportType('foxglove');
+      useRosStore.setState({ reconnectAttempts: 5 });
+
+      await (useRosStore.getState().connectToUrl('192.168.1.50') as any);
+
+      const state = useRosStore.getState();
+      expect(state.connection.status).toBe('connected');
+      expect(state.reconnectAttempts).toBe(0);
+      expect(state.reconnectTimer).toBeNull();
+    });
+
+    it('keeps retrying after failed attempts and gives up after the maximum', async () => {
+      let calls = 0;
+      jest.spyOn(FoxgloveTransport.prototype, 'connect').mockImplementation(() => {
+        calls += 1;
+        return calls === 1 ? Promise.resolve() : Promise.reject(new Error('host down'));
+      });
+      useRosStore.getState().setTransportType('foxglove');
+
+      await (useRosStore.getState().connectToUrl('192.168.1.50') as any);
+      expect(useRosStore.getState().connection.status).toBe('connected');
+      expect(useRosStore.getState().reconnectAttempts).toBe(0);
+
+      // The link drops while connected: the first retry gets scheduled.
+      useRosStore.getState().handleDisconnect();
+      expect(useRosStore.getState().reconnectTimer).not.toBeNull();
+
+      for (let attempt = 1; attempt <= DEFAULTS.maxReconnectAttempts; attempt += 1) {
+        const delay = Math.min(
+          DEFAULTS.reconnectBackoffBase * Math.pow(2, attempt - 1),
+          DEFAULTS.reconnectBackoffMax,
+        );
+        jest.advanceTimersByTime(delay);
+        await flushMicrotasks();
+        if (attempt < DEFAULTS.maxReconnectAttempts) {
+          // A failed retry must have re-armed the loop instead of stopping.
+          expect(useRosStore.getState().reconnectTimer).not.toBeNull();
+          expect(useRosStore.getState().connection.status).toBe('error');
+        }
+      }
+
+      const state = useRosStore.getState();
+      expect(state.connection.status).toBe('error');
+      expect(state.connection.error).toBe('Connection lost — max reconnect attempts reached');
+      expect(calls).toBe(1 + DEFAULTS.maxReconnectAttempts);
     });
   });
 

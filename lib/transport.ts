@@ -11,8 +11,17 @@ export interface TopicInfo {
 
 export type TransportStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+export interface ConnectOptions {
+  /**
+   * Gateway login credentials. When set, the transport sends
+   * ``{"op": "login", "user", "token"}`` as the very first frame after the
+   * WebSocket opens (the omni_ws_gateway login gate).
+   */
+  login?: { user: string; token: string };
+}
+
 export interface Transport {
-  connect(url: string): Promise<void>;
+  connect(url: string, options?: ConnectOptions): Promise<void>;
   disconnect(): void;
   subscribe(topic: string, messageType: string, callback: (msg: any) => void, throttleRate?: number): Subscription;
   publish(topic: string, messageType: string, msg: any): void;
