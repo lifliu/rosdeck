@@ -241,7 +241,11 @@ case "${COMMAND}" in
     prev_node="$(node_name_for_profile "${prev_profile}")"
     echo "Rolling back to previous release..."
     rosdeck_ab_rollback "${INSTALL_PREFIX}"
+    # The previous release may predate the gateway package; withdraw the
+    # unit in that case so it cannot crash-loop on the restored runtime.
+    rosdeck_gateway_unit_withdraw "${INSTALL_PREFIX}"
     if ! rosdeck_service_apply "${prev_profile}" "${prev_foxglove}" \
+      "${INSTALL_PREFIX}" \
       || ! rosdeck_health_check "${INSTALL_PREFIX}" "${ROS_SETUP}" \
         "${prev_node}" "${prev_profile}"; then
       rosdeck_core_die "rollback did not restore a healthy service"

@@ -333,6 +333,10 @@ rosdeck_glue_render() {
       || rosdeck_core_die "bundle is missing template: ${templates}/run-foxglove.in"
     [[ -f "${templates}/rosdeck-foxglove-bridge.service.in" ]] \
       || rosdeck_core_die "bundle is missing template: ${templates}/rosdeck-foxglove-bridge.service.in"
+    [[ -f "${templates}/run-gateway.in" ]] \
+      || rosdeck_core_die "bundle is missing template: ${templates}/run-gateway.in"
+    [[ -f "${templates}/omni-ws-gateway.service.in" ]] \
+      || rosdeck_core_die "bundle is missing template: ${templates}/omni-ws-gateway.service.in"
   fi
   install -d "${prefix}/bin" "${prefix}/systemd"
   sed \
@@ -350,6 +354,12 @@ rosdeck_glue_render() {
       -e "s#@CURRENT@#${prefix}/current#g" \
       "${templates}/run-foxglove.in" > "${prefix}/bin/run-rosdeck-foxglove-bridge"
     chmod 0755 "${prefix}/bin/run-rosdeck-foxglove-bridge"
+    sed \
+      -e "s#@ROS_SETUP@#${ros_setup}#g" \
+      -e "s#@INSTALL_PREFIX@#${prefix}#g" \
+      -e "s#@CURRENT@#${prefix}/current#g" \
+      "${templates}/run-gateway.in" > "${prefix}/bin/run-omni-ws-gateway"
+    chmod 0755 "${prefix}/bin/run-omni-ws-gateway"
   fi
   sed "s#@INSTALL_PREFIX@#${prefix}#g" \
     "${templates}/bootstrap-service.in" \
@@ -372,6 +382,10 @@ rosdeck_glue_render() {
         -e "s#@VBOT_ONLY@#${vbot_only}#g" \
       "${templates}/rosdeck-foxglove-bridge.service.in" \
       > "${prefix}/systemd/rosdeck-foxglove-bridge.service"
+    sed -e "s#@INSTALL_PREFIX@#${prefix}#g" \
+        -e "s#@VBOT_ONLY@#${vbot_only}#g" \
+      "${templates}/omni-ws-gateway.service.in" \
+      > "${prefix}/systemd/omni-ws-gateway.service"
   fi
 }
 
@@ -407,10 +421,31 @@ rosdeck_config_prepare() {
     echo "RMW_IMPLEMENTATION=${default_rmw}" >> "${env_file}"
   fi
   chmod 0644 "${env_file}"
-  if [[ "${foxglove}" -eq 1 && ! -f "${prefix}/config/foxglove.env" ]]; then
-    printf '%s\n' 'FOXGLOVE_ADDRESS=0.0.0.0' 'FOXGLOVE_PORT=8765' \
-      > "${prefix}/config/foxglove.env"
-    chmod 0644 "${prefix}/config/foxglove.env"
+  if [[ "${foxglove}" -eq 1 ]]; then
+    # The TLS gateway (omni-ws-gateway) owns the app-facing 0.0.0.0:8765, so
+    # foxglove_bridge must listen on loopback:8766. This is a product
+    # invariant, not operator config: rewrite it idempotently so upgrades
+    # from pre-gateway installs (0.0.0.0:8765) converge. One awk pass
+    # (portable; no in-place sed).
+    local fx_env="${prefix}/config/foxglove.env"
+    local fx_tmp
+    fx_tmp="$(mktemp "${fx_env}.XXXXXX")"
+    if [[ -f "${fx_env}" ]]; then
+      awk '
+        /^[[:space:]]*FOXGLOVE_ADDRESS=/ { seen_addr = 1; print "FOXGLOVE_ADDRESS=127.0.0.1"; next }
+        /^[[:space:]]*FOXGLOVE_PORT=/    { seen_port = 1; print "FOXGLOVE_PORT=8766"; next }
+        { print }
+        END {
+          if (!seen_addr) print "FOXGLOVE_ADDRESS=127.0.0.1"
+          if (!seen_port) print "FOXGLOVE_PORT=8766"
+        }
+      ' "${fx_env}" > "${fx_tmp}"
+    else
+      printf '%s\n' 'FOXGLOVE_ADDRESS=127.0.0.1' 'FOXGLOVE_PORT=8766' \
+        > "${fx_tmp}"
+    fi
+    mv -- "${fx_tmp}" "${fx_env}"
+    chmod 0644 "${fx_env}"
   fi
 }
 
@@ -423,6 +458,10 @@ rosdeck_user_prepare() {
   # root-owned and world-readable (0644/0755 installs); only the state the
   # services write at runtime needs the service account as owner:
   #   /var/lib/omni/          mission manager routes + SQLite DB
+  #   /var/lib/omni/tls/      WS gateway device certificate (provisioned
+  #                           once by omni-auth init; preserved on upgrade)
+  #   /var/lib/omni/auth/     WS gateway users.json + policy.json
+  #   /var/lib/omni/audit/    WS gateway JSONL audit trail
   #   /run/lock/omni/         created per start by RuntimeDirectory=lock/omni
   # Existing root-owned state from earlier (root-run) deploys is chowned
   # into the service account so upgrades do not strand it.
@@ -441,8 +480,41 @@ rosdeck_user_prepare() {
     useradd --system --gid rosdeck --home-dir /nonexistent \
       --shell /usr/sbin/nologin --comment "Rosdeck robot services" rosdeck
   fi
-  install -d /var/lib/omni/routes /var/lib/omni/mission_manager
+  install -d /var/lib/omni/routes /var/lib/omni/mission_manager \
+    /var/lib/omni/tls /var/lib/omni/auth /var/lib/omni/audit
   chown -R rosdeck:rosdeck /var/lib/omni
+}
+
+rosdeck_gateway_provision() {
+  # $1 = slot runtime dir, $2 = foxglove (0|1).
+  # Generates the TLS device certificate + SPKI pin under /var/lib/omni/tls
+  # by running `omni-auth init` from the slot being installed (NOT the
+  # active `current`), so the first gateway release can self-provision on a
+  # robot whose previous release predates the package. Idempotent: existing
+  # device.crt/device.key are kept so the app's certificate pin survives
+  # every upgrade. Fail-closed: if the cert cannot be generated the install
+  # aborts rather than serving plaintext.
+  local runtime_dir="$1" foxglove="$2"
+  if [[ "${foxglove}" -ne 1 ]]; then
+    return 0
+  fi
+  if [[ "${ROSDECK_SKIP_USER_PREPARE:-0}" == "1" ]]; then
+    return 0  # offline test harness: no /var/lib/omni, no real ROS
+  fi
+  local tls_dir="/var/lib/omni/tls"
+  if [[ -f "${tls_dir}/device.crt" && -f "${tls_dir}/device.key" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${runtime_dir}/local_setup.bash" ]]; then
+    rosdeck_core_die "gateway provisioning requires the slot runtime: ${runtime_dir}"
+  fi
+  echo "Provisioning the WS gateway TLS certificate..."
+  bash -c '
+    set +u
+    source "$1"
+    set -u
+    exec ros2 run omni_ws_gateway omni-auth init
+  ' _ "${runtime_dir}/local_setup.bash"
 }
 
 rosdeck_units_install() {
@@ -452,7 +524,7 @@ rosdeck_units_install() {
   local prefix="$1" profile="$2" foxglove="$3"
   local units=(rosdeck-robot-bridge.service)
   if [[ "${foxglove}" -eq 1 ]]; then
-    units+=(rosdeck-foxglove-bridge.service)
+    units+=(rosdeck-foxglove-bridge.service omni-ws-gateway.service)
   fi
   # ROSDECK_ETC_ROOT/ROSDECK_RUN_ROOT allow installing into a chroot or in
   # tests without root.
@@ -534,9 +606,13 @@ rosdeck_validate_bundle() {
   if [[ "${ROS_DISTRO:-}" != "${distro}" ]]; then
     rosdeck_core_die "ROS mismatch: bundle=${distro}, robot=${ROS_DISTRO:-unknown}"
   fi
-  if [[ "${foxglove}" -eq 1 ]] \
-    && ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
-    rosdeck_core_die "foxglove_bridge is required for mobile connections but is not installed (apt install ros-${distro}-foxglove-bridge)"
+  if [[ "${foxglove}" -eq 1 ]]; then
+    if ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+      rosdeck_core_die "foxglove_bridge is required for mobile connections but is not installed (apt install ros-${distro}-foxglove-bridge)"
+    fi
+    if [[ ! -x "${bundle_dir}/runtime/lib/omni_ws_gateway/omni-ws-gateway" ]]; then
+      rosdeck_core_die "bundle is missing the WS gateway runtime (install/lib/omni_ws_gateway/omni-ws-gateway); rebuild with a build.sh that selects omni_ws_gateway"
+    fi
   fi
   if [[ "${profile}" == "vbot" ]]; then
     ros2 pkg prefix function_msgs >/dev/null 2>&1 \
@@ -562,9 +638,20 @@ rosdeck_validate_bundle() {
 }
 
 rosdeck_service_apply() {
-  # $1 = profile, $2 = foxglove (0|1).
+  # $1 = profile, $2 = foxglove (0|1), $3 = prefix (A/B root; enables the
+  # gateway only when the active release ships omni_ws_gateway).
   # (Re)starts the units and fails unless the bridge reports active.
-  local profile="$1" foxglove="$2"
+  local profile="$1" foxglove="$2" prefix="${3:-}"
+  local gateway=0
+  if [[ "${foxglove}" -eq 1 && -n "${prefix}" ]]; then
+    local active_id slot
+    active_id="$(rosdeck_ab_active_id "${prefix}" || true)"
+    slot="${prefix}/releases/${active_id:-}"
+    if [[ -n "${slot}" \
+      && -f "${slot}/runtime/lib/omni_ws_gateway/omni-ws-gateway" ]]; then
+      gateway=1
+    fi
+  fi
   systemctl daemon-reload
   if [[ "${profile}" == "vbot" ]]; then
     systemctl restart rosdeck-robot-bridge.service
@@ -573,6 +660,9 @@ rosdeck_service_apply() {
   fi
   if [[ "${foxglove}" -eq 1 ]]; then
     systemctl enable --now rosdeck-foxglove-bridge.service
+  fi
+  if [[ "${gateway}" -eq 1 ]]; then
+    systemctl enable --now omni-ws-gateway.service
   fi
   sleep 2
   if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
@@ -586,6 +676,34 @@ rosdeck_service_apply() {
     journalctl -u rosdeck-foxglove-bridge.service -n 80 --no-pager >&2 || true
     return 1
   fi
+  if [[ "${gateway}" -eq 1 ]] \
+    && ! systemctl is-active --quiet omni-ws-gateway.service; then
+    echo "WS gateway failed to stay active. Recent logs:" >&2
+    journalctl -u omni-ws-gateway.service -n 80 --no-pager >&2 || true
+    return 1
+  fi
+}
+
+rosdeck_gateway_unit_withdraw() {
+  # $1 = prefix.
+  # After a rollback onto a release that predates the gateway package, the
+  # shared unit file would crash-loop against a runtime that no longer has
+  # omni_ws_gateway. Withdraw it (disable + remove from /etc and /run) when
+  # the active slot lacks the package; a no-op otherwise.
+  local prefix="$1"
+  local active_id slot
+  active_id="$(rosdeck_ab_active_id "${prefix}" || true)"
+  slot="${prefix}/releases/${active_id:-}"
+  if [[ -n "${slot}" \
+    && -f "${slot}/runtime/lib/omni_ws_gateway/omni-ws-gateway" ]]; then
+    return 0
+  fi
+  local etc_root="${ROSDECK_ETC_ROOT:-/etc}"
+  local run_root="${ROSDECK_RUN_ROOT:-/run}"
+  systemctl disable --now omni-ws-gateway.service 2>/dev/null || true
+  rm -f -- "${etc_root}/systemd/system/omni-ws-gateway.service" \
+    "${run_root}/systemd/system/omni-ws-gateway.service"
+  systemctl daemon-reload
 }
 
 rosdeck_health_check() {
@@ -656,6 +774,7 @@ rosdeck_install_bundle() {
     "${profile}" "${node_name}" "${foxglove}"
   rosdeck_config_prepare "${prefix}" "${profile}" "${foxglove}"
   rosdeck_user_prepare "${profile}"
+  rosdeck_gateway_provision "${slot}/runtime" "${foxglove}"
   rosdeck_units_install "${prefix}" "${profile}" "${foxglove}"
   if [[ "${profile}" == "vbot" ]]; then
     rosdeck_vbot_init_hook "${prefix}"
@@ -673,7 +792,7 @@ rosdeck_install_bundle() {
   if [[ "${active_id}" == "${release_id}" ]]; then
     echo "Release ${release_id} is already active; re-applied glue, config and units."
     if [[ "${start}" -eq 1 ]]; then
-      rosdeck_service_apply "${profile}" "${foxglove}" \
+      rosdeck_service_apply "${profile}" "${foxglove}" "${prefix}" \
         || rosdeck_core_die "service did not come up"
     fi
     return 0
@@ -688,7 +807,7 @@ rosdeck_install_bundle() {
   fi
 
   local healthy=0
-  if rosdeck_service_apply "${profile}" "${foxglove}" \
+  if rosdeck_service_apply "${profile}" "${foxglove}" "${prefix}" \
     && rosdeck_health_check "${prefix}" "${ros_setup}" "${node_name}" \
        "${profile}"; then
     healthy=1
@@ -703,7 +822,8 @@ rosdeck_install_bundle() {
     fi
     echo "!! Rolling back to the previous release..." >&2
     if rosdeck_ab_rollback "${prefix}" \
-      && rosdeck_service_apply "${profile}" "${foxglove}" \
+      && rosdeck_gateway_unit_withdraw "${prefix}" \
+      && rosdeck_service_apply "${profile}" "${foxglove}" "${prefix}" \
       && rosdeck_health_check "${prefix}" "${ros_setup}" "${node_name}" \
          "${profile}"; then
       echo "Rollback succeeded; the previous release is active again." >&2
@@ -723,6 +843,8 @@ rosdeck_install_bundle() {
   fi
   echo "Logs: journalctl -u rosdeck-robot-bridge -f"
   if [[ "${foxglove}" -eq 1 ]]; then
-    echo "Foxglove: ws://<orin-ip>:8765 (systemctl status rosdeck-foxglove-bridge)"
+    echo "Mobile access: wss://<orin-ip>:8765 (TLS gateway; token users via"
+    echo "  ros2 run omni_ws_gateway omni-auth, cert pin via omni-auth show-pairing)"
+    echo "  systemctl status rosdeck-foxglove-bridge omni-ws-gateway"
   fi
 }

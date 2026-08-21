@@ -94,6 +94,7 @@ class ProductBringupStaticTest(unittest.TestCase):
             "rosdeck-robot-bridge.service.in",
             "omni-mission-manager.service.in",
             "rosdeck-foxglove-bridge.service.in",
+            "omni-ws-gateway.service.in",
         ):
             with self.subTest(unit=unit_name):
                 unit = _source(PACKAGE_ROOT / "systemd" / unit_name)
@@ -126,6 +127,17 @@ class ProductBringupStaticTest(unittest.TestCase):
         self.assertIn("CapabilityBoundingSet=", manager)
         self.assertIn("CPUQuota=200%", manager)
 
+        gateway = _source(
+            PACKAGE_ROOT / "systemd" / "omni-ws-gateway.service.in"
+        )
+        # The gateway is the only app-facing listener: it owns 0.0.0.0:8765
+        # (wss) and forwards byte-for-byte to loopback foxglove_bridge:8766.
+        self.assertIn("Environment=OMNI_WS_LISTEN=0.0.0.0:8765", gateway)
+        self.assertIn("Environment=OMNI_WS_UPSTREAM=127.0.0.1:8766", gateway)
+        self.assertIn("Environment=OMNI_WS_TLS_DIR=/var/lib/omni/tls", gateway)
+        self.assertIn("Environment=OMNI_WS_AUTH_DIR=/var/lib/omni/auth", gateway)
+        self.assertIn("Environment=OMNI_WS_AUDIT_DIR=/var/lib/omni/audit", gateway)
+
     def test_deployers_prepare_non_root_service_account(self):
         # Both deploy paths (in-place deploy.sh and the A/B core used by
         # deploy-prebuilt.sh / ota.sh) must create the dedicated account,
@@ -142,6 +154,51 @@ class ProductBringupStaticTest(unittest.TestCase):
         core = _source(PACKAGE_ROOT / "scripts" / "deploy-core.sh")
         self.assertIn("rosdeck_user_prepare", core)
         self.assertIn("ROSDECK_SKIP_USER_PREPARE", core)
+
+    def test_ws_gateway_deploy_contract(self):
+        # Both deploy paths must render + start the TLS gateway unit,
+        # converge foxglove_bridge onto loopback:8766, and provision the
+        # device certificate exactly once (idempotent, preserved on
+        # upgrade so the app's certificate pin survives re-deploys).
+        core = _source(PACKAGE_ROOT / "scripts" / "deploy-core.sh")
+        self.assertIn("rosdeck_gateway_provision", core)
+        self.assertIn("ros2 run omni_ws_gateway omni-auth init", core)
+        # Rollback onto a pre-gateway release must not crash-loop the
+        # leftover unit against a runtime that lacks the package.
+        self.assertIn("rosdeck_gateway_unit_withdraw", core)
+        self.assertIn("lib/omni_ws_gateway/omni-ws-gateway", core)
+        self.assertIn("FOXGLOVE_ADDRESS=127.0.0.1", core)
+        self.assertIn("FOXGLOVE_PORT=8766", core)
+
+        deploy = _source(PACKAGE_ROOT / "scripts" / "deploy.sh")
+        self.assertIn("run-gateway.in", deploy)
+        self.assertIn("omni-ws-gateway.service.in", deploy)
+        self.assertIn("ros2 run omni_ws_gateway omni-auth init", deploy)
+        self.assertIn("FOXGLOVE_ADDRESS=127.0.0.1", deploy)
+        self.assertIn("FOXGLOVE_PORT=8766", deploy)
+        self.assertIn("wss://", deploy)
+
+        # The build must select the gateway package and fail if its
+        # console script is not installed; the release packager must stage
+        # both gateway templates into the bundle.
+        build = _source(PACKAGE_ROOT / "scripts" / "build.sh")
+        self.assertIn("--packages-select rosdeck_robot_bridge omni_robot_interfaces omni_slam_interfaces omni_mission_manager omni_ws_gateway", build)
+        self.assertIn("install/lib/omni_ws_gateway/omni-ws-gateway", build)
+        packager = _source(PACKAGE_ROOT / "scripts" / "build-package.sh")
+        self.assertIn("templates/run-gateway.in", packager)
+        self.assertIn("templates/omni-ws-gateway.service.in", packager)
+
+        # The launcher execs the gateway console script with the active
+        # slot's install tree on the ROS path.
+        launcher = _source(PACKAGE_ROOT / "scripts" / "run-gateway.in")
+        self.assertIn("ros2 run omni_ws_gateway omni-ws-gateway", launcher)
+
+        # The uninstaller stops and retires the unit in both roots.
+        uninstall = _source(PACKAGE_ROOT / "scripts" / "uninstall.sh")
+        self.assertIn("systemctl disable --now omni-ws-gateway.service", uninstall)
+        self.assertIn(
+            "/etc/systemd/system/omni-ws-gateway.service.disabled", uninstall
+        )
 
     def test_docking_output_is_scoped_to_gateway_input(self):
         product = _source(PRODUCT_LAUNCH)

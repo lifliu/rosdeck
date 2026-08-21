@@ -142,10 +142,28 @@ if ! grep -Eq '^[[:space:]]*RMW_IMPLEMENTATION=' "${INSTALL_PREFIX}/config/bridg
   echo "RMW_IMPLEMENTATION=${DEFAULT_RMW_IMPLEMENTATION}" >> "${INSTALL_PREFIX}/config/bridge.env"
 fi
 chmod 0644 "${INSTALL_PREFIX}/config/bridge.env"
-if [[ "${ENABLE_FOXGLOVE}" -eq 1 && ! -f "${INSTALL_PREFIX}/config/foxglove.env" ]]; then
-  printf '%s\n' 'FOXGLOVE_ADDRESS=0.0.0.0' 'FOXGLOVE_PORT=8765' \
-    > "${INSTALL_PREFIX}/config/foxglove.env"
-  chmod 0644 "${INSTALL_PREFIX}/config/foxglove.env"
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  # The TLS gateway (omni-ws-gateway) owns the app-facing 0.0.0.0:8765, so
+  # foxglove_bridge must listen on loopback:8766. Product invariant: rewrite
+  # idempotently so re-deploys from pre-gateway installs converge.
+  FX_ENV="${INSTALL_PREFIX}/config/foxglove.env"
+  FX_TMP="$(mktemp "${FX_ENV}.XXXXXX")"
+  if [[ -f "${FX_ENV}" ]]; then
+    awk '
+      /^[[:space:]]*FOXGLOVE_ADDRESS=/ { seen_addr = 1; print "FOXGLOVE_ADDRESS=127.0.0.1"; next }
+      /^[[:space:]]*FOXGLOVE_PORT=/    { seen_port = 1; print "FOXGLOVE_PORT=8766"; next }
+      { print }
+      END {
+        if (!seen_addr) print "FOXGLOVE_ADDRESS=127.0.0.1"
+        if (!seen_port) print "FOXGLOVE_PORT=8766"
+      }
+    ' "${FX_ENV}" > "${FX_TMP}"
+  else
+    printf '%s\n' 'FOXGLOVE_ADDRESS=127.0.0.1' 'FOXGLOVE_PORT=8766' \
+      > "${FX_TMP}"
+  fi
+  mv -- "${FX_TMP}" "${FX_ENV}"
+  chmod 0644 "${FX_ENV}"
 fi
 
 sed \
@@ -168,6 +186,12 @@ if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
     "${PACKAGE_DIR}/scripts/run-foxglove.in" \
     > "${INSTALL_PREFIX}/bin/run-rosdeck-foxglove-bridge"
   chmod 0755 "${INSTALL_PREFIX}/bin/run-rosdeck-foxglove-bridge"
+  sed \
+    -e "s#@ROS_SETUP@#${ROS_SETUP}#g" \
+    -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+    "${PACKAGE_DIR}/scripts/run-gateway.in" \
+    > "${INSTALL_PREFIX}/bin/run-omni-ws-gateway"
+  chmod 0755 "${INSTALL_PREFIX}/bin/run-omni-ws-gateway"
 fi
 
 sed "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
@@ -187,8 +211,19 @@ if ! getent passwd rosdeck >/dev/null; then
   useradd --system --gid rosdeck --home-dir /nonexistent \
     --shell /usr/sbin/nologin --comment "Rosdeck robot services" rosdeck
 fi
-install -d /var/lib/omni/routes /var/lib/omni/mission_manager
+install -d /var/lib/omni/routes /var/lib/omni/mission_manager \
+  /var/lib/omni/tls /var/lib/omni/auth /var/lib/omni/audit
 chown -R rosdeck:rosdeck /var/lib/omni
+# WS gateway TLS: generate the device certificate once (idempotent — the
+# existing pair is kept so the app's certificate pin survives re-deploys).
+# Fail-closed: a generation error aborts the deploy, never plaintext.
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
+  if [[ ! -f /var/lib/omni/tls/device.crt \
+    || ! -f /var/lib/omni/tls/device.key ]]; then
+    echo "Provisioning the WS gateway TLS certificate..."
+    ros2 run omni_ws_gateway omni-auth init
+  fi
+fi
 
 # @VBOT_ONLY@ marks profile-conditional unit directives (e.g. the vbot
 # ReadWritePaths=/userdata): a leading '#' for non-vbot profiles, empty
@@ -210,6 +245,10 @@ if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
       -e "s#@VBOT_ONLY@#${VBOT_ONLY}#g" \
     "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
     > "${INSTALL_PREFIX}/systemd/rosdeck-foxglove-bridge.service"
+  sed -e "s#@INSTALL_PREFIX@#${INSTALL_PREFIX}#g" \
+      -e "s#@VBOT_ONLY@#${VBOT_ONLY}#g" \
+    "${PACKAGE_DIR}/systemd/omni-ws-gateway.service.in" \
+    > "${INSTALL_PREFIX}/systemd/omni-ws-gateway.service"
 fi
 
 if [[ "${PROFILE}" == "vbot" ]]; then
@@ -240,6 +279,8 @@ chmod 0644 /etc/systemd/system/omni-mission-manager.service
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
   install -m 0644 "${INSTALL_PREFIX}/systemd/rosdeck-foxglove-bridge.service" \
     /etc/systemd/system/rosdeck-foxglove-bridge.service
+  install -m 0644 "${INSTALL_PREFIX}/systemd/omni-ws-gateway.service" \
+    /etc/systemd/system/omni-ws-gateway.service
 fi
 
 systemctl daemon-reload
@@ -260,6 +301,7 @@ else
 fi
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
   systemctl enable --now rosdeck-foxglove-bridge.service
+  systemctl enable --now omni-ws-gateway.service
 fi
 sleep 2
 if ! systemctl is-active --quiet rosdeck-robot-bridge.service; then
@@ -276,6 +318,12 @@ if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && \
   ! systemctl is-active --quiet rosdeck-foxglove-bridge.service; then
   echo "Foxglove Bridge failed to stay active. Recent logs:" >&2
   journalctl -u rosdeck-foxglove-bridge.service -n 80 --no-pager >&2 || true
+  exit 1
+fi
+if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]] && \
+  ! systemctl is-active --quiet omni-ws-gateway.service; then
+  echo "WS gateway failed to stay active. Recent logs:" >&2
+  journalctl -u omni-ws-gateway.service -n 80 --no-pager >&2 || true
   exit 1
 fi
 
@@ -306,5 +354,7 @@ else
 fi
 echo "Logs: journalctl -u rosdeck-robot-bridge -f"
 if [[ "${ENABLE_FOXGLOVE}" -eq 1 ]]; then
-  echo "Foxglove: ws://<orin-ip>:8765 (systemctl status rosdeck-foxglove-bridge)"
+  echo "Mobile access: wss://<orin-ip>:8765 (TLS gateway; token users via"
+  echo "  ros2 run omni_ws_gateway omni-auth, cert pin via omni-auth show-pairing)"
+  echo "  systemctl status rosdeck-foxglove-bridge omni-ws-gateway"
 fi

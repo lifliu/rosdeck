@@ -214,6 +214,10 @@ install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-robot-bridge.service.in" \
   "${STAGE}/templates/rosdeck-robot-bridge.service.in"
 install -m 0644 "${PACKAGE_DIR}/systemd/rosdeck-foxglove-bridge.service.in" \
   "${STAGE}/templates/rosdeck-foxglove-bridge.service.in"
+install -m 0644 "${PACKAGE_DIR}/scripts/run-gateway.in" \
+  "${STAGE}/templates/run-gateway.in"
+install -m 0644 "${PACKAGE_DIR}/systemd/omni-ws-gateway.service.in" \
+  "${STAGE}/templates/omni-ws-gateway.service.in"
 
 install -m 0755 "${SCRIPT_DIR}/release_artifacts.py" \
   "${STAGE}/tools/release_artifacts.py"

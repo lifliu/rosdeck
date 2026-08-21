@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Shared launcher for the TLS WebSocket gateway (omni_ws_gateway).
+# Rendered per-install by deploy-core.sh (A/B bundle path) or deploy.sh
+# (in-place path). Sourced from systemd as User=rosdeck.
+set -eo pipefail
+source "@ROS_SETUP@"
+if [[ -f "@CURRENT@/runtime/local_setup.bash" ]]; then
+  source "@CURRENT@/runtime/local_setup.bash"
+elif [[ -f "@INSTALL_PREFIX@/install/setup.bash" ]]; then
+  source "@INSTALL_PREFIX@/install/setup.bash"
+fi
+exec ros2 run omni_ws_gateway omni-ws-gateway
