@@ -1,14 +1,9 @@
 name: CI
 
-# Phase 4 (reliability/ops): first CI for the rosdeck monorepo.
-#   python  -> ruff lint + no-ROS unit tests (omni_docking, omni_mission_manager)
+# Phase 4 (reliability/ops): App and App-facing gateway CI.
+#   python  -> ruff lint + no-ROS omni_ws_gateway unit tests
 #   app     -> tsc typecheck + jest
 # Job-level path gates via dorny/paths-filter so a docs-only PR is cheap.
-#
-# The C++ bridge build/test jobs live in ci-robot-cpp.yml: they need a
-# CI_GIT_TOKEN repo secret because GITHUB_TOKEN cannot read the private
-# interface repos (lifliu/omni_robot_interfaces, YanYaoyuan/omni_slam),
-# and are gated to runs where robot/rosdeck_robot_bridge changes.
 on:
   push:
     branches: [main]
@@ -83,10 +78,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: omni_docking
-        run: python3 -m unittest discover -s robot/omni_docking/test -v
-      - name: omni_mission_manager
-        run: python3 -m unittest discover -s robot/omni_mission_manager/test -v
       - name: omni_ws_gateway
         run: python3 -m unittest discover -s robot/omni_ws_gateway/test -v
 

@@ -90,19 +90,19 @@ npm install
 npm start
 ```
 
-### VBot and Zsibot robot bridge
+### Robot-side services
 
-Foxglove cannot execute robot-side files directly. Build and deploy the
-[`robot/rosdeck_robot_bridge`](robot/rosdeck_robot_bridge) ROS 2 C++ package on
-an architecture-compatible development board, then copy its offline bundle to
-the target. The production target does not need colcon. VBot packages install
-under `/userdata` and register through `/userdata/startup.sh`; Zsibot packages use
-the official ZSL-1/ZSL-1W SDK, install under `/opt`, and use normal systemd.
-The Zsibot Gateway and deprecated same-host SDK owners share an exclusive,
-root-owned `/run/lock/omni/zsibot_sdk_owner.lock`; override the path consistently with
-`OMNI_ZSIBOT_SDK_OWNER_LOCK` only when the service sandbox requires it.
-The allowlisted adapters do not expose arbitrary shell execution or arbitrary service calls. See
-[`robot/README.md`](robot/README.md) for details.
+Foxglove cannot execute robot-side files directly. Mission execution,
+autonomous docking and vendor SDK access are deployed on the robot from their
+independent repositories:
+
+- [`omni_mission_manager`](https://github.com/YanYaoyuan/omni_mission_manager)
+- [`omni_docking`](https://github.com/YanYaoyuan/omni_docking)
+- [`omni_robot_bridge`](https://github.com/YanYaoyuan/omni_robot_bridge)
+
+This repository owns the App and its authenticated `omni_ws_gateway`; it no
+longer vendors copies of the robot runtime. See [`robot/README.md`](robot/README.md)
+for ownership, interface and startup boundaries.
 
 Edit `app.json` with your own `slug`, `bundleIdentifier`, `package`, and EAS `projectId` before building.
 
