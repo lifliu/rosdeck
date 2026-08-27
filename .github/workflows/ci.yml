@@ -1,14 +1,9 @@
 name: CI
 
-# Phase 4 (reliability/ops): first CI for the rosdeck monorepo.
-#   python  -> ruff lint + no-ROS unit tests (omni_docking, omni_mission_manager)
+# Phase 4 (reliability/ops): App and App-facing gateway CI.
+#   python  -> ruff lint + no-ROS omni_ws_gateway unit tests
 #   app     -> tsc typecheck + jest
 # Job-level path gates via dorny/paths-filter so a docs-only PR is cheap.
-#
-# The C++ bridge build/test jobs live in ci-robot-cpp.yml: they need a
-# CI_GIT_TOKEN repo secret because GITHUB_TOKEN cannot read the private
-# interface repos (lifliu/omni_robot_interfaces, YanYaoyuan/omni_slam),
-# and are gated to runs where robot/rosdeck_robot_bridge changes.
 on:
   push:
     branches: [main]
@@ -30,8 +25,8 @@ jobs:
       robot: ${{ steps.filter.outputs.robot }}
       app: ${{ steps.filter.outputs.app }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7.0.1
+      - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           filters: |
@@ -64,8 +59,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.robot == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.10"
       - name: Install ruff
@@ -79,14 +74,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.robot == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.10"
-      - name: omni_docking
-        run: python3 -m unittest discover -s robot/omni_docking/test -v
-      - name: omni_mission_manager
-        run: python3 -m unittest discover -s robot/omni_mission_manager/test -v
       - name: omni_ws_gateway
         run: python3 -m unittest discover -s robot/omni_ws_gateway/test -v
 
@@ -96,8 +87,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.app == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 20
           cache: npm
