@@ -1,0 +1,18 @@
+# Ruff baseline for the robot-side Python packages (robot/omni_docking,
+# robot/omni_mission_manager). Conservative on purpose: pyflakes (F) plus
+# the safe error/whitespace subset (E, W). Style rules and line-length
+# enforcement get layered in once this baseline is clean in CI.
+line-length = 100
+target-version = "py39"
+
+extend-exclude = [
+  "build",
+  "install",
+  "log",
+  "node_modules",
+  "android",
+]
+
+[lint]
+select = ["E", "W", "F"]
+ignore = ["E501"]

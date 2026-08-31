@@ -1,0 +1,360 @@
+import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  type LayoutNode,
+  type SavedLayout,
+  createWidgetNode,
+  createSplitNode,
+  findNode,
+  replaceNode,
+  removeNode,
+} from '../types/layout';
+import { buildDefaultLayouts } from '../constants/presets';
+import { DEFAULTS } from '../constants/defaults';
+import { getWidget } from '../widgets/registry';
+import {
+  LEGACY_VBOT_TELEOP_TOPIC,
+  OMNI_TELEOP_TOPIC,
+  UPSTREAM_CMD_VEL_TOPIC,
+} from '../lib/teleop';
+
+const STORAGE_KEY_PREFIX = 'ros2mobile_layouts_';
+const LAYOUT_SCHEMA_VERSION = 5;
+let latestLayoutInitRequest = 0;
+
+async function persistLayoutSnapshot(
+  robotUrl: string,
+  layouts: SavedLayout[],
+  activeLayoutId: string,
+): Promise<void> {
+  await AsyncStorage.setItem(
+    STORAGE_KEY_PREFIX + robotUrl,
+    JSON.stringify({ schemaVersion: LAYOUT_SCHEMA_VERSION, layouts, activeLayoutId }),
+  );
+}
+
+/**
+ * Move unconfigured/upstream joystick defaults to the unified teleop input.
+ * An explicit `/vel_cmd` is retained for old VBot profiles that do not expose
+ * cmd_vel_arbiter yet.
+ */
+export function migrateLayoutsForUnifiedTeleop(layouts: SavedLayout[]): SavedLayout[] {
+  const migrateNode = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      return {
+        ...node,
+        children: [migrateNode(node.children[0]), migrateNode(node.children[1])],
+      };
+    }
+    if (node.widgetType === 'pointcloud3d') {
+      const robotFrame = node.config?.robotFrame;
+      if (!robotFrame || robotFrame === 'base_link') {
+        return {
+          ...node,
+          config: {
+            ...node.config,
+            mapFrame: node.config?.mapFrame || 'map_frame',
+            robotFrame: 'lidar_frame',
+            odomTopic: node.config?.odomTopic || '/Odometry',
+            viewMeters: node.config?.viewMeters || 20,
+          },
+        };
+      }
+      return node;
+    }
+    if (node.widgetType !== 'joystick') return node;
+
+    const topic = node.config?.topic;
+    if (topic === LEGACY_VBOT_TELEOP_TOPIC) {
+      return {
+        ...node,
+        config: {
+          ...node.config,
+          topic: LEGACY_VBOT_TELEOP_TOPIC,
+          useTwistStamped: false,
+          requireLocoMode: true,
+        },
+      };
+    }
+    if (topic === OMNI_TELEOP_TOPIC) {
+      return {
+        ...node,
+        config: {
+          ...node.config,
+          useTwistStamped: node.config?.useTwistStamped ?? DEFAULTS.cmdVelUseTwistStamped,
+          requireLocoMode: true,
+        },
+      };
+    }
+    const usesUpstreamDefault = !topic || topic === UPSTREAM_CMD_VEL_TOPIC;
+    if (!usesUpstreamDefault) return node;
+
+    return {
+      ...node,
+      config: {
+        ...node.config,
+        topic: DEFAULTS.cmdVelTopic,
+        useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
+        requireLocoMode: true,
+      },
+    };
+  };
+
+  const migrated = layouts.map((layout) => ({ ...layout, tree: migrateNode(layout.tree) }));
+  if (!migrated.some((layout) => layout.id === 'mapping-3d')) {
+    const mappingLayout = buildDefaultLayouts().find((layout) => layout.id === 'mapping-3d');
+    if (mappingLayout) migrated.push(mappingLayout);
+  }
+  return migrated;
+}
+
+/** @deprecated Use migrateLayoutsForUnifiedTeleop. */
+export const migrateLayoutsForVbotHumble = migrateLayoutsForUnifiedTeleop;
+
+/**
+ * A schema migration cannot distinguish the old default `/vel_cmd` from an
+ * explicit VBot choice. Once the connected graph proves that the unified
+ * arbiter input exists, it is safe to upgrade those legacy joystick entries.
+ */
+export function migrateLegacyTeleopForUnifiedRobot(
+  layouts: SavedLayout[],
+): { layouts: SavedLayout[]; changed: boolean } {
+  let changed = false;
+  const migrateNode = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      const first = migrateNode(node.children[0]);
+      const second = migrateNode(node.children[1]);
+      if (first === node.children[0] && second === node.children[1]) return node;
+      return { ...node, children: [first, second] };
+    }
+    if (node.widgetType !== 'joystick' || node.config?.topic !== LEGACY_VBOT_TELEOP_TOPIC) {
+      return node;
+    }
+    changed = true;
+    return {
+      ...node,
+      config: {
+        ...node.config,
+        topic: OMNI_TELEOP_TOPIC,
+        useTwistStamped: true,
+        requireLocoMode: true,
+      },
+    };
+  };
+
+  const migrated = layouts.map((layout) => {
+    const tree = migrateNode(layout.tree);
+    return tree === layout.tree ? layout : { ...layout, tree };
+  });
+  return { layouts: migrated, changed };
+}
+
+interface LayoutState {
+  robotUrl: string | null;
+  layouts: SavedLayout[];
+  activeLayoutId: string;
+  editMode: boolean;
+  layoutListOpen: boolean;
+
+  initForRobot: (url: string) => Promise<boolean>;
+  migrateLegacyTeleopForUnifiedRobot: (expectedRobotUrl: string) => Promise<boolean>;
+  setActiveLayout: (id: string) => void;
+  getActiveLayout: () => SavedLayout | undefined;
+  updateLayoutTree: (tree: LayoutNode) => void;
+  addLayout: (name: string, tree: LayoutNode) => void;
+  removeLayout: (id: string) => void;
+  renameLayout: (id: string, name: string) => void;
+  setEditMode: (editing: boolean) => void;
+  splitPane: (nodeId: string, direction: 'horizontal' | 'vertical', widgetType: string) => void;
+  removePane: (nodeId: string) => void;
+  updateWidgetConfig: (nodeId: string, config: Record<string, any>) => void;
+  swapWidget: (nodeId: string, widgetType: string) => void;
+  swapChildren: (splitNodeId: string) => void;
+  updateSplitRatio: (nodeId: string, ratio: number) => void;
+  persist: () => Promise<void>;
+  reset: () => void;
+}
+
+export const useLayoutStore = create<LayoutState>((set, get) => ({
+  robotUrl: null,
+  layouts: [],
+  activeLayoutId: '',
+  editMode: false,
+  layoutListOpen: false,
+
+  initForRobot: async (url: string) => {
+    const request = ++latestLayoutInitRequest;
+    const key = STORAGE_KEY_PREFIX + url;
+    try {
+      const stored = await AsyncStorage.getItem(key);
+      if (request !== latestLayoutInitRequest) return false;
+      if (stored) {
+        const data = JSON.parse(stored);
+        const needsMigration = data.schemaVersion !== LAYOUT_SCHEMA_VERSION;
+        const layouts = needsMigration
+          ? migrateLayoutsForUnifiedTeleop(data.layouts ?? [])
+          : data.layouts;
+        set({ robotUrl: url, layouts, activeLayoutId: data.activeLayoutId });
+        if (needsMigration) {
+          await persistLayoutSnapshot(url, layouts, data.activeLayoutId);
+        }
+        return true;
+      }
+    } catch {}
+    if (request !== latestLayoutInitRequest) return false;
+    const layouts = buildDefaultLayouts();
+    const defaultLayoutId = url.startsWith('demo://') ? 'dashboard' : 'drive-camera';
+    set({ robotUrl: url, layouts, activeLayoutId: defaultLayoutId });
+    await persistLayoutSnapshot(url, layouts, defaultLayoutId);
+    return true;
+  },
+
+  migrateLegacyTeleopForUnifiedRobot: async (expectedRobotUrl: string) => {
+    if (get().robotUrl !== expectedRobotUrl) return false;
+    const result = migrateLegacyTeleopForUnifiedRobot(get().layouts);
+    if (!result.changed) return false;
+    set({ layouts: result.layouts });
+    if (get().robotUrl !== expectedRobotUrl) return false;
+    await persistLayoutSnapshot(expectedRobotUrl, result.layouts, get().activeLayoutId);
+    return true;
+  },
+
+  setActiveLayout: (id: string) => {
+    set({ activeLayoutId: id });
+    get().persist();
+  },
+
+  getActiveLayout: () => {
+    const { layouts, activeLayoutId } = get();
+    return layouts.find((l) => l.id === activeLayoutId);
+  },
+
+  updateLayoutTree: (tree: LayoutNode) => {
+    const { activeLayoutId } = get();
+    set((state) => ({
+      layouts: state.layouts.map((l) =>
+        l.id === activeLayoutId ? { ...l, tree } : l
+      ),
+    }));
+    get().persist();
+  },
+
+  addLayout: (name: string, tree: LayoutNode) => {
+    const id = `custom_${Date.now()}`;
+    set((state) => ({
+      layouts: [...state.layouts, { id, name, tree }],
+      activeLayoutId: id,
+    }));
+    get().persist();
+  },
+
+  removeLayout: (id: string) => {
+    const { layouts, activeLayoutId } = get();
+    const filtered = layouts.filter((l) => l.id !== id);
+    const newActive = id === activeLayoutId
+      ? (filtered[0]?.id || '')
+      : activeLayoutId;
+    set({ layouts: filtered, activeLayoutId: newActive });
+    get().persist();
+  },
+
+  renameLayout: (id: string, name: string) => {
+    set((state) => ({
+      layouts: state.layouts.map((l) =>
+        l.id === id ? { ...l, name } : l
+      ),
+    }));
+    get().persist();
+  },
+
+  setEditMode: (editing: boolean) => set({ editMode: editing }),
+
+  splitPane: (nodeId: string, direction: 'horizontal' | 'vertical', widgetType: string) => {
+    const layout = get().getActiveLayout();
+    if (!layout) return;
+    const origNode = findNode(layout.tree, nodeId);
+    if (!origNode) return;
+    const widget = getWidget(widgetType);
+    const newWidget = createWidgetNode(widgetType, widget?.defaultConfig || {});
+    const splitNode = createSplitNode(direction, origNode, newWidget);
+    const updatedTree = replaceNode(layout.tree, nodeId, splitNode);
+    get().updateLayoutTree(updatedTree);
+  },
+
+  removePane: (nodeId: string) => {
+    const layout = get().getActiveLayout();
+    if (!layout) return;
+    const newTree = removeNode(layout.tree, nodeId);
+    if (newTree) {
+      get().updateLayoutTree(newTree);
+    }
+  },
+
+  updateWidgetConfig: (nodeId: string, config: Record<string, any>) => {
+    const layout = get().getActiveLayout();
+    if (!layout) return;
+    const updateConfig = (node: LayoutNode): LayoutNode => {
+      if (node.id === nodeId && node.type === 'widget') {
+        return { ...node, config };
+      }
+      if (node.type === 'split') {
+        return { ...node, children: [updateConfig(node.children[0]), updateConfig(node.children[1])] };
+      }
+      return node;
+    };
+    get().updateLayoutTree(updateConfig(layout.tree));
+  },
+
+  swapWidget: (nodeId: string, widgetType: string) => {
+    const layout = get().getActiveLayout();
+    if (!layout) return;
+    const widget = getWidget(widgetType);
+    const newNode = createWidgetNode(widgetType, widget?.defaultConfig || {});
+    const updatedTree = replaceNode(layout.tree, nodeId, newNode);
+    get().updateLayoutTree(updatedTree);
+  },
+
+  swapChildren: (splitNodeId: string) => {
+    const layout = get().getActiveLayout();
+    if (!layout) return;
+    const swap = (node: LayoutNode): LayoutNode => {
+      if (node.id === splitNodeId && node.type === 'split') {
+        return { ...node, ratio: 1 - node.ratio, children: [node.children[1], node.children[0]] };
+      }
+      if (node.type === 'split') {
+        return { ...node, children: [swap(node.children[0]), swap(node.children[1])] };
+      }
+      return node;
+    };
+    get().updateLayoutTree(swap(layout.tree));
+  },
+
+  updateSplitRatio: (nodeId: string, ratio: number) => {
+    const layout = get().getActiveLayout();
+    if (!layout) return;
+    const updateRatio = (node: LayoutNode): LayoutNode => {
+      if (node.id === nodeId && node.type === 'split') {
+        return { ...node, ratio };
+      }
+      if (node.type === 'split') {
+        return {
+          ...node,
+          children: [updateRatio(node.children[0]), updateRatio(node.children[1])],
+        };
+      }
+      return node;
+    };
+    get().updateLayoutTree(updateRatio(layout.tree));
+  },
+
+  persist: async () => {
+    const { robotUrl, layouts, activeLayoutId } = get();
+    if (!robotUrl) return;
+    await persistLayoutSnapshot(robotUrl, layouts, activeLayoutId);
+  },
+
+  reset: () => {
+    ++latestLayoutInitRequest;
+    set({ robotUrl: null, layouts: [], activeLayoutId: '', editMode: false, layoutListOpen: false });
+  },
+}));

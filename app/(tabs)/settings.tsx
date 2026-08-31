@@ -1,0 +1,709 @@
+import React from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  Switch,
+  TextInput,
+  TouchableOpacity,
+  Alert,
+  StyleSheet,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+import { useSettingsStore } from '../../stores/useSettingsStore';
+import { usePairingStore, normalizePairingHost } from '../../stores/usePairingStore';
+import { useRosStore } from '../../stores/useRosStore';
+import { useLayoutStore } from '../../stores/useLayoutStore';
+import { usePresetsStore } from '../../stores/usePresetsStore';
+import { useOnboardingStore } from '../../stores/useOnboardingStore';
+import { SetupGuide } from '../../components/SetupGuide';
+import { useOrientation } from '../../hooks/useOrientation';
+import { theme } from '../../constants/theme';
+import { useTranslation } from '../../lib/i18n';
+
+const PUBLISH_RATE_OPTIONS = [5, 10, 20, 30];
+const DEPTH_OPTIONS = [4, 6, 8, 12];
+const ARRAY_LIMIT_OPTIONS = [8, 16, 32, 64];
+const DEADZONE_OPTIONS = [0.05, 0.1, 0.15, 0.2, 0.3];
+
+export default function SettingsScreen() {
+  const language = useSettingsStore((s) => s.language);
+  const setLanguage = useSettingsStore((s) => s.setLanguage);
+  const { t } = useTranslation();
+  const hapticsEnabled = useSettingsStore((s) => s.hapticsEnabled);
+  const keepAwake = useSettingsStore((s) => s.keepAwake);
+  const publishRateHz = useSettingsStore((s) => s.publishRateHz);
+  const autoDetectTopics = useSettingsStore((s) => s.autoDetectTopics);
+  const fieldPickerDepth = useSettingsStore((s) => s.fieldPickerDepth);
+  const fieldPickerArrayLimit = useSettingsStore((s) => s.fieldPickerArrayLimit);
+  const setHapticsEnabled = useSettingsStore((s) => s.setHapticsEnabled);
+  const setKeepAwake = useSettingsStore((s) => s.setKeepAwake);
+  const setPublishRateHz = useSettingsStore((s) => s.setPublishRateHz);
+  const setAutoDetectTopics = useSettingsStore((s) => s.setAutoDetectTopics);
+  const setFieldPickerDepth = useSettingsStore((s) => s.setFieldPickerDepth);
+  const setFieldPickerArrayLimit = useSettingsStore((s) => s.setFieldPickerArrayLimit);
+  const tabRailSide = useSettingsStore((s) => s.tabRailSide);
+  const setTabRailSide = useSettingsStore((s) => s.setTabRailSide);
+  const gamepadDeadzone = useSettingsStore((s) => s.gamepadDeadzone);
+  const setGamepadDeadzone = useSettingsStore((s) => s.setGamepadDeadzone);
+  const gamepadAutoLayout = useSettingsStore((s) => s.gamepadAutoLayout);
+  const setGamepadAutoLayout = useSettingsStore((s) => s.setGamepadAutoLayout);
+
+  const robotUrl = useLayoutStore((s) => s.robotUrl);
+  const [showGuide, setShowGuide] = React.useState(false);
+
+  const pairing = usePairingStore((s) => s.pairing);
+  const savePairing = usePairingStore((s) => s.save);
+  const clearPairing = usePairingStore((s) => s.clear);
+  const [pairHost, setPairHost] = React.useState('');
+  const [pairUser, setPairUser] = React.useState('');
+  const [pairToken, setPairToken] = React.useState('');
+  const [pairPin, setPairPin] = React.useState('');
+
+  React.useEffect(() => {
+    usePairingStore.getState().load();
+  }, []);
+  React.useEffect(() => {
+    if (!pairing) return;
+    setPairHost(pairing.host);
+    setPairUser(pairing.user);
+    setPairToken(pairing.token);
+    setPairPin(pairing.pin ?? '');
+  }, [pairing]);
+
+  const handleSavePairing = () => {
+    const host = normalizePairingHost(pairHost);
+    const user = pairUser.trim();
+    const token = pairToken.trim();
+    const pin = pairPin.trim();
+    if (!host || !user || !token) {
+      Alert.alert(t('settings.security'), t('settings.securityInvalid'));
+      return;
+    }
+    savePairing({ host, user, token, ...(pin ? { pin } : {}) });
+    const trimmed = pairHost.trim();
+    const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `wss://${host}`;
+    useRosStore.getState().setTransportType('foxglove');
+    useRosStore.getState().connectToUrl(url);
+  };
+
+  const handleClearPairing = () => {
+    Alert.alert(
+      t('settings.securityClearTitle'),
+      t('settings.securityClearMessage'),
+      [
+        { text: t('settings.cancel'), style: 'cancel' },
+        { text: t('settings.clear'), style: 'destructive', onPress: clearPairing },
+      ],
+    );
+  };
+
+  const handleResetLayouts = () => {
+    if (!robotUrl) return;
+    Alert.alert(
+      t('settings.resetLayoutsTitle'),
+      t('settings.resetLayoutsMessage'),
+      [
+        { text: t('settings.cancel'), style: 'cancel' },
+        {
+          text: t('settings.reset'),
+          style: 'destructive',
+          onPress: async () => {
+            await AsyncStorage.removeItem(`ros2mobile_layouts_${robotUrl}`);
+            useLayoutStore.getState().reset();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleClearConnections = () => {
+    Alert.alert(
+      t('settings.clearConnectionsTitle'),
+      t('settings.clearConnectionsMessage'),
+      [
+        { text: t('settings.cancel'), style: 'cancel' },
+        {
+          text: t('settings.clear'),
+          style: 'destructive',
+          onPress: async () => {
+            useRosStore.getState().disconnect();
+            await AsyncStorage.setItem('ros2mobile_saved_connections', '[]');
+            useRosStore.setState({ savedConnections: [] });
+          },
+        },
+      ],
+    );
+  };
+
+  const handleResetAll = () => {
+    Alert.alert(
+      t('settings.resetAllTitle'),
+      t('settings.resetAllMessage'),
+      [
+        { text: t('settings.cancel'), style: 'cancel' },
+        {
+          text: t('settings.resetEverything'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const allKeys = await AsyncStorage.getAllKeys();
+              const layoutKeys = allKeys.filter((k) =>
+                k.startsWith('ros2mobile_layouts_'),
+              );
+              await AsyncStorage.multiRemove([
+                'ros2mobile_settings',
+                'ros2mobile_saved_connections',
+                'ros2mobile_global_presets',
+                'ros2mobile_onboarding',
+                ...layoutKeys,
+              ]);
+            } catch {}
+            useRosStore.getState().disconnect();
+            useRosStore.setState({ savedConnections: [] });
+            useLayoutStore.getState().reset();
+            usePresetsStore.setState({ presets: [], loaded: false });
+            useOnboardingStore.getState().reset();
+            useSettingsStore.setState({
+              language: 'en',
+              hapticsEnabled: true,
+              keepAwake: true,
+              publishRateHz: 10,
+              autoDetectTopics: true,
+              fieldPickerDepth: 8,
+              fieldPickerArrayLimit: 32,
+              tabRailSide: 'left',
+              gamepadDeadzone: 0.1,
+              gamepadAutoLayout: 'left-drive',
+              loaded: false,
+            });
+          },
+        },
+      ],
+    );
+  };
+
+  const { isLandscape } = useOrientation();
+
+  const preferencesSection = (
+    <>
+      <Text style={styles.sectionTitle}>{t('settings.preferences')}</Text>
+      <View style={styles.card}>
+        <Text style={styles.rowTitle}>{t('settings.language')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.languageHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {([
+            { value: 'en' as const, label: t('settings.english') },
+            { value: 'zh' as const, label: t('settings.chinese') },
+          ]).map(({ value, label }) => (
+            <TouchableOpacity
+              key={value}
+              style={[
+                styles.segmentButton,
+                language === value && styles.segmentButtonActive,
+              ]}
+              onPress={() => setLanguage(value)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  language === value && styles.segmentTextActive,
+                ]}
+              >
+                {label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleLabel}>
+            <Text style={styles.rowTitle}>{t('settings.haptics')}</Text>
+          </View>
+          <Switch
+            value={hapticsEnabled}
+            onValueChange={setHapticsEnabled}
+            trackColor={{ false: theme.colors.borderSubtle, true: theme.colors.accentPrimary }}
+            thumbColor={theme.colors.textPrimary}
+          />
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleLabel}>
+            <Text style={styles.rowTitle}>{t('settings.keepAwake')}</Text>
+            <Text style={styles.rowSubtitle}>{t('settings.keepAwakeHint')}</Text>
+          </View>
+          <Switch
+            value={keepAwake}
+            onValueChange={setKeepAwake}
+            trackColor={{ false: theme.colors.borderSubtle, true: theme.colors.accentPrimary }}
+            thumbColor={theme.colors.textPrimary}
+          />
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleLabel}>
+            <Text style={styles.rowTitle}>{t('settings.autoDetect')}</Text>
+            <Text style={styles.rowSubtitle}>{t('settings.autoDetectHint')}</Text>
+          </View>
+          <Switch
+            value={autoDetectTopics}
+            onValueChange={setAutoDetectTopics}
+            trackColor={{ false: theme.colors.borderSubtle, true: theme.colors.accentPrimary }}
+            thumbColor={theme.colors.textPrimary}
+          />
+        </View>
+        <View style={styles.divider} />
+        <Text style={styles.rowTitle}>{t('settings.tabSide')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.tabSideHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {(['left', 'right'] as const).map((side) => (
+            <TouchableOpacity
+              key={side}
+              style={[
+                styles.segmentButton,
+                tabRailSide === side && styles.segmentButtonActive,
+              ]}
+              onPress={() => setTabRailSide(side)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  tabRailSide === side && styles.segmentTextActive,
+                ]}
+              >
+                {t(side === 'left' ? 'settings.left' : 'settings.right')}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      <Text style={styles.sectionTitle}>{t('settings.control')}</Text>
+      <View style={styles.card}>
+        <Text style={styles.rowTitle}>{t('settings.publishRate')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.publishRateHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {PUBLISH_RATE_OPTIONS.map((rate) => (
+            <TouchableOpacity
+              key={rate}
+              style={[
+                styles.segmentButton,
+                publishRateHz === rate && styles.segmentButtonActive,
+              ]}
+              onPress={() => setPublishRateHz(rate)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  publishRateHz === rate && styles.segmentTextActive,
+                ]}
+              >
+                {rate} Hz
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      <Text style={styles.sectionTitle}>{t('settings.gamepad')}</Text>
+      <View style={styles.card}>
+        <Text style={styles.rowTitle}>{t('settings.autoStick')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.autoStickHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {([
+            { value: 'left-drive' as const, label: t('settings.leftDrive') },
+            { value: 'left-steer' as const, label: t('settings.leftSteer') },
+          ]).map(({ value, label }) => (
+            <TouchableOpacity
+              key={value}
+              style={[
+                styles.segmentButton,
+                gamepadAutoLayout === value && styles.segmentButtonActive,
+              ]}
+              onPress={() => setGamepadAutoLayout(value)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  gamepadAutoLayout === value && styles.segmentTextActive,
+                ]}
+              >
+                {label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={styles.divider} />
+        <Text style={styles.rowTitle}>{t('settings.deadzone')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.deadzoneHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {DEADZONE_OPTIONS.map((dz) => (
+            <TouchableOpacity
+              key={dz}
+              style={[
+                styles.segmentButton,
+                gamepadDeadzone === dz && styles.segmentButtonActive,
+              ]}
+              onPress={() => setGamepadDeadzone(dz)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  gamepadDeadzone === dz && styles.segmentTextActive,
+                ]}
+              >
+                {dz}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+    </>
+  );
+
+  const fieldPickerSection = (
+    <>
+      <Text style={styles.sectionTitle}>{t('settings.fieldPicker')}</Text>
+      <View style={styles.card}>
+        <Text style={styles.rowTitle}>{t('settings.maxDepth')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.maxDepthHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {DEPTH_OPTIONS.map((d) => (
+            <TouchableOpacity
+              key={d}
+              style={[
+                styles.segmentButton,
+                fieldPickerDepth === d && styles.segmentButtonActive,
+              ]}
+              onPress={() => setFieldPickerDepth(d)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  fieldPickerDepth === d && styles.segmentTextActive,
+                ]}
+              >
+                {d}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={styles.divider} />
+        <Text style={styles.rowTitle}>{t('settings.arrayLimit')}</Text>
+        <Text style={styles.rowSubtitle}>{t('settings.arrayLimitHint')}</Text>
+        <View style={styles.segmentedRow}>
+          {ARRAY_LIMIT_OPTIONS.map((n) => (
+            <TouchableOpacity
+              key={n}
+              style={[
+                styles.segmentButton,
+                fieldPickerArrayLimit === n && styles.segmentButtonActive,
+              ]}
+              onPress={() => setFieldPickerArrayLimit(n)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  fieldPickerArrayLimit === n && styles.segmentTextActive,
+                ]}
+              >
+                {n}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+    </>
+  );
+
+  const securitySection = (
+    <>
+      <Text style={styles.sectionTitle}>{t('settings.security')}</Text>
+      <View style={styles.card}>
+        <Text style={styles.rowSubtitle}>{t('settings.securityHint')}</Text>
+        <Text style={styles.rowTitle}>{t('settings.securityHost')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairHost}
+          onChangeText={setPairHost}
+          placeholder="192.168.1.50"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.rowTitle}>{t('settings.securityUser')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairUser}
+          onChangeText={setPairUser}
+          placeholder="alice"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.rowTitle}>{t('settings.securityToken')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairToken}
+          onChangeText={setPairToken}
+          placeholder="omni_…"
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.rowTitle}>{t('settings.securityPin')}</Text>
+        <TextInput
+          style={styles.input}
+          value={pairPin}
+          onChangeText={setPairPin}
+          placeholder="SPKI SHA-256"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <View style={styles.divider} />
+        <TouchableOpacity style={styles.actionRow} onPress={handleSavePairing}>
+          <Ionicons name="key-outline" size={16} color={theme.colors.accentPrimary} />
+          <Text style={styles.actionText}>{t('settings.securitySave')}</Text>
+        </TouchableOpacity>
+        <View style={styles.divider} />
+        <TouchableOpacity
+          style={[styles.actionRow, !pairing && styles.actionRowDisabled]}
+          onPress={handleClearPairing}
+          disabled={!pairing}
+        >
+          <Ionicons
+            name="trash-outline"
+            size={16}
+            color={pairing ? theme.colors.statusError : theme.colors.textMuted}
+          />
+          <Text style={[styles.actionText, styles.actionTextDestructive, !pairing && styles.actionTextDisabled]}>
+            {t('settings.securityClear')}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
+  const dataSection = (
+    <>
+      <Text style={styles.sectionTitle}>{t('settings.data')}</Text>
+      <View style={styles.card}>
+        <TouchableOpacity
+          style={[styles.actionRow, !robotUrl && styles.actionRowDisabled]}
+          onPress={handleResetLayouts}
+          disabled={!robotUrl}
+        >
+          <Ionicons
+            name="refresh-outline"
+            size={16}
+            color={robotUrl ? theme.colors.statusError : theme.colors.textMuted}
+          />
+          <Text style={[styles.actionText, styles.actionTextDestructive, !robotUrl && styles.actionTextDisabled]}>
+            {t('settings.resetLayouts')}
+          </Text>
+        </TouchableOpacity>
+        <View style={styles.divider} />
+        <TouchableOpacity style={styles.actionRow} onPress={handleClearConnections}>
+          <Ionicons name="wifi-outline" size={16} color={theme.colors.statusError} />
+          <Text style={[styles.actionText, styles.actionTextDestructive]}>
+            {t('settings.clearConnections')}
+          </Text>
+        </TouchableOpacity>
+        <View style={styles.divider} />
+        <TouchableOpacity style={styles.actionRow} onPress={handleResetAll}>
+          <Ionicons name="trash-outline" size={16} color={theme.colors.statusError} />
+          <Text style={[styles.actionText, styles.actionTextDestructive]}>
+            {t('settings.resetAll')}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.sectionTitle}>{t('settings.about')}</Text>
+      <View style={styles.card}>
+        <View style={styles.infoRow}>
+          <Text style={styles.label}>{t('settings.version')}</Text>
+          <Text style={styles.value}>
+            {Constants.expoConfig?.version || '1.0.0'}
+            {' '}
+            <Text style={styles.buildNumber}>
+              ({Constants.expoConfig?.android?.versionCode ?? Constants.expoConfig?.ios?.buildNumber ?? '?'})
+            </Text>
+          </Text>
+        </View>
+        <TouchableOpacity style={styles.actionRow} onPress={() => setShowGuide(true)}>
+          <Ionicons name="book-outline" size={16} color={theme.colors.accentPrimary} />
+          <Text style={styles.actionText}>{t('settings.setupGuide')}</Text>
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
+  return (
+    <SafeAreaView style={styles.container} edges={isLandscape ? [] : ['top']}>
+      {isLandscape ? (
+        <View style={styles.landscapeRow}>
+          <ScrollView style={styles.landscapeColumn} contentContainerStyle={styles.landscapeColumnContent}>
+            {preferencesSection}
+          </ScrollView>
+          <ScrollView style={styles.landscapeColumn} contentContainerStyle={styles.landscapeColumnContent}>
+            {securitySection}
+            {fieldPickerSection}
+            {dataSection}
+          </ScrollView>
+        </View>
+      ) : (
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+          {preferencesSection}
+          {securitySection}
+          {fieldPickerSection}
+          {dataSection}
+        </ScrollView>
+      )}
+      <SetupGuide visible={showGuide} onClose={() => setShowGuide(false)} />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.bgBase,
+  },
+  scrollView: {
+    padding: 20,
+  },
+  scrollContent: {
+    paddingBottom: 100,
+  },
+  landscapeRow: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  landscapeColumn: {
+    flex: 1,
+    padding: 16,
+  },
+  landscapeColumnContent: {
+    paddingBottom: 40,
+  },
+  sectionTitle: {
+    ...theme.typography.label,
+    color: theme.colors.textMuted,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  card: {
+    backgroundColor: theme.colors.bgElevated,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    borderRadius: theme.radius.lg,
+    padding: 16,
+    marginBottom: 8,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  toggleLabel: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  rowTitle: {
+    fontSize: 14,
+    color: theme.colors.textPrimary,
+    fontWeight: '500',
+  },
+  rowSubtitle: {
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+  input: {
+    fontFamily: 'SpaceMono',
+    fontSize: 13,
+    color: theme.colors.textPrimary,
+    backgroundColor: theme.colors.bgBase,
+    borderColor: theme.colors.borderDefault,
+    borderWidth: 1,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: theme.colors.borderSubtle,
+    marginVertical: 10,
+  },
+  segmentedRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  segmentButton: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderDefault,
+  },
+  segmentButtonActive: {
+    backgroundColor: theme.colors.accentPrimary,
+    borderColor: theme.colors.accentPrimary,
+  },
+  segmentText: {
+    fontFamily: 'SpaceMono',
+    fontSize: 12,
+    color: theme.colors.textSecondary,
+  },
+  segmentTextActive: {
+    color: '#000',
+    fontWeight: '700',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+  },
+  actionRowDisabled: {
+    opacity: 0.4,
+  },
+  actionText: {
+    fontFamily: 'SpaceMono',
+    fontSize: 13,
+    color: theme.colors.accentPrimary,
+  },
+  actionTextDestructive: {
+    color: theme.colors.statusError,
+  },
+  actionTextDisabled: {
+    color: theme.colors.textMuted,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  label: {
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+  },
+  value: {
+    fontSize: 14,
+    color: theme.colors.textPrimary,
+    fontWeight: '500',
+  },
+  buildNumber: {
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontWeight: '400',
+  },
+});

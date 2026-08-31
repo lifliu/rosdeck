@@ -1,0 +1,87 @@
+import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const STORAGE_KEY = 'ros2mobile_settings';
+
+export type AppLanguage = 'en' | 'zh';
+
+interface SettingsState {
+  language: AppLanguage;
+  hapticsEnabled: boolean;
+  keepAwake: boolean;
+  publishRateHz: number;
+  autoDetectTopics: boolean;
+  fieldPickerDepth: number;
+  fieldPickerArrayLimit: number;
+  tabRailSide: 'left' | 'right';
+  gamepadDeadzone: number;
+  gamepadAutoLayout: 'left-drive' | 'left-steer';
+  loaded: boolean;
+  load: () => Promise<void>;
+  setLanguage: (value: AppLanguage) => void;
+  setHapticsEnabled: (value: boolean) => void;
+  setKeepAwake: (value: boolean) => void;
+  setPublishRateHz: (value: number) => void;
+  setAutoDetectTopics: (value: boolean) => void;
+  setFieldPickerDepth: (value: number) => void;
+  setFieldPickerArrayLimit: (value: number) => void;
+  setTabRailSide: (value: 'left' | 'right') => void;
+  setGamepadDeadzone: (value: number) => void;
+  setGamepadAutoLayout: (value: 'left-drive' | 'left-steer') => void;
+}
+
+const defaults = {
+  language: 'en' as AppLanguage,
+  hapticsEnabled: true,
+  keepAwake: true,
+  publishRateHz: 10,
+  autoDetectTopics: true,
+  fieldPickerDepth: 8,
+  fieldPickerArrayLimit: 32,
+  tabRailSide: 'left' as const,
+  gamepadDeadzone: 0.1,
+  gamepadAutoLayout: 'left-drive' as const,
+};
+
+function persistAll(get: () => SettingsState) {
+  const { loaded, load, ...fns } = get();
+  const data: Record<string, any> = {};
+  for (const [k, v] of Object.entries(fns)) {
+    if (typeof v !== 'function') data[k] = v;
+  }
+  AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
+}
+
+export const useSettingsStore = create<SettingsState>((set, get) => ({
+  ...defaults,
+  loaded: false,
+
+  load: async () => {
+    if (get().loaded) return;
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      if (json) {
+        const data = JSON.parse(json);
+        const restored: Record<string, any> = {};
+        for (const key of Object.keys(defaults)) {
+          restored[key] = data[key] ?? (defaults as any)[key];
+        }
+        set({ ...restored, loaded: true });
+        return;
+      }
+    } catch {}
+    set({ loaded: true });
+  },
+
+  setLanguage: (value) => { set({ language: value }); persistAll(get); },
+
+  setHapticsEnabled: (value) => { set({ hapticsEnabled: value }); persistAll(get); },
+  setKeepAwake: (value) => { set({ keepAwake: value }); persistAll(get); },
+  setPublishRateHz: (value) => { set({ publishRateHz: value }); persistAll(get); },
+  setAutoDetectTopics: (value) => { set({ autoDetectTopics: value }); persistAll(get); },
+  setFieldPickerDepth: (value) => { set({ fieldPickerDepth: value }); persistAll(get); },
+  setFieldPickerArrayLimit: (value) => { set({ fieldPickerArrayLimit: value }); persistAll(get); },
+  setTabRailSide: (value) => { set({ tabRailSide: value }); persistAll(get); },
+  setGamepadDeadzone: (value) => { set({ gamepadDeadzone: value }); persistAll(get); },
+  setGamepadAutoLayout: (value) => { set({ gamepadAutoLayout: value }); persistAll(get); },
+}));
