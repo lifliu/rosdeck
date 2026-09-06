@@ -14,6 +14,70 @@ type ServiceSchemas = Readonly<{
 
 export type ServiceSchemaDirection = 'request' | 'response';
 
+const ROS_TIME_DEPENDENCY = `
+================================================================================
+MSG: builtin_interfaces/msg/Time
+int32 sec
+uint32 nanosec`;
+
+const POSE_STAMPED_DEPENDENCIES = `${ROS_TIME_DEPENDENCY}
+================================================================================
+MSG: geometry_msgs/msg/PoseStamped
+std_msgs/msg/Header header
+geometry_msgs/msg/Pose pose
+================================================================================
+MSG: std_msgs/msg/Header
+builtin_interfaces/msg/Time stamp
+string frame_id
+================================================================================
+MSG: geometry_msgs/msg/Pose
+geometry_msgs/msg/Point position
+geometry_msgs/msg/Quaternion orientation
+================================================================================
+MSG: geometry_msgs/msg/Point
+float64 x
+float64 y
+float64 z
+================================================================================
+MSG: geometry_msgs/msg/Quaternion
+float64 x
+float64 y
+float64 z
+float64 w`;
+
+const AUTONOMY_REASON_CONSTANTS = `uint32 REASON_NONE=0
+uint32 REASON_INVALID_REQUEST=4000
+uint32 REASON_STALE_SEQUENCE=4001
+uint32 REASON_UNSUPPORTED_MODE=4002
+uint32 REASON_BUSY=4003
+uint32 REASON_EXTERNAL_CONFLICT=4004
+uint32 REASON_MAP_REQUIRED=4005
+uint32 REASON_MAP_MISMATCH=4006
+uint32 REASON_SLAM_UNAVAILABLE=4007
+uint32 REASON_PLANNER_UNAVAILABLE=4008
+uint32 REASON_OPERATION_FAILED=4009
+uint32 REASON_NOT_MAPPING=4010
+uint32 REASON_SAVE_FAILED=4011
+uint32 REASON_TIMEOUT=4012
+uint32 REASON_NOT_RECORDING=4013
+uint32 REASON_ROUTE_SAVE_FAILED=4014
+uint32 REASON_EXPIRED=4015
+uint32 REASON_ROUTE_ID_CONFLICT=4016`;
+
+const NAVIGATION_REASON_CONSTANTS = `uint32 REASON_OK=0
+uint32 REASON_USER_CANCELED=1
+uint32 REASON_ABORTED=2
+uint32 REASON_GOAL_REJECTED=3
+uint32 REASON_MAP_MISMATCH=4
+uint32 REASON_LOCALIZATION_LOST=5
+uint32 REASON_HEARTBEAT_LOST=6
+uint32 REASON_TIMEOUT=7
+uint32 REASON_CONTROL_DENIED=8
+uint32 REASON_STALE_SEQUENCE=9
+uint32 REASON_EXPIRED=10
+uint32 REASON_BUSY=11
+uint32 REASON_INTERRUPTED=12`;
+
 const LOCAL_SERVICE_SCHEMAS: Readonly<Record<string, ServiceSchemas>> = {
   'std_srvs/srv/Trigger': {
     // 空请求仍需生成 ROS 2 CDR encapsulation header，因此保留一个非字段注释。
@@ -54,7 +118,12 @@ uint64 sequence
 string map_id
 string map_version
 string route_id
-string[] checkpoint_ids`,
+string[] checkpoint_ids
+string source
+builtin_interfaces/msg/Time requested_at
+builtin_interfaces/msg/Time deadline
+string map_checksum
+string route_checksum${ROS_TIME_DEPENDENCY}`,
     response: `bool accepted
 uint32 reason_code
 string reason_text
@@ -77,7 +146,20 @@ string reason_text`,
     response: `string[] route_ids
 string[] map_ids
 string[] frame_ids
-string[] created_at`,
+string[] created_at
+string[] map_versions
+string[] map_checksums
+string[] route_checksums
+uint32[] point_counts
+float32[] distances_m`,
+  },
+  'omni_robot_interfaces/srv/ListMaps': {
+    request: '# Empty request.',
+    response: `string[] map_ids
+uint32[] map_versions
+string[] map_checksums
+string[] created_at
+uint64[] size_bytes`,
   },
   'omni_robot_interfaces/srv/SetAutonomyMode': {
     request: `uint8 MODE_IDLE=0
@@ -97,23 +179,14 @@ float32 initial_x
 float32 initial_y
 float32 initial_z
 float32 initial_yaw
-float32 timeout_sec`,
+float32 timeout_sec
+builtin_interfaces/msg/Time requested_at
+builtin_interfaces/msg/Time deadline
+string map_checksum
+string route_id${ROS_TIME_DEPENDENCY}`,
     response: `bool accepted
 string operation_id
-uint32 REASON_NONE=0
-uint32 REASON_INVALID_REQUEST=4000
-uint32 REASON_STALE_SEQUENCE=4001
-uint32 REASON_UNSUPPORTED_MODE=4002
-uint32 REASON_BUSY=4003
-uint32 REASON_EXTERNAL_CONFLICT=4004
-uint32 REASON_MAP_REQUIRED=4005
-uint32 REASON_MAP_MISMATCH=4006
-uint32 REASON_SLAM_UNAVAILABLE=4007
-uint32 REASON_PLANNER_UNAVAILABLE=4008
-uint32 REASON_OPERATION_FAILED=4009
-uint32 REASON_NOT_MAPPING=4010
-uint32 REASON_SAVE_FAILED=4011
-uint32 REASON_TIMEOUT=4012
+${AUTONOMY_REASON_CONSTANTS}
 uint32 reason_code
 string reason_text
 uint64 runtime_generation`,
@@ -127,26 +200,66 @@ string source
 uint8 disposition
 string map_id
 string calibration_hash
-bool make_current`,
+bool make_current
+builtin_interfaces/msg/Time requested_at
+builtin_interfaces/msg/Time deadline${ROS_TIME_DEPENDENCY}`,
     response: `bool accepted
 string operation_id
-uint32 REASON_NONE=0
-uint32 REASON_INVALID_REQUEST=4000
-uint32 REASON_STALE_SEQUENCE=4001
-uint32 REASON_UNSUPPORTED_MODE=4002
-uint32 REASON_BUSY=4003
-uint32 REASON_EXTERNAL_CONFLICT=4004
-uint32 REASON_MAP_REQUIRED=4005
-uint32 REASON_MAP_MISMATCH=4006
-uint32 REASON_SLAM_UNAVAILABLE=4007
-uint32 REASON_PLANNER_UNAVAILABLE=4008
-uint32 REASON_OPERATION_FAILED=4009
-uint32 REASON_NOT_MAPPING=4010
-uint32 REASON_SAVE_FAILED=4011
-uint32 REASON_TIMEOUT=4012
+${AUTONOMY_REASON_CONSTANTS}
 uint32 reason_code
 string reason_text
 uint64 runtime_generation`,
+  },
+  'omni_robot_interfaces/srv/FinishRouteRecording': {
+    request: `uint8 SAVE=1
+uint8 DISCARD=2
+string request_id
+uint64 sequence
+string source
+builtin_interfaces/msg/Time requested_at
+builtin_interfaces/msg/Time deadline
+string recording_operation_id
+uint8 disposition${ROS_TIME_DEPENDENCY}`,
+    response: `bool accepted
+string operation_id
+uint64 runtime_generation
+${AUTONOMY_REASON_CONSTANTS}
+uint32 reason_code
+string reason_text`,
+  },
+  'omni_robot_interfaces/srv/SubmitNavigationGoal': {
+    request: `string request_id
+uint64 sequence
+string source
+builtin_interfaces/msg/Time requested_at
+builtin_interfaces/msg/Time deadline
+string map_id
+uint32 map_version
+string map_checksum
+geometry_msgs/msg/PoseStamped target_pose
+bool use_final_yaw
+float32 speed_scale${POSE_STAMPED_DEPENDENCIES}`,
+    response: `bool accepted
+string manager_epoch
+string operation_id
+uint64 runtime_generation
+${NAVIGATION_REASON_CONSTANTS}
+uint32 reason_code
+string reason_text`,
+  },
+  'omni_robot_interfaces/srv/CancelNavigationGoal': {
+    request: `string request_id
+uint64 sequence
+string source
+builtin_interfaces/msg/Time requested_at
+builtin_interfaces/msg/Time deadline
+string target_operation_id${ROS_TIME_DEPENDENCY}`,
+    response: `bool accepted
+string manager_epoch
+string cancel_operation_id
+${NAVIGATION_REASON_CONSTANTS}
+uint32 reason_code
+string reason_text`,
   },
 };
 

@@ -17,6 +17,7 @@ interface Props {
   language?: 'zh' | 'en';
   description?: string;
   recommendedConfig?: Record<string, any>;
+  recommendedDescription?: string;
 }
 
 function NumberField({ field, value, onChange }: { field: WidgetConfigField; value: any; onChange: (v: any) => void }) {
@@ -260,6 +261,7 @@ export function WidgetSettings({
   language = 'en',
   description,
   recommendedConfig,
+  recommendedDescription,
 }: Props) {
   const { isLandscape } = useOrientation();
   const [draft, setDraft] = useState(config);
@@ -414,7 +416,9 @@ export function WidgetSettings({
                   <View style={styles.recommendedCopy}>
                     <Text style={styles.recommendedTitle}>{zh ? '使用推荐配置' : 'Use recommended settings'}</Text>
                     <Text style={styles.recommendedDescription}>
-                      {zh ? '自动选择规范视频话题与 Foxglove 直连。' : 'Select the canonical topic and direct Foxglove transport.'}
+                      {recommendedDescription ?? (zh
+                        ? '自动选择规范视频话题与 Foxglove 直连。'
+                        : 'Select the canonical topic and direct Foxglove transport.')}
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />

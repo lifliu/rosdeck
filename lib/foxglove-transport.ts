@@ -34,7 +34,13 @@ export class FoxgloveTransport implements Transport {
   private ws: WebSocket | null = null;
   private status: TransportStatus = 'disconnected';
   private statusListeners: Array<(status: TransportStatus, error?: string) => void> = [];
-  private subscriptions: Map<number, { topic: string; messageType: string; callback: (msg: any) => void }> = new Map();
+  private subscriptions: Map<number, {
+    topic: string;
+    messageType: string;
+    callback: (msg: any) => void;
+    throttleRate: number;
+    lastDeliveredAt?: number;
+  }> = new Map();
   private nextSubId = 1;
   private serverChannels: Map<number, { topic: string; schemaName: string; encoding?: string }> = new Map();
   private topicToChannelId: Map<string, number> = new Map();
@@ -232,10 +238,47 @@ export class FoxgloveTransport implements Transport {
             this.serverChannels.set(ch.id, { topic: ch.topic, schemaName: ch.schemaName, encoding: ch.encoding });
             this.topicToChannelId.set(ch.topic, ch.id);
             if (ch.schema && ch.schemaName) {
+              // 同名 schema 可能在 channel 重建后发生变化，旧 reader 不能跨代复用。
+              if (this.schemaDefinitions.get(ch.schemaName) !== ch.schema) {
+                this.messageReaders.delete(ch.schemaName);
+              }
               this.schemaDefinitions.set(ch.schemaName, ch.schema);
             }
           }
           this.flushPendingSubscriptions();
+        }
+        break;
+      case 'unadvertise':
+        if (Array.isArray(msg.channelIds)) {
+          for (const channelId of msg.channelIds) {
+            const channel = this.serverChannels.get(channelId);
+            if (!channel) continue;
+
+            this.serverChannels.delete(channelId);
+            const removedCurrentChannel = this.topicToChannelId.get(channel.topic) === channelId;
+            if (removedCurrentChannel) this.topicToChannelId.delete(channel.topic);
+
+            // 仅在没有其它活跃 channel 复用该 schema 时清缓存；后续同名新 schema
+            // 会据新的定义重新构造 MessageReader。
+            const schemaStillAdvertised = [...this.serverChannels.values()].some(
+              (candidate) => candidate.schemaName === channel.schemaName,
+            );
+            if (!schemaStillAdvertised) {
+              this.schemaDefinitions.delete(channel.schemaName);
+              this.messageReaders.delete(channel.schemaName);
+            }
+
+            if (removedCurrentChannel) {
+              const bridgeSubId = this.topicBridgeSub.get(channel.topic);
+              const hasSubscribers = [...this.subscriptions.values()].some(
+                (subscription) => subscription.topic === channel.topic,
+              );
+              if (bridgeSubId !== undefined && hasSubscribers) {
+                // 服务端撤销 channel 后仍保留 APP 内部订阅；新 channel 出现时自动重订阅。
+                this.queuePendingSubscription(bridgeSubId, channel.topic);
+              }
+            }
+          }
         }
         break;
     }
@@ -274,18 +317,23 @@ export class FoxgloveTransport implements Transport {
     const topic = this.bridgeSubToTopic.get(subscriptionId);
     if (!topic) return;
 
-    // SDK v1: opcode(1) + subId(4) + timestamp(8) = 13 byte header
-    const payloadBytes = new Uint8Array(bytes.buffer.slice(bytes.byteOffset + 13));
     const channelInfo = this.getChannelForTopic(topic);
+    const now = Date.now();
+    const dueSubscriptions = [...this.subscriptions.values()].filter((subscription) => {
+      if (subscription.topic !== topic) return false;
+      if (channelInfo?.schemaName && subscription.messageType !== channelInfo.schemaName) return false;
+      if (subscription.throttleRate === 0 || subscription.lastDeliveredAt === undefined) return true;
+      // 系统时钟回拨时立即放行，避免订阅被意外冻结。
+      return now < subscription.lastDeliveredAt
+        || now - subscription.lastDeliveredAt >= subscription.throttleRate;
+    });
 
-    // Skip expensive deserialization if no subscriber wants this channel's schema.
-    // e.g. camera subscribes for CompressedImage but topic publishes raw Image.
-    if (channelInfo?.schemaName) {
-      const wantedByAnyone = [...this.subscriptions.values()].some(
-        (s) => s.topic === topic && s.messageType === channelInfo.schemaName,
-      );
-      if (!wantedByAnyone) return;
-    }
+    // 在 CDR/JSON 反序列化前限流；本轮没有任何到期订阅时不解析大消息。
+    if (dueSubscriptions.length === 0) return;
+
+    // SDK v1: opcode(1) + subId(4) + timestamp(8) = 13 byte header。
+    // subarray 尊重输入 view 的右边界，并避免为大点云复制整段 payload。
+    const payloadBytes = bytes.subarray(13);
 
     let parsedMsg: any;
     if (channelInfo?.encoding === 'cdr' && channelInfo.schemaName) {
@@ -312,10 +360,10 @@ export class FoxgloveTransport implements Transport {
     // whose subId the bridge used. This is necessary because foxglove_bridge
     // may only ever send messages tagged with the first subscription ID for a
     // given channel, ignoring subsequent ones from the same client.
-    for (const [, sub] of this.subscriptions) {
-      if (sub.topic === topic && (!channelInfo?.schemaName || sub.messageType === channelInfo.schemaName)) {
-        try { sub.callback(parsedMsg); } catch {}
-      }
+    for (const sub of dueSubscriptions) {
+      // 回调抛错也视为已投递，避免故障订阅绕过 throttle 持续占用主线程。
+      sub.lastDeliveredAt = now;
+      try { sub.callback(parsedMsg); } catch {}
     }
   }
 
@@ -467,6 +515,13 @@ export class FoxgloveTransport implements Transport {
     this.pendingSubscriptions = remaining;
   }
 
+  private queuePendingSubscription(subId: number, topic: string): void {
+    // channel 可能连续撤销，按 bridge subId 去重，避免新 channel 出现时重复 subscribe。
+    if (!this.pendingSubscriptions.some((pending) => pending.subId === subId)) {
+      this.pendingSubscriptions.push({ subId, topic });
+    }
+  }
+
   disconnect(): void {
     const cancelPending = this.cancelPendingConnect;
     this.cancelPendingConnect = null;
@@ -563,9 +618,19 @@ export class FoxgloveTransport implements Transport {
     });
   }
 
-  subscribe(topic: string, messageType: string, callback: (msg: any) => void, _throttleRate?: number): Subscription {
+  subscribe(topic: string, messageType: string, callback: (msg: any) => void, throttleRate?: number): Subscription {
     const subId = this.nextSubId++;
-    this.subscriptions.set(subId, { topic, messageType, callback });
+    const normalizedThrottleRate = typeof throttleRate === 'number'
+      && Number.isFinite(throttleRate)
+      && throttleRate > 0
+      ? throttleRate
+      : 0;
+    this.subscriptions.set(subId, {
+      topic,
+      messageType,
+      callback,
+      throttleRate: normalizedThrottleRate,
+    });
 
     if (!this.topicBridgeSub.has(topic)) {
       // First subscriber for this topic — create the bridge-level subscription.
@@ -578,7 +643,7 @@ export class FoxgloveTransport implements Transport {
           subscriptions: [{ id: subId, channelId }],
         }));
       } else {
-        this.pendingSubscriptions.push({ subId, topic });
+        this.queuePendingSubscription(subId, topic);
       }
     }
     // Subsequent subscribers for the same topic share the existing bridge subscription
@@ -587,7 +652,6 @@ export class FoxgloveTransport implements Transport {
     return {
       unsubscribe: () => {
         this.subscriptions.delete(subId);
-        this.pendingSubscriptions = this.pendingSubscriptions.filter((p) => p.subId !== subId);
 
         // Only send bridge unsubscribe when the last callback for this topic is removed.
         const remaining = [...this.subscriptions.values()].some(s => s.topic === topic);
@@ -595,6 +659,8 @@ export class FoxgloveTransport implements Transport {
           const bridgeSubId = this.topicBridgeSub.get(topic);
           this.topicBridgeSub.delete(topic);
           if (bridgeSubId !== undefined) {
+            // bridge subId 可属于已先取消的内部订阅，最后一个回调退出时再统一清理。
+            this.pendingSubscriptions = this.pendingSubscriptions.filter((p) => p.subId !== bridgeSubId);
             this.bridgeSubToTopic.delete(bridgeSubId);
             const ch = this.topicToChannelId.get(topic);
             if (ch !== undefined && this.ws) {

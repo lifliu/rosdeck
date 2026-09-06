@@ -24,6 +24,7 @@ import base64
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,20 @@ def make_cert(directory: str) -> None:
     )
 
 
+async def close_writer(writer) -> None:
+    """完整回收测试连接，避免事件循环退出早于 TLS transport。"""
+    if writer is None:
+        return
+    try:
+        writer.close()
+        await asyncio.wait_for(writer.wait_closed(), 1.0)
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        try:
+            writer.transport.abort()
+        except (ConnectionError, OSError):
+            pass
+
+
 # -- fake foxglove upstream ----------------------------------------------------
 
 
@@ -73,34 +88,39 @@ class FakeFoxglove:
 
     async def _handle(self, reader, writer):
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
-        except (asyncio.IncompleteReadError, asyncio.TimeoutError,
-                ConnectionError):
-            return
-        self.request_heads.append(head)
-        writer.write(
-            b"HTTP/1.1 101 Switching Protocols\r\n"
-            b"Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-        )
-        await writer.drain()
-        self._writer = writer
-        buf = bytearray()
-        while True:
             try:
-                data = await reader.read(65536)
-            except (ConnectionError, OSError):
+                head = await reader.readuntil(b"\r\n\r\n")
+            except (asyncio.IncompleteReadError, asyncio.TimeoutError,
+                    ConnectionError):
                 return
-            if not data:
-                return
-            buf.extend(data)
+            self.request_heads.append(head)
+            writer.write(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+            )
+            await writer.drain()
+            self._writer = writer
+            buf = bytearray()
             while True:
-                frame = ws_frames.read_frame(buf)
-                if frame is None:
-                    break
-                _fin, opcode, payload = frame
-                self.frames.append((opcode, payload))
-                if opcode == ws_frames.OP_CLOSE:
+                try:
+                    data = await reader.read(65536)
+                except (ConnectionError, OSError):
                     return
+                if not data:
+                    return
+                buf.extend(data)
+                while True:
+                    frame = ws_frames.read_frame(buf)
+                    if frame is None:
+                        break
+                    _fin, opcode, payload = frame
+                    self.frames.append((opcode, payload))
+                    if opcode == ws_frames.OP_CLOSE:
+                        return
+        finally:
+            await close_writer(writer)
+            if self._writer is writer:
+                self._writer = None
 
     async def start(self) -> int:
         self.server = await asyncio.start_server(
@@ -110,7 +130,8 @@ class FakeFoxglove:
 
     async def stop(self):
         if self._writer is not None:
-            self._writer.close()
+            await close_writer(self._writer)
+            self._writer = None
         if self.server is not None:
             self.server.close()
             await self.server.wait_closed()
@@ -124,6 +145,12 @@ class FakeFoxglove:
 
     async def send_cbor(self, obj):
         payload = cbor_lite.encode(obj)
+        self._writer.write(
+            ws_frames.build_frame(ws_frames.OP_BINARY, payload)
+        )
+        await self._writer.drain()
+
+    async def send_binary(self, payload: bytes):
         self._writer.write(
             ws_frames.build_frame(ws_frames.OP_BINARY, payload)
         )
@@ -234,13 +261,17 @@ class WsClient:
             return opcode, payload
 
     async def close(self):
+        writer = self.writer
+        if writer is None:
+            return
         try:
             await self.send(
                 ws_frames.OP_CLOSE, (1000).to_bytes(2, "big")
             )
         except (ConnectionError, OSError):
             pass
-        self.writer.close()
+        self.writer = None
+        await close_writer(writer)
 
 
 def close_status(payload: bytes):
@@ -336,12 +367,12 @@ class GatewayE2E(unittest.TestCase):
                         data += chunk
                 except (asyncio.TimeoutError, ConnectionError, OSError):
                     pass
-                writer.close()
+                await close_writer(writer)
                 self.assertNotIn(b"101", data)
                 self.assertNotIn(b"Switching Protocols", data)
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -392,7 +423,7 @@ class GatewayE2E(unittest.TestCase):
                 self.assertNotIn("Sec-WebSocket-Protocol", head)
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -418,7 +449,7 @@ class GatewayE2E(unittest.TestCase):
                 self.assertEqual(1008, close_status(payload))
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -447,7 +478,7 @@ class GatewayE2E(unittest.TestCase):
                 self.assertEqual([], fake.frames)  # nothing forwarded
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -472,7 +503,7 @@ class GatewayE2E(unittest.TestCase):
                 self.assertEqual(1008, close_status(payload))
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -543,7 +574,7 @@ class GatewayE2E(unittest.TestCase):
                     self.assertIn(wanted, events)
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -593,7 +624,291 @@ class GatewayE2E(unittest.TestCase):
                 self.assertIn("login_ok", events)
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
+                server.close()
+                await server.wait_closed()
+                await fake.stop()
+
+        self._scenario(run)
+
+    def test_sdk_binary_service_call_uses_advertised_service_name(self):
+        async def run():
+            tmp = tempfile.mkdtemp()
+            fake = FakeFoxglove()
+            up_port = await fake.start()
+            gw = self._gateway(tmp, up_port)
+            token = gw.users.add_user("alice", "operator")
+            server = await gw.start()
+            client = None
+            try:
+                port = server.sockets[0].getsockname()[1]
+                client = await WsClient.connect("127.0.0.1", port)
+                await client.send_json(
+                    {"op": "login", "user": "alice", "token": token}
+                )
+                await self._wait_upstream(fake, 1)
+
+                await fake.send_json({
+                    "op": "advertiseServices",
+                    "services": [
+                        {"id": 9, "name": "/omni/maps/list",
+                         "type": "omni_robot_interfaces/srv/ListMaps"},
+                        {"id": 10, "name": "/omni/slam/maps/list",
+                         "type": "omni_robot_interfaces/srv/ListMaps"},
+                    ],
+                })
+                opcode, _ = await client.recv()
+                self.assertEqual(ws_frames.OP_TEXT, opcode)
+
+                request = (
+                    bytes([0x02]) + struct.pack("<III", 9, 41, 3) +
+                    b"cdr" + b"\x00\x01\x00\x00"
+                )
+                await client.send(ws_frames.OP_BINARY, request)
+                self.assertTrue(await fake.wait_for(
+                    lambda op, payload: op == ws_frames.OP_BINARY and payload == request
+                ))
+
+                mismatched_response = (
+                    bytes([0x03]) + struct.pack("<III", 10, 41, 3) +
+                    b"cdr" + b"\x00\x01\x00\x00"
+                )
+                await fake.send_binary(mismatched_response)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await client.recv(timeout=0.1)
+
+                response = (
+                    bytes([0x03]) + struct.pack("<III", 9, 41, 3) +
+                    b"cdr" + b"\x00\x01\x00\x00"
+                )
+                await fake.send_binary(response)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_BINARY, opcode)
+                self.assertEqual(response, payload)
+
+                # A completed call cannot be replayed by the upstream.
+                await fake.send_binary(response)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await client.recv(timeout=0.1)
+
+                failure_request = (
+                    bytes([0x02]) + struct.pack("<III", 9, 43, 3) +
+                    b"cdr" + b"\x00\x01\x00\x00"
+                )
+                await client.send(ws_frames.OP_BINARY, failure_request)
+                self.assertTrue(await fake.wait_for(
+                    lambda op, body: op == ws_frames.OP_BINARY
+                    and body == failure_request
+                ))
+                await fake.send_json({
+                    "op": "serviceCallFailure",
+                    "serviceId": 10,
+                    "callId": 43,
+                    "message": "wrong service",
+                })
+                with self.assertRaises(asyncio.TimeoutError):
+                    await client.recv(timeout=0.1)
+                failure = {
+                    "op": "serviceCallFailure",
+                    "serviceId": 9,
+                    "callId": 43,
+                    "message": "handler failed",
+                }
+                await fake.send_json(failure)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_TEXT, opcode)
+                self.assertEqual(failure, json.loads(payload))
+
+                # The exact failure consumes the pending ID, so a retry may
+                # safely reuse it instead of being rejected as a duplicate.
+                forwarded_before = sum(
+                    body == failure_request for _, body in fake.frames
+                )
+                await client.send(ws_frames.OP_BINARY, failure_request)
+                deadline = asyncio.get_event_loop().time() + 1.0
+                while asyncio.get_event_loop().time() < deadline:
+                    forwarded_after = sum(
+                        body == failure_request for _, body in fake.frames
+                    )
+                    if forwarded_after > forwarded_before:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertGreater(forwarded_after, forwarded_before)
+
+                await fake.send_json({
+                    "op": "unadvertiseServices",
+                    "serviceIds": [9],
+                })
+                opcode, _ = await client.recv()
+                self.assertEqual(ws_frames.OP_TEXT, opcode)
+                # Unadvertising the service invalidates its in-flight calls.
+                await fake.send_binary(
+                    bytes([0x03]) + struct.pack("<III", 9, 43, 3) +
+                    b"cdr" + b"\x00\x01\x00\x00"
+                )
+                with self.assertRaises(asyncio.TimeoutError):
+                    await client.recv(timeout=0.1)
+
+                denied = (
+                    bytes([0x02]) + struct.pack("<III", 10, 42, 3) +
+                    b"cdr" + b"\x00\x01\x00\x00"
+                )
+                await client.send(ws_frames.OP_BINARY, denied)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_BINARY, opcode)
+                error = cbor_lite.decode(payload)
+                self.assertIn("denied", error["error"])
+                self.assertFalse(any(
+                    op == ws_frames.OP_BINARY and body == denied
+                    for op, body in fake.frames
+                ))
+            finally:
+                if client is not None:
+                    await client.close()
+                server.close()
+                await server.wait_closed()
+                await fake.stop()
+
+        self._scenario(run)
+
+    def test_sdk_binary_publish_uses_client_advertised_channel_name(self):
+        async def run():
+            tmp = tempfile.mkdtemp()
+            fake = FakeFoxglove()
+            up_port = await fake.start()
+            gw = self._gateway(tmp, up_port)
+            token = gw.users.add_user("alice", "operator")
+            server = await gw.start()
+            client = None
+            try:
+                port = server.sockets[0].getsockname()[1]
+                client = await WsClient.connect("127.0.0.1", port)
+                await client.send_json(
+                    {"op": "login", "user": "alice", "token": token}
+                )
+                await self._wait_upstream(fake, 1)
+
+                advertise = {
+                    "op": "advertise",
+                    "channels": [{
+                        "id": 7,
+                        "topic": "/omni/control/teleop",
+                        "encoding": "cdr",
+                        "schemaName": "omni_robot_interfaces/msg/TeleopCommand",
+                    }],
+                }
+                await client.send_json(advertise)
+                self.assertTrue(await fake.wait_for(
+                    lambda op, payload: op == ws_frames.OP_TEXT
+                    and json.loads(payload) == advertise
+                ))
+
+                published = bytes([0x01]) + struct.pack("<I", 7) + b"cdr-payload"
+                await client.send(ws_frames.OP_BINARY, published)
+                self.assertTrue(await fake.wait_for(
+                    lambda op, payload: op == ws_frames.OP_BINARY
+                    and payload == published
+                ))
+
+                denied_advertise = {
+                    "op": "advertise",
+                    "channels": [{
+                        "id": 8,
+                        "topic": "/private/command",
+                        "encoding": "cdr",
+                        "schemaName": "example/msg/Command",
+                    }],
+                }
+                await client.send_json(denied_advertise)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_TEXT, opcode)
+                self.assertIn("denied", json.loads(payload)["error"])
+
+                unknown_publish = bytes([0x01]) + struct.pack("<I", 8) + b"payload"
+                await client.send(ws_frames.OP_BINARY, unknown_publish)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_BINARY, opcode)
+                self.assertIn("denied", cbor_lite.decode(payload)["error"])
+                self.assertFalse(any(
+                    op == ws_frames.OP_BINARY and body == unknown_publish
+                    for op, body in fake.frames
+                ))
+            finally:
+                if client is not None:
+                    await client.close()
+                server.close()
+                await server.wait_closed()
+                await fake.stop()
+
+        self._scenario(run)
+
+    def test_sdk_binary_message_data_requires_known_subscription_id(self):
+        async def run():
+            tmp = tempfile.mkdtemp()
+            fake = FakeFoxglove()
+            up_port = await fake.start()
+            gw = self._gateway(tmp, up_port)
+            token = gw.users.add_user("alice", "operator")
+            server = await gw.start()
+            client = None
+            try:
+                port = server.sockets[0].getsockname()[1]
+                client = await WsClient.connect("127.0.0.1", port)
+                await client.send_json(
+                    {"op": "login", "user": "alice", "token": token}
+                )
+                await self._wait_upstream(fake, 1)
+
+                advertise = {
+                    "op": "advertise",
+                    "channels": [{
+                        "id": 17,
+                        "topic": "/omni/robot_state",
+                        "encoding": "cdr",
+                        "schemaName": "omni_robot_interfaces/msg/RobotState",
+                    }],
+                }
+                await fake.send_json(advertise)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_TEXT, opcode)
+                self.assertEqual(advertise, json.loads(payload))
+
+                subscribe = {
+                    "op": "subscribe",
+                    "subscriptions": [{"id": 23, "channelId": 17}],
+                }
+                await client.send_json(subscribe)
+                self.assertTrue(await fake.wait_for(
+                    lambda op, body: op == ws_frames.OP_TEXT
+                    and json.loads(body) == subscribe
+                ))
+
+                unknown = (
+                    bytes([0x01]) + struct.pack("<I", 24) +
+                    struct.pack("<Q", 123) + b"unknown"
+                )
+                await fake.send_binary(unknown)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await client.recv(timeout=0.1)
+
+                message = (
+                    bytes([0x01]) + struct.pack("<I", 23) +
+                    struct.pack("<Q", 124) + b"cdr-message"
+                )
+                await fake.send_binary(message)
+                opcode, payload = await client.recv()
+                self.assertEqual(ws_frames.OP_BINARY, opcode)
+                self.assertEqual(message, payload)
+
+                await fake.send_json({"op": "unadvertise", "channelIds": [17]})
+                opcode, _ = await client.recv()
+                self.assertEqual(ws_frames.OP_TEXT, opcode)
+                await fake.send_binary(message)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await client.recv(timeout=0.1)
+            finally:
+                if client is not None:
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -626,7 +941,7 @@ class GatewayE2E(unittest.TestCase):
                                     f"{fake.frames}")
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
                 await fake.stop()
@@ -659,7 +974,7 @@ class GatewayE2E(unittest.TestCase):
                 self.assertEqual(1011, close_status(payload))
             finally:
                 if client is not None:
-                    client.writer.close()
+                    await client.close()
                 server.close()
                 await server.wait_closed()
 

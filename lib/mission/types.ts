@@ -92,6 +92,9 @@ export interface MissionStatusMessage {
   progress: number;
   reason_code: number;
   reason_text: string;
+  request_source: string;
+  map_checksum: string;
+  route_checksum: string;
 }
 
 // /omni/mission/events (reliable)
@@ -122,6 +125,11 @@ export interface RouteEntry {
   mapId: string;
   frameId: string;
   createdAt: string;
+  mapVersion: string;
+  mapChecksum: string;
+  routeChecksum: string;
+  pointCount: number;
+  distanceM: number;
 }
 
 // /omni/mission/dispatch response

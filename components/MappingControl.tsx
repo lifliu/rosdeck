@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { theme } from '../constants/theme';
 import {
@@ -15,8 +15,6 @@ import {
 import { useTranslation } from '../lib/i18n';
 import { ACTIVE_MISSION_STATES, MISSION_STATE } from '../lib/mission/types';
 import { useAutonomyRuntimeStore } from '../stores/useAutonomyRuntimeStore';
-import { useLayoutStore } from '../stores/useLayoutStore';
-import { useMappingStore } from '../stores/useMappingStore';
 import { useMissionStore } from '../stores/useMissionStore';
 import { useRosStore } from '../stores/useRosStore';
 
@@ -48,19 +46,6 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
   const mappingStopping = mappingActive && phase === AUTONOMY_PHASE.STOPPING;
   const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
 
-  useEffect(() => {
-    const mappingStore = useMappingStore.getState();
-    // 点云布局跟随运行时的实际模式，而不是跟随一次可能被拒绝的按钮点击。
-    if (mappingActive && !mappingStopping) {
-      if (!mappingStore.active) mappingStore.startSession();
-      if (useLayoutStore.getState().layouts.some((layout) => layout.id === 'mapping-3d')) {
-        useLayoutStore.getState().setActiveLayout('mapping-3d');
-      }
-    } else if (mappingStore.active) {
-      mappingStore.stopSession();
-    }
-  }, [mappingActive, mappingStopping]);
-
   const reportRejected = useCallback((title: string, reason: string) => {
     Alert.alert(title, t('mapping.error', { message: reason || 'unknown' }));
   }, [t]);
@@ -75,8 +60,9 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
     try {
       const response = await setAutonomyMode(transport, {
         desiredMode: AUTONOMY_MODE.MAPPING,
-        mapId,
         // 每次开始建图都创建独立会话，防止上一次未完成会话污染新地图。
+        // mapId 仅在 FinishMapping(SAVE) 时提交；开始建图时携带 map_id 会被
+        // Mission 按合同拒绝，因为此时地图资产尚未生成、也没有可校验的身份。
         mappingSessionId: generateAutonomyRequestId('mapping-session'),
       });
       useAutonomyRuntimeStore.getState().completeCommand(response);
@@ -93,11 +79,9 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
   }, [reportRejected, t, transport]);
 
   const requestFinishMapping = useCallback(async (disposition: MappingDisposition) => {
-    const targetMapId = mappingTargetId || runtime?.map_id || '';
-    if (disposition === MAPPING_DISPOSITION.SAVE && !targetMapId) {
-      reportRejected(t('mapping.stopFailedTitle'), t('mapping.mapIdMissing'));
-      return;
-    }
+    // 地图名称是在 SAVE 时才冻结的资产属性。APP/WebSocket 中途重连会清掉
+    // 本地候选名，此时生成新名称即可继续保存，不能把一个健康建图会话卡死。
+    const targetMapId = mappingTargetId || runtime?.map_id || generateMappingMapId();
     if (!transport || !useAutonomyRuntimeStore.getState().beginCommand({
       kind: 'finish_mapping',
     })) return;

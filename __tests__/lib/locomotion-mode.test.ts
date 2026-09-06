@@ -61,28 +61,14 @@ describe('VBot locomotion mode gate', () => {
     });
   });
 
-  it('falls back to the direct service on robots without the bridge', async () => {
+  it('fails closed instead of bypassing the bridge on unsupported robots', async () => {
     const transport = makeTransport('success:loco');
     (transport.getTopics as jest.Mock).mockResolvedValue([]);
-    (transport.callService as jest.Mock).mockResolvedValue({
-      success: true,
-      message: 'ok',
-      error_code: 0,
-    });
 
-    await expect(ensureLocoMode(transport)).resolves.toBeUndefined();
-    expect(transport.publish).not.toHaveBeenCalled();
-    expect(transport.callService).toHaveBeenCalledWith(
-      '/locomotion/set_run_mode',
-      'function_msgs/srv/SetRunMode',
-      {
-        target_state: 1,
-        mode: 2,
-        req_id: 'rosdeck',
-        pre_check: false,
-        has_is_traction_user_param: false,
-        is_traction_user_param: false,
-      },
+    await expect(ensureLocoMode(transport)).rejects.toThrow(
+      'Robot Bridge locomotion control is unavailable',
     );
+    expect(transport.publish).not.toHaveBeenCalled();
+    expect(transport.callService).not.toHaveBeenCalled();
   });
 });

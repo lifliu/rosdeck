@@ -1,11 +1,13 @@
-import { Canvas, Points, vec } from '@shopify/react-native-skia';
+import { Canvas, Circle, Path, Points, Skia, vec } from '@shopify/react-native-skia';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from '../../lib/haptics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { WidgetEmptyState } from '../../components/WidgetEmptyState';
 import { theme } from '../../constants/theme';
+import { OMNI_BASE_FRAME, OMNI_MAP_FRAME } from '../../lib/frames';
 import { useTranslation } from '../../lib/i18n';
 import { useMappingStore } from '../../stores/useMappingStore';
 import { useRosStore } from '../../stores/useRosStore';
@@ -15,6 +17,7 @@ import {
   parsePointCloud2,
   projectPointCloud,
   TfPositionTracker,
+  unprojectPointCloudGround,
   type Point3D,
   type PointCloudPoint,
 } from './transforms';
@@ -28,6 +31,21 @@ interface CameraState {
   yaw: number;
   pitch: number;
   zoom: number;
+}
+
+export interface PointCloudGoalSelection {
+  x: number;
+  y: number;
+  frameId: string;
+}
+
+export interface PointCloud3DWidgetRuntimeProps extends Partial<WidgetProps> {
+  /** 只有 Mission 已确认 SINGLE_POINT_READY 时才允许进入选点状态。 */
+  goalSelectionEnabled?: boolean;
+  onGoalSelected?: (goal: PointCloudGoalSelection) => void;
+  goalMarker?: PointCloudGoalSelection | null;
+  /** Changes whenever the authoritative map asset or Manager session changes. */
+  assetIdentityKey?: string;
 }
 
 function projectByHeight(
@@ -62,14 +80,14 @@ function projectByHeight(
   return bins;
 }
 
-export function PointCloud3DWidget(props: Partial<WidgetProps>) {
+export function PointCloud3DWidget(props: PointCloud3DWidgetRuntimeProps) {
   const transport = useRosStore((state) => state.transport);
   const connectionStatus = useRosStore((state) => state.connection.status);
   const mappingActive = useMappingStore((state) => state.active);
   const sessionId = useMappingStore((state) => state.sessionId);
-  const topic = props?.config?.topic || '/cloud_registered';
-  const mapFrame = String(props?.config?.mapFrame || 'map_frame').replace(/^\//, '');
-  const robotFrame = String(props?.config?.robotFrame || 'lidar_frame').replace(/^\//, '');
+  const topic = props?.config?.topic || '/cloud_registered_global';
+  const mapFrame = String(props?.config?.mapFrame || OMNI_MAP_FRAME).replace(/^\//, '');
+  const robotFrame = String(props?.config?.robotFrame || OMNI_BASE_FRAME).replace(/^\//, '');
   const odomTopic = props?.config?.odomTopic || '/Odometry';
   const viewMeters = Math.max(2, Number(props?.config?.viewMeters || DEFAULT_VIEW_METERS));
   const width = Math.max(1, props?.width || 300);
@@ -84,7 +102,12 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
   const frameCountRef = useRef(0);
   const [renderPoints, setRenderPoints] = useState<PointCloudPoint[]>([]);
   const [robotPosition, setRobotPosition] = useState<Point3D>({ x: 0, y: 0, z: 0 });
-  const [stats, setStats] = useState({ frames: 0, points: 0, voxel: 0.12, frameId: 'map_frame' });
+  const [stats, setStats] = useState({
+    frames: 0,
+    points: 0,
+    voxel: 0.12,
+    frameId: OMNI_MAP_FRAME,
+  });
   const [camera, setCamera] = useState<CameraState>({ yaw: -0.7, pitch: 0.75, zoom: 1 });
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
@@ -98,17 +121,35 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
     tfTrackerRef.current.clear();
     robotPositionRef.current = { x: 0, y: 0, z: 0 };
     hasTfPositionRef.current = false;
+    lastRenderRef.current = 0;
     setRobotPosition({ x: 0, y: 0, z: 0 });
-    setStats({ frames: 0, points: 0, voxel: 0.12, frameId: 'map_frame' });
-  }, []);
+    setStats({ frames: 0, points: 0, voxel: 0.12, frameId: mapFrame });
+  }, [mapFrame]);
 
-  useEffect(() => clearPreview(), [sessionId, clearPreview]);
+  useEffect(
+    () => clearPreview(),
+    [
+      sessionId,
+      props.assetIdentityKey,
+      connectionStatus,
+      transport,
+      topic,
+      mapFrame,
+      clearPreview,
+    ],
+  );
 
   useEffect(() => {
-    if (!mappingActive || connectionStatus !== 'connected' || !transport) return;
+    if (connectionStatus !== 'connected' || !transport) return;
     const subscription = transport.subscribe(topic, 'sensor_msgs/msg/PointCloud2', (message) => {
-      const incoming = parsePointCloud2(message);
-      if (incoming.length === 0) return;
+      const frameId = String(message?.header?.frame_id || '').replace(/^\//, '');
+      if (!frameId) return;
+      const decoded = parsePointCloud2(message);
+      if (decoded.length === 0) return;
+      // 建图时 FAST-LIO 的全局点云属于 omni_odom；由 omni_tf_manager 的
+      // map->odom 真值转换后再累计，禁止仅改 frame_id 或混合坐标系。
+      const incoming = tfTrackerRef.current.transformPointCloud(decoded, frameId, mapFrame);
+      if (!incoming) return;
       const accumulator = accumulatorRef.current;
       accumulator.add(incoming);
       frameCountRef.current += 1;
@@ -121,7 +162,7 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
         frames: frameCountRef.current,
         points: accumulator.pointCount,
         voxel: accumulator.voxelSize,
-        frameId: String(message?.header?.frame_id || 'map_frame'),
+        frameId: mapFrame,
       });
     }, 150);
 
@@ -130,10 +171,10 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
       const accumulator = accumulatorRef.current;
       setRenderPoints(accumulator.snapshot(MAX_RENDER_POINTS));
     };
-  }, [mappingActive, connectionStatus, transport, topic]);
+  }, [connectionStatus, transport, topic, mapFrame]);
 
   useEffect(() => {
-    if (!mappingActive || connectionStatus !== 'connected' || !transport) return;
+    if (connectionStatus !== 'connected' || !transport) return;
     hasTfPositionRef.current = false;
     const cachedPosition = tfTrackerRef.current.lookupPosition(mapFrame, robotFrame);
     if (cachedPosition) {
@@ -175,7 +216,7 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
       odomSub.unsubscribe();
       hasTfPositionRef.current = false;
     };
-  }, [mappingActive, connectionStatus, transport, mapFrame, robotFrame, odomTopic]);
+  }, [connectionStatus, transport, mapFrame, robotFrame, odomTopic]);
 
   const beginOrbit = useCallback(() => {
     orbitStartRef.current = cameraRef.current;
@@ -198,7 +239,7 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
     }));
   }, []);
 
-  const gesture = useMemo(() => Gesture.Simultaneous(
+  const orbitGesture = useMemo(() => Gesture.Simultaneous(
     Gesture.Pan()
       .onStart(() => runOnJS(beginOrbit)())
       .onUpdate((event) => runOnJS(updateOrbit)(event.translationX, event.translationY)),
@@ -207,17 +248,81 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
       .onUpdate((event) => runOnJS(updateZoom)(event.scale)),
   ), [beginOrbit, updateOrbit, beginZoom, updateZoom]);
 
+  const selectionFrameReady = mapFrame === OMNI_MAP_FRAME &&
+    stats.frameId.replace(/^\//, '') === OMNI_MAP_FRAME && renderPoints.length > 0;
+  const selectionEnabled = props.goalSelectionEnabled === true &&
+    typeof props.onGoalSelected === 'function' && selectionFrameReady;
+
+  const selectGroundPoint = useCallback((canvasX: number, canvasY: number) => {
+    if (!selectionEnabled || !props.onGoalSelected) return;
+    const selected = unprojectPointCloudGround(
+      canvasX,
+      canvasY,
+      width,
+      height,
+      { ...cameraRef.current, target: robotPositionRef.current, viewMeters },
+      0,
+    );
+    if (!selected) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    // 只有点云已被证明处于 canonical map frame 时才开放该回调，禁止把
+    // 其他 frame 的坐标简单改标签后作为导航目标发送。
+    props.onGoalSelected({
+      x: selected.x,
+      y: selected.y,
+      frameId: OMNI_MAP_FRAME,
+    });
+  }, [height, props.onGoalSelected, selectionEnabled, viewMeters, width]);
+
+  const selectionGesture = useMemo(
+    () => Gesture.LongPress()
+      .minDuration(500)
+      .onEnd((event, success) => {
+        if (success) runOnJS(selectGroundPoint)(event.x, event.y);
+      }),
+    [selectGroundPoint],
+  );
+  const gesture = useMemo(
+    () => selectionEnabled
+      ? Gesture.Race(selectionGesture, orbitGesture)
+      : orbitGesture,
+    [orbitGesture, selectionEnabled, selectionGesture],
+  );
+
   const heightBins = useMemo(
     () => projectByHeight(renderPoints, width, height, camera, robotPosition, viewMeters),
     [renderPoints, width, height, camera, robotPosition, viewMeters],
   );
+
+  const projectedGoal = useMemo(() => {
+    const marker = props.goalMarker;
+    if (!marker || marker.frameId.replace(/^\//, '') !== OMNI_MAP_FRAME) return null;
+    return projectPointCloud(
+      [{ x: marker.x, y: marker.y, z: 0, intensity: 0 }],
+      width,
+      height,
+      { ...camera, target: robotPosition, viewMeters },
+    )[0] ?? null;
+  }, [camera, height, props.goalMarker, robotPosition, viewMeters, width]);
+
+  const goalCross = useMemo(() => {
+    if (!projectedGoal) return null;
+    const path = Skia.Path.Make();
+    path.moveTo(projectedGoal.x - 8, projectedGoal.y - 8);
+    path.lineTo(projectedGoal.x + 8, projectedGoal.y + 8);
+    path.moveTo(projectedGoal.x + 8, projectedGoal.y - 8);
+    path.lineTo(projectedGoal.x - 8, projectedGoal.y + 8);
+    return path;
+  }, [projectedGoal]);
 
   if (!mappingActive && renderPoints.length === 0) {
     return (
       <WidgetEmptyState
         widgetType="pointcloud3d"
         topicName={topic}
-        hint={t('pointCloud.waiting')}
+        hint={props.goalSelectionEnabled
+          ? t('pointCloud.navigationWaiting')
+          : t('pointCloud.waiting')}
       />
     );
   }
@@ -236,6 +341,24 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
                 strokeWidth={1.6}
               />
             ))}
+            {projectedGoal && (
+              <Circle
+                cx={projectedGoal.x}
+                cy={projectedGoal.y}
+                r={12}
+                color={theme.colors.statusError}
+                style="stroke"
+                strokeWidth={2}
+              />
+            )}
+            {goalCross && (
+              <Path
+                path={goalCross}
+                color={theme.colors.statusError}
+                style="stroke"
+                strokeWidth={2}
+              />
+            )}
           </Canvas>
         </View>
       </GestureDetector>
@@ -246,6 +369,9 @@ export function PointCloud3DWidget(props: Partial<WidgetProps>) {
         </Text>
         <Text style={styles.statsText}>{stats.points.toLocaleString()} pts</Text>
         <Text style={styles.statsText}>{stats.voxel.toFixed(2)} m · {stats.frameId}</Text>
+        {props.goalSelectionEnabled && !selectionFrameReady ? (
+          <Text style={styles.frameWarning}>等待 {OMNI_MAP_FRAME} 点云后开放选点</Text>
+        ) : null}
       </View>
 
       <View style={styles.controls}>
@@ -301,6 +427,12 @@ const styles = StyleSheet.create({
     fontFamily: 'SpaceMono',
     fontSize: 9,
     marginTop: 2,
+  },
+  frameWarning: {
+    maxWidth: 190,
+    color: theme.colors.statusConnecting,
+    fontSize: 9,
+    marginTop: 3,
   },
   controls: {
     position: 'absolute',

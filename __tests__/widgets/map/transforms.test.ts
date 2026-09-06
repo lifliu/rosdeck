@@ -4,6 +4,8 @@ import {
   worldToGrid,
   worldToCanvas,
   canvasToWorld,
+  robotCentricCanvasToWorld,
+  robotCentricWorldToCanvas,
 } from '../../../widgets/map/transforms';
 
 describe('occupancyToRgba', () => {
@@ -91,5 +93,28 @@ describe('worldToCanvas / canvasToWorld', () => {
     const [rx, ry] = canvasToWorld(cx, cy, mapInfo, canvasWidth, canvasHeight, fitScale, z, px, py);
     expect(rx).toBeCloseTo(wx);
     expect(ry).toBeCloseTo(wy);
+  });
+});
+
+describe('robot-centric canvas conversion without OccupancyGrid', () => {
+  it('keeps the robot at canvas centre while follow mode is active', () => {
+    const centre = { x: 12.5, y: -3.25 };
+    expect(robotCentricCanvasToWorld(200, 100, 400, 200, 10, centre))
+      .toEqual([12.5, -3.25]);
+  });
+
+  it('roundtrips a world target with zoom and free-view pan', () => {
+    const world: [number, number] = [4.25, -1.75];
+    const viewport = [640, 360, 27, { x: 0, y: 0 }, 48, -31] as const;
+    const canvas = robotCentricWorldToCanvas(world[0], world[1], ...viewport);
+    const restored = robotCentricCanvasToWorld(canvas[0], canvas[1], ...viewport);
+    expect(restored[0]).toBeCloseTo(world[0]);
+    expect(restored[1]).toBeCloseTo(world[1]);
+  });
+
+  it('fails closed for a zero metre scale', () => {
+    expect(() => robotCentricCanvasToWorld(
+      10, 10, 100, 100, 0, { x: 0, y: 0 },
+    )).toThrow('finite positive dimensions');
   });
 });

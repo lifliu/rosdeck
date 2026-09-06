@@ -27,6 +27,46 @@ export interface ProjectedPoint {
 }
 
 /**
+ * 将正交点云视图上的触点反投影到给定高度的水平面。
+ *
+ * PointCloud3D 使用固定米制正交投影，因此无需猜测点云包围盒；只要视角
+ * 未与地面平行，屏幕点与 `z=groundZ` 平面就有唯一交点。返回坐标与
+ * `camera.target` 同属一个地图坐标系。
+ */
+export function unprojectPointCloudGround(
+  canvasX: number,
+  canvasY: number,
+  width: number,
+  height: number,
+  camera: ProjectionCamera,
+  groundZ = 0,
+): Point3D | null {
+  if (![canvasX, canvasY, width, height, camera.yaw, camera.pitch,
+    camera.zoom, camera.target.x, camera.target.y, camera.target.z,
+    camera.viewMeters, groundZ].every(Number.isFinite) ||
+      width <= 0 || height <= 0 || camera.zoom <= 0 || camera.viewMeters <= 0) {
+    return null;
+  }
+
+  const cosPitch = Math.cos(camera.pitch);
+  if (Math.abs(cosPitch) < 1e-6) return null;
+  const pixelsPerMeter =
+    (Math.min(width, height) / Math.max(1, camera.viewMeters)) * camera.zoom;
+  const rotatedX = (canvasX - width / 2) / pixelsPerMeter;
+  const projectedY = -(canvasY - height / 2) / pixelsPerMeter;
+  const dz = groundZ - camera.target.z;
+  const rotatedY = (projectedY + Math.sin(camera.pitch) * dz) / cosPitch;
+  const cosYaw = Math.cos(camera.yaw);
+  const sinYaw = Math.sin(camera.yaw);
+
+  return {
+    x: camera.target.x + cosYaw * rotatedX + sinYaw * rotatedY,
+    y: camera.target.y - sinYaw * rotatedX + cosYaw * rotatedY,
+    z: groundZ,
+  };
+}
+
+/**
  * Orthographic world-metre projection around a fixed target. The scale never
  * depends on point-cloud bounds, so receiving a larger scan cannot zoom the
  * viewport in or out.
@@ -150,7 +190,11 @@ export class TfPositionTracker {
     }
   }
 
-  lookupPosition(fromFrame: string, toFrame: string): Point3D | null {
+  /**
+   * 查询 `fromFrame_T_toFrame`，即把 toFrame 原点/坐标表达在 fromFrame 中。
+   * 该方向与 ROS TF 的 target/source 查询语义保持一致。
+   */
+  private lookupTransform(fromFrame: string, toFrame: string): RigidTransform | null {
     const from = fromFrame.replace(/^\//, '');
     const to = toFrame.replace(/^\//, '');
     if (!from || !to) return null;
@@ -160,7 +204,7 @@ export class TfPositionTracker {
     const visited = new Set([from]);
     while (queue.length > 0) {
       const current = queue.shift()!;
-      if (current.frame === to) return current.transform.translation;
+      if (current.frame === to) return current.transform;
       for (const [next, edge] of this.edges.get(current.frame) ?? []) {
         if (visited.has(next)) continue;
         visited.add(next);
@@ -168,6 +212,42 @@ export class TfPositionTracker {
       }
     }
     return null;
+  }
+
+  lookupPosition(fromFrame: string, toFrame: string): Point3D | null {
+    return this.lookupTransform(fromFrame, toFrame)?.translation ?? null;
+  }
+
+  /**
+   * 把一帧点云从 sourceFrame 转换到 targetFrame。
+   *
+   * FAST-LIO 建图输出的 `/cloud_registered_global` 使用 `omni_odom`，而
+   * APP 的规范显示坐标系是 `omni_map`。不能仅凭话题名改写 frame_id；必须
+   * 使用 omni_tf_manager 发布的真实 TF。TF 尚未就绪时返回 null，调用方
+   * 保留已有预览并等待下一帧，避免混入不同坐标系的数据。
+   */
+  transformPointCloud(
+    points: PointCloudPoint[],
+    sourceFrame: string,
+    targetFrame: string,
+  ): PointCloudPoint[] | null {
+    const source = sourceFrame.replace(/^\//, '');
+    const target = targetFrame.replace(/^\//, '');
+    if (!source || !target) return null;
+    if (source === target) return points;
+
+    // lookupTransform(target, source) 返回 target_T_source。
+    const transform = this.lookupTransform(target, source);
+    if (!transform) return null;
+    return points.map((point) => {
+      const rotated = rotate(point, transform.rotation);
+      return {
+        x: rotated.x + transform.translation.x,
+        y: rotated.y + transform.translation.y,
+        z: rotated.z + transform.translation.z,
+        intensity: point.intensity,
+      };
+    });
   }
 
   private setEdge(from: string, to: string, transform: RigidTransform): void {
@@ -190,10 +270,19 @@ function asBytes(data: unknown): Uint8Array | null {
     return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   }
   if (Array.isArray(data)) return Uint8Array.from(data);
+  if (typeof data === 'string') {
+    try {
+      // rosbridge 按 JSON 协议把 uint8[] 编码为 base64；Foxglove/CDR 则
+      // 直接给 Uint8Array。两条产品连接链路必须得到完全相同的解析结果。
+      return Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
+    } catch {
+      return null;
+    }
+  }
   return null;
 }
 
-/** Parse the FLOAT32 x/y/z/intensity fields used by VBot FAST-LIO PointCloud2. */
+/** 解析 FAST-LIO PointCloud2 中的 FLOAT32 x/y/z/intensity 字段。 */
 export function parsePointCloud2(message: any): PointCloudPoint[] {
   const bytes = asBytes(message?.data);
   const pointStep = Number(message?.point_step ?? 0);

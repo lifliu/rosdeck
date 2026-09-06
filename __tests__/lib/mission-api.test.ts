@@ -14,6 +14,9 @@ import {
 } from '../../lib/mission/api';
 import { MISSION_CONTROL_CMD } from '../../lib/mission/types';
 import type { Transport } from '../../lib/transport';
+import { getLocalServiceSchema } from '../../lib/ros-service-schemas';
+import { parse as parseMessageDefinition } from '@foxglove/rosmsg';
+import { MessageWriter } from '@foxglove/rosmsg2-serialization';
 
 interface Call {
   service: string;
@@ -63,6 +66,14 @@ describe('dispatchMission', () => {
     const res = await dispatchMission(transport, {
       routeId: 'route-a',
       requestId: 'app-xyz-01',
+      sequence: 7,
+      source: 'test-app',
+      requestedAt: { sec: 100, nanosec: 0 },
+      deadline: { sec: 130, nanosec: 0 },
+      mapId: 'map-a',
+      mapVersion: '2',
+      mapChecksum: 'map-sha',
+      routeChecksum: 'route-sha',
     });
     expect(calls).toHaveLength(1);
     expect(calls[0].service).toBe(MISSION_DISPATCH_SERVICE);
@@ -70,11 +81,16 @@ describe('dispatchMission', () => {
     expect(calls[0].request).toEqual({
       mission_id: '',
       request_id: 'app-xyz-01',
-      sequence: 1,
-      map_id: '',
-      map_version: '',
+      sequence: 7,
+      map_id: 'map-a',
+      map_version: '2',
       route_id: 'route-a',
       checkpoint_ids: [],
+      source: 'test-app',
+      requested_at: { sec: 100, nanosec: 0 },
+      deadline: { sec: 130, nanosec: 0 },
+      map_checksum: 'map-sha',
+      route_checksum: 'route-sha',
     });
     expect(res).toEqual({
       accepted: true,
@@ -82,6 +98,9 @@ describe('dispatchMission', () => {
       reason_text: '',
       mission_id: 'm20260817-001',
     });
+    const schema = getLocalServiceSchema(MISSION_DISPATCH_SERVICE_TYPE, 'request');
+    const writer = new MessageWriter(parseMessageDefinition(schema!, { ros2: true }));
+    expect(() => writer.writeMessage(calls[0].request)).not.toThrow();
   });
 
   it('honors explicit sequence / map overrides', async () => {
@@ -103,6 +122,17 @@ describe('dispatchMission', () => {
       map_id: 'map-1',
       map_version: 'v3',
     });
+  });
+
+  it('uses an execution-sized default deadline instead of a network timeout', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(100_000);
+    const { transport, calls } = makeTransport(() => ({ accepted: false }));
+    await dispatchMission(transport, { routeId: 'r', requestId: 'req-default' });
+    expect(calls[0].request).toMatchObject({
+      requested_at: { sec: 100, nanosec: 0 },
+      deadline: { sec: 1900, nanosec: 0 },
+    });
+    jest.restoreAllMocks();
   });
 
   it('falls back to camelCase fields when a bridge re-cases the response', async () => {
@@ -169,12 +199,26 @@ describe('listRoutes', () => {
       map_ids: ['m1', 'm2'],
       frame_ids: ['base_link', ''],
       created_at: ['2026-01-01T00:00:00Z', ''],
+      map_versions: ['3', '4'],
+      map_checksums: ['map-sha-1', 'map-sha-2'],
+      route_checksums: ['route-sha-1', 'route-sha-2'],
+      point_counts: new Uint32Array([12, 4]),
+      distances_m: new Float32Array([8.5, 2.25]),
     }));
     const routes = await listRoutes(transport);
     expect(calls[0].service).toBe(MISSION_LIST_ROUTES_SERVICE);
     expect(routes).toEqual([
-      { routeId: 'a', mapId: 'm1', frameId: 'base_link', createdAt: '2026-01-01T00:00:00Z' },
-      { routeId: 'b', mapId: 'm2', frameId: '', createdAt: '' },
+      {
+        routeId: 'a', mapId: 'm1', frameId: 'base_link',
+        createdAt: '2026-01-01T00:00:00Z', mapVersion: '3',
+        mapChecksum: 'map-sha-1', routeChecksum: 'route-sha-1',
+        pointCount: 12, distanceM: 8.5,
+      },
+      {
+        routeId: 'b', mapId: 'm2', frameId: '', createdAt: '', mapVersion: '4',
+        mapChecksum: 'map-sha-2', routeChecksum: 'route-sha-2',
+        pointCount: 4, distanceM: 2.25,
+      },
     ]);
   });
 

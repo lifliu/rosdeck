@@ -4,10 +4,10 @@ import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { theme } from '../constants/theme';
 import {
   CONTROL_CLIENT_ID,
-  CONTROL_MESSAGE_TYPE,
-  CONTROL_STATUS_TOPIC,
-  parseControlStatus,
-  publishControlAction,
+  CONTROL_AUTHORITY_STATUS_TOPIC,
+  CONTROL_AUTHORITY_STATUS_TYPE,
+  parseTypedControlStatus,
+  requestControlAuthority,
 } from '../lib/control-authority';
 import { useTranslation } from '../lib/i18n';
 import { useControlAuthorityStore } from '../stores/useControlAuthorityStore';
@@ -15,7 +15,6 @@ import { useRosStore } from '../stores/useRosStore';
 import { useCmdVelStore } from '../stores/useCmdVelStore';
 
 const DETECTION_TIMEOUT_MS = 4000;
-const DETECTION_RETRY_MS = 500;
 const HEARTBEAT_PERIOD_MS = 1000;
 
 /** Mounted at the app root so the lease survives tab changes. */
@@ -37,47 +36,22 @@ export function ControlAuthoritySession() {
 
     useControlAuthorityStore.getState().reset('detecting');
     const subscription = transport.subscribe(
-      CONTROL_STATUS_TOPIC,
-      CONTROL_MESSAGE_TYPE,
+      CONTROL_AUTHORITY_STATUS_TOPIC,
+      CONTROL_AUTHORITY_STATUS_TYPE,
       (message) => {
-        const parsed = parseControlStatus(message);
+        const parsed = parseTypedControlStatus(message);
         if (!parsed) return;
-        if (parsed.state === 'error' && parsed.clientId !== CONTROL_CLIENT_ID) return;
         useControlAuthorityStore.getState().applyStatus(parsed);
-        if (parsed.state === 'error') {
-          setTimeout(() => {
-            if (transport.getStatus() === 'connected') {
-              publishControlAction(transport, 'status');
-            }
-          }, 1500);
-        }
       },
     );
-    const requestStatus = () => {
-      try {
-        publishControlAction(transport, 'status');
-      } catch {
-        // The connection-status handler will reset detection if the socket
-        // closes while a retry is being sent.
-      }
-    };
-    const detectionRetry = setInterval(() => {
-      if (useControlAuthorityStore.getState().status === 'detecting') {
-        requestStatus();
-      } else {
-        clearInterval(detectionRetry);
-      }
-    }, DETECTION_RETRY_MS);
     const detectionTimeout = setTimeout(() => {
       if (useControlAuthorityStore.getState().status === 'detecting') {
-        // Legacy/VBot bridges do not expose the ownership protocol.
+        // 旧 Bridge/VBot 不发布 typed authority；统一 teleop 对此状态保持失败关闭。
         useControlAuthorityStore.getState().reset('unsupported');
       }
     }, DETECTION_TIMEOUT_MS);
 
-    requestStatus();
     return () => {
-      clearInterval(detectionRetry);
       clearTimeout(detectionTimeout);
       subscription.unsubscribe();
     };
@@ -98,13 +72,29 @@ export function ControlAuthoritySession() {
       (authorityStatus !== 'acquired' && authorityStatus !== 'override_acquired') ||
       ownerId !== CONTROL_CLIENT_ID) return;
 
-    publishControlAction(transport, 'heartbeat');
-    const heartbeat = setInterval(() => {
+    let renewInFlight = false;
+    const renew = async () => {
+      if (renewInFlight) return;
+      renewInFlight = true;
       try {
-        publishControlAction(transport, 'heartbeat');
+        const response = await requestControlAuthority(transport, 'renew', 'app_lease_heartbeat');
+        if (!response.accepted) {
+          useControlAuthorityStore.getState().applyStatus({
+            state: 'error',
+            action: 'renew',
+            clientId: CONTROL_CLIENT_ID,
+            reason: response.reasonText || `reason_${response.reasonCode}`,
+          });
+        }
       } catch {
-        // The Bridge expires the lease when the transport has already failed.
+        // 连接状态或 Bridge 租约超时会把控制权收回；单次心跳异常不弹窗刷屏。
+      } finally {
+        renewInFlight = false;
       }
+    };
+    void renew();
+    const heartbeat = setInterval(() => {
+      void renew();
     }, HEARTBEAT_PERIOD_MS);
     return () => clearInterval(heartbeat);
   }, [authorityStatus, connectionStatus, ownerId, transport]);
@@ -133,11 +123,19 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
     Alert.alert(t('authority.failedTitle'), t('authority.error', { message: error }));
   }, [error, status, t]);
 
-  const acquire = useCallback(() => {
+  const acquire = useCallback(async () => {
     if (!transport || connectionStatus !== 'connected') return;
     useControlAuthorityStore.getState().beginAcquire();
     try {
-      publishControlAction(transport, 'acquire');
+      const response = await requestControlAuthority(transport, 'acquire', 'app_user_acquire');
+      if (!response.accepted) {
+        useControlAuthorityStore.getState().applyStatus({
+          state: 'error',
+          action: 'acquire',
+          clientId: CONTROL_CLIENT_ID,
+          reason: response.reasonText || `reason_${response.reasonCode}`,
+        });
+      }
     } catch (requestError: any) {
       useControlAuthorityStore.getState().applyStatus({
         state: 'error',
@@ -148,11 +146,19 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
     }
   }, [connectionStatus, transport]);
 
-  const release = useCallback(() => {
+  const release = useCallback(async () => {
     if (!transport || connectionStatus !== 'connected') return;
     useControlAuthorityStore.getState().beginRelease();
     try {
-      publishControlAction(transport, 'release');
+      const response = await requestControlAuthority(transport, 'release', 'app_user_release');
+      if (!response.accepted) {
+        useControlAuthorityStore.getState().applyStatus({
+          state: 'error',
+          action: 'release',
+          clientId: CONTROL_CLIENT_ID,
+          reason: response.reasonText || `reason_${response.reasonCode}`,
+        });
+      }
     } catch (requestError: any) {
       useControlAuthorityStore.getState().applyStatus({
         state: 'error',

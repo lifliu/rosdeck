@@ -7,7 +7,10 @@ import {
   type AutonomyRuntimeStatus,
 } from '../lib/autonomy-runtime';
 
-export type AutonomyRuntimeCommand = 'set_mode' | 'finish_mapping';
+export type AutonomyRuntimeCommand =
+  | 'set_mode'
+  | 'finish_mapping'
+  | 'finish_route_recording';
 
 export interface PendingAutonomyCommand {
   kind: AutonomyRuntimeCommand;
@@ -21,6 +24,7 @@ interface AutonomyRuntimeStore {
   stale: boolean;
   pendingCommand: PendingAutonomyCommand | null;
   mappingTargetId: string;
+  routeRecordingOperationId: string;
   lastOperationId: string;
   lastError: string | null;
 
@@ -53,6 +57,7 @@ export const useAutonomyRuntimeStore = create<AutonomyRuntimeStore>((set, get) =
   stale: true,
   pendingCommand: null,
   mappingTargetId: '',
+  routeRecordingOperationId: '',
   lastOperationId: '',
   lastError: null,
 
@@ -79,7 +84,25 @@ export const useAutonomyRuntimeStore = create<AutonomyRuntimeStore>((set, get) =
           status.phase === AUTONOMY_PHASE.IDLE || status.phase === AUTONOMY_PHASE.READY
         ))
       );
-      const commandFinished = setModeFinished || finishMappingFinished;
+      const finishRouteRecordingFinished = pending?.kind === 'finish_route_recording' &&
+        operationMatches && (
+          runtimeFailed ||
+          (status.mode !== AUTONOMY_MODE.ROUTE_RECORDING && (
+            status.phase === AUTONOMY_PHASE.IDLE || status.phase === AUTONOMY_PHASE.READY
+          ))
+        );
+      const commandFinished = setModeFinished || finishMappingFinished ||
+        finishRouteRecordingFinished;
+      const retainedRecordingOperationId = managerRestarted
+        ? ''
+        : state.routeRecordingOperationId;
+      const routeRecordingOperationId = status.recording_operation_id || (
+        status.mode === AUTONOMY_MODE.ROUTE_RECORDING
+          ? retainedRecordingOperationId || (
+            status.phase === AUTONOMY_PHASE.READY ? status.operation_id : ''
+          )
+          : ''
+      );
       return {
         status,
         receivedAt,
@@ -91,6 +114,9 @@ export const useAutonomyRuntimeStore = create<AutonomyRuntimeStore>((set, get) =
         mappingTargetId: finishMappingFinished && !runtimeFailed
           ? ''
           : managerRestarted ? '' : state.mappingTargetId,
+        // FinishRouteRecording 会产生自己的 operation_id；录制会话 ID 必须单独
+        // 保留，保存失败后再次 DISCARD 仍只能指向原始录制会话。
+        routeRecordingOperationId,
         // reason_text 在 STARTING 阶段也可用于进度说明，只有失败终态才是错误。
         lastError: runtimeFailed ? status.reason_text || '自主运行时状态异常' : null,
       };
@@ -125,6 +151,7 @@ export const useAutonomyRuntimeStore = create<AutonomyRuntimeStore>((set, get) =
       pendingCommand: null,
       // 连接可能切换到另一台机器人，不能把上一设备的地图目标带入新会话。
       mappingTargetId: '',
+      routeRecordingOperationId: '',
       lastOperationId: '',
       lastError: null,
     }),

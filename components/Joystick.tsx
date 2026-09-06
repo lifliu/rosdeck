@@ -10,6 +10,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { DEFAULTS } from '../constants/defaults';
 import { theme } from '../constants/theme';
+import { OMNI_BASE_FRAME } from '../lib/frames';
 import { useCmdVelPublisher } from '../hooks/useCmdVelPublisher';
 import { useTranslation } from '../lib/i18n';
 import {
@@ -233,7 +234,7 @@ function JoystickPad({
 export function Joystick(props?: Partial<WidgetProps>) {
   const cmdVelTopic = props?.config?.topic || DEFAULTS.cmdVelTopic;
   const useTwistStamped = props?.config?.useTwistStamped ?? defaultUsesTwistStamped(cmdVelTopic);
-  const frameId = props?.config?.frameId || 'base_link';
+  const frameId = props?.config?.frameId || OMNI_BASE_FRAME;
   const maxLinearVel = Math.abs(
     props?.config?.maxLinearVel ?? props?.config?.yAxisScale ?? DEFAULTS.maxLinearVel,
   );

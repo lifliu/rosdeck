@@ -58,9 +58,54 @@ class Defaults(unittest.TestCase):
             "operator", "publish", "/omni/safety/estop_request").allowed)
         self.assertTrue(self.pol.check_client_op(
             "operator", "service_call", "/omni/safety/reset_estop").allowed)
-        # teleop command topic is in the publish allowlist
         self.assertTrue(self.pol.check_client_op(
-            "operator", "publish", "/rosdeck/control_command").allowed)
+            "operator", "service_call", "/omni/control/authority").allowed)
+        self.assertTrue(self.pol.check_client_op(
+            "operator", "publish", "/rosdeck/locomotion_command").allowed)
+        self.assertTrue(self.pol.check_client_op(
+            "operator", "service_call",
+            "/omni/mission/runtime/set_mode").allowed)
+        for service in (
+            "/omni/maps/list",
+            "/omni/mission/runtime/finish_route_recording",
+            "/omni/mission/navigation/submit",
+            "/omni/mission/navigation/cancel",
+        ):
+            with self.subTest(service=service):
+                self.assertTrue(self.pol.check_client_op(
+                    "operator", "service_call", service).allowed)
+
+    def test_operator_cannot_bypass_runtime_or_motion_owners(self):
+        denied_publications = (
+            "/omni/cmd_vel/navigation",
+            "/omni/cmd_vel/final",
+            "/omni/mission/status",
+            "/omni/navigation/goal",
+            "/rosdeck/start_3d_mapping",
+            "/rosdeck/start_navigation",
+            "/rosdeck/start_inspection_runtime",
+            "/rosdeck/control_command",
+        )
+        for topic in denied_publications:
+            with self.subTest(topic=topic):
+                self.assertFalse(self.pol.check_client_op(
+                    "operator", "publish", topic).allowed)
+
+        denied_services = (
+            "/locomotion/set_run_mode",
+            "/omni/slam/start_mapping",
+            "/omni/slam/stop_localization",
+            "/omni/slam/maps/list",
+            "/omni/maps/list/private",
+            "/omni/maps/list_backup",
+            "/rosdeck/private_service",
+            "/omni/mission/navigation/private",
+            "/omni/planner/navigate_to_pose/_action/send_goal",
+        )
+        for service in denied_services:
+            with self.subTest(service=service):
+                self.assertFalse(self.pol.check_client_op(
+                    "operator", "service_call", service).allowed)
 
     def test_operator_denied_out_of_scope_topic(self):
         d = self.pol.check_client_op("operator", "publish",

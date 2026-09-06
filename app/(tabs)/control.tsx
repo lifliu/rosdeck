@@ -35,6 +35,7 @@ import { useGamepadInput } from "../../hooks/useGamepadInput";
 import { EmergencyStop } from "../../components/EmergencyStop";
 import { MappingControl } from "../../components/MappingControl";
 import { NavigationControl } from "../../components/NavigationControl";
+import { RouteRecordingControl } from "../../components/RouteRecordingControl";
 import { PostureControl } from "../../components/PostureControl";
 import { ControlAuthorityButton } from "../../components/ControlAuthority";
 import { SafetyControl } from "../../components/SafetyControl";
@@ -368,6 +369,7 @@ export default function ControlScreen() {
                 <View style={styles.actionRow}>
                   <NavigationControl />
                   <MappingControl />
+                  <RouteRecordingControl />
                 </View>
               </View>
               {!isDemo && (

@@ -1,5 +1,6 @@
 import { createWidgetNode, createSplitNode, type LayoutNode, type SavedLayout } from '../types/layout';
 import { DEFAULTS } from './defaults';
+import { OMNI_BASE_FRAME, OMNI_MAP_FRAME } from '../lib/frames';
 
 export interface PresetTemplate {
   id: string;
@@ -11,7 +12,7 @@ const createDualJoystick = () => createWidgetNode('joystick', {
   topic: DEFAULTS.cmdVelTopic,
   useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
   requireLocoMode: true,
-  frameId: 'base_link',
+  frameId: OMNI_BASE_FRAME,
   controlScheme: 'dual',
   maxLinearVel: DEFAULTS.maxLinearVel,
   maxAngularVel: DEFAULTS.maxAngularVel,
@@ -24,9 +25,9 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('vertical',
         createWidgetNode('pointcloud3d', {
-          topic: '/cloud_registered',
-          mapFrame: 'map_frame',
-          robotFrame: 'lidar_frame',
+          topic: '/cloud_registered_global',
+          mapFrame: OMNI_MAP_FRAME,
+          robotFrame: OMNI_BASE_FRAME,
           odomTopic: '/Odometry',
           viewMeters: 20,
         }),
@@ -59,7 +60,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     name: 'Nav',
     buildTree: () =>
       createSplitNode('vertical',
-        createWidgetNode('map', { topic: '/map', enableNav2Goal: false, nav2GoalTopic: '/goal_pose' }),
+        createWidgetNode('map', { topic: '/map' }),
         createDualJoystick(),
         0.6
       ),
@@ -70,7 +71,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('horizontal',
         createSplitNode('vertical',
-          createWidgetNode('map', { topic: '/map', scanTopic: '/scan', odomTopic: '/odom', enableNav2Goal: false, nav2GoalTopic: '/goal_pose' }),
+          createWidgetNode('map', { topic: '/map', scanTopic: '/scan', odomTopic: '/odom' }),
           createSplitNode('vertical',
             createWidgetNode('battery', { topic: '/battery_state' }),
             createWidgetNode('diagnostics', { topic: '/diagnostics' }),

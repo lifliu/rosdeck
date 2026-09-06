@@ -1,4 +1,5 @@
 import type { WidgetDefinition } from '../../types/layout';
+import { OMNI_BASE_FRAME, OMNI_MAP_FRAME, OMNI_ODOM_FRAME } from '../../lib/frames';
 import { MapWidget } from './MapWidget';
 
 export const mapWidget: WidgetDefinition = {
@@ -10,11 +11,10 @@ export const mapWidget: WidgetDefinition = {
   defaultConfig: {
     topic: '/map',
     scanTopic: '/scan',
-    mapFrame: 'map',
-    robotFrame: 'base_link',
+    mapFrame: OMNI_MAP_FRAME,
+    odomFrame: OMNI_ODOM_FRAME,
+    robotFrame: OMNI_BASE_FRAME,
     flipIndicator: false,
-    enableNav2Goal: false,
-    nav2GoalTopic: '/goal_pose',
     globalCostmapTopic: '',
     localCostmapTopic: '',
     costmapOpacity: 0.5,
@@ -33,8 +33,9 @@ export const mapWidget: WidgetDefinition = {
       type: 'topic',
       topicMessageTypes: ['sensor_msgs/msg/LaserScan'],
     },
-    { key: 'mapFrame', label: 'Map Frame', type: 'text', placeholder: 'map' },
-    { key: 'robotFrame', label: 'Robot Frame', type: 'text', placeholder: 'base_link' },
+    { key: 'mapFrame', label: 'Map Frame', type: 'text', placeholder: OMNI_MAP_FRAME },
+    { key: 'odomFrame', label: 'Odom Frame', type: 'text', placeholder: OMNI_ODOM_FRAME },
+    { key: 'robotFrame', label: 'Robot Frame', type: 'text', placeholder: OMNI_BASE_FRAME },
     { key: 'flipIndicator', label: 'Flip Robot Indicator', type: 'boolean' },
     {
       key: 'globalCostmapTopic',
@@ -48,12 +49,6 @@ export const mapWidget: WidgetDefinition = {
       type: 'topic',
       topicMessageTypes: ['nav_msgs/msg/OccupancyGrid'],
     },
-    {
-      key: 'enableNav2Goal',
-      label: 'Enable Nav2 Goal (long press)',
-      type: 'boolean',
-    },
-    { key: 'nav2GoalTopic', label: 'Goal Topic', type: 'text' },
     {
       key: 'updateRate',
       label: 'Max Update Rate',

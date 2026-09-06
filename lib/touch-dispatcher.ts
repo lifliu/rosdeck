@@ -91,3 +91,11 @@ export function dispatchTouchEnd(changedTouches: any[]) {
     _active.delete(touch.identifier);
   }
 }
+
+/** End every routed gesture before a modal/editor takes exclusive touch input. */
+export function cancelActiveTouches() {
+  for (const [touchId, active] of _active.entries()) {
+    _entries.get(active.id)?.onTouchEnd(touchId);
+  }
+  _active.clear();
+}

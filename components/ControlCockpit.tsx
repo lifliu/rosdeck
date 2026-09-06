@@ -14,6 +14,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEFAULTS } from '../constants/defaults';
 import { theme } from '../constants/theme';
+import { OMNI_BASE_FRAME, OMNI_MAP_FRAME, OMNI_ODOM_FRAME } from '../lib/frames';
+import {
+  AUTONOMY_MODE,
+  AUTONOMY_PHASE,
+  createMissionRequestEnvelope,
+} from '../lib/autonomy-runtime';
 import {
   MISSION_EVENTS_TOPIC,
   MISSION_EVENTS_TYPE,
@@ -23,33 +29,50 @@ import {
   ROBOT_STATE_TYPE,
   cancelMission,
   dispatchMission,
-  generateRequestId,
   listRoutes,
   pauseMission,
   resumeMission,
 } from '../lib/mission/api';
 import { ACTIVE_MISSION_STATES, MISSION_STATE, type ControlResponse } from '../lib/mission/types';
 import {
+  ACTIVE_NAVIGATION_STATES,
+  NAVIGATION_STATE,
+  buildNavigationTargetPose,
+  cancelNavigationGoal,
+  submitNavigationGoal,
+} from '../lib/navigation';
+import {
+  cancelActiveTouches,
   dispatchTouchEnd,
   dispatchTouchMove,
   dispatchTouchStart,
   setDeltaTransform,
 } from '../lib/touch-dispatcher';
 import { useLayoutStore } from '../stores/useLayoutStore';
+import { useAutonomyRuntimeStore } from '../stores/useAutonomyRuntimeStore';
 import { useMissionStore } from '../stores/useMissionStore';
+import { useNavigationStore } from '../stores/useNavigationStore';
 import { useRosStore } from '../stores/useRosStore';
 import { useAutonomyRuntimeFeed } from '../hooks/useAutonomyRuntimeFeed';
+import { useNavigationFeed } from '../hooks/useNavigationFeed';
 import type { LayoutNode, SavedLayout, WidgetConfigField, WidgetNode } from '../types/layout';
 import { cameraWidget } from '../widgets/camera';
 import { mapWidget } from '../widgets/map';
+import { pointCloud3DWidget } from '../widgets/pointcloud3d';
 import { CameraFeed } from './CameraFeed';
 import { EmergencyStop } from './EmergencyStop';
 import { Joystick } from './Joystick';
 import { LayoutManager } from './LayoutManager';
 import { WidgetSettings } from './WidgetSettings';
-import { MapWidget } from '../widgets/map/MapWidget';
+import { MapWidget, type MapGoalSelection } from '../widgets/map/MapWidget';
+import { PointCloud3DWidget } from '../widgets/pointcloud3d/PointCloud3DWidget';
 
 type Scene = 'video' | 'map';
+type PendingMapGoal = MapGoalSelection & { assetIdentityKey: string };
+
+// deadline 覆盖“运行时准备 + 整条路线执行”，不是一次网络请求超时。30 秒会让
+// 正常巡检刚起步就被 Planner 作为过期运动意图终止。
+const INSPECTION_COMMAND_TTL_SEC = 30 * 60;
 
 interface ControlCockpitProps {
   language: 'zh' | 'en';
@@ -122,6 +145,20 @@ function CockpitButton({
   );
 }
 
+function GoalNudgeButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityLabel={`目标坐标 ${label}`}
+      style={styles.goalNudgeButton}
+      activeOpacity={0.72}
+      onPress={onPress}
+    >
+      <Text style={styles.goalNudgeButtonText}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 const missionStateLabel = (state: number, zh: boolean) => {
   switch (state) {
     case MISSION_STATE.PENDING: return zh ? '等待执行' : 'Pending';
@@ -132,6 +169,20 @@ const missionStateLabel = (state: number, zh: boolean) => {
     case MISSION_STATE.FAILED: return zh ? '执行失败' : 'Failed';
     case MISSION_STATE.INTERRUPTED: return zh ? '已中断' : 'Interrupted';
     default: return zh ? '无任务' : 'No mission';
+  }
+};
+
+const navigationStateLabel = (state: number, zh: boolean) => {
+  switch (state) {
+    case NAVIGATION_STATE.PREPARING: return zh ? '准备中' : 'Preparing';
+    case NAVIGATION_STATE.PLANNING: return zh ? '规划中' : 'Planning';
+    case NAVIGATION_STATE.EXECUTING: return zh ? '导航中' : 'Navigating';
+    case NAVIGATION_STATE.CANCELING: return zh ? '取消中' : 'Canceling';
+    case NAVIGATION_STATE.SUCCEEDED: return zh ? '已到达' : 'Arrived';
+    case NAVIGATION_STATE.CANCELED: return zh ? '已取消' : 'Canceled';
+    case NAVIGATION_STATE.FAILED: return zh ? '导航失败' : 'Failed';
+    case NAVIGATION_STATE.INTERRUPTED: return zh ? '已中断' : 'Interrupted';
+    default: return zh ? '等待目标' : 'Waiting for goal';
   }
 };
 
@@ -155,6 +206,7 @@ export function ControlCockpit({
   const updateWidgetConfigInLayout = useLayoutStore((state) => state.updateWidgetConfigInLayout);
   const [scene, setScene] = useState<Scene>('video');
   const [missionsOpen, setMissionsOpen] = useState(false);
+  const [pendingMapGoal, setPendingMapGoal] = useState<PendingMapGoal | null>(null);
 
   const routes = useMissionStore((state) => state.routes);
   const routesLoaded = useMissionStore((state) => state.routesLoaded);
@@ -163,14 +215,41 @@ export function ControlCockpit({
   const dispatching = useMissionStore((state) => state.dispatching);
   const controlling = useMissionStore((state) => state.controlling);
   const lastError = useMissionStore((state) => state.lastError);
+  const runtime = useAutonomyRuntimeStore((state) => state.status);
+  const runtimeStale = useAutonomyRuntimeStore((state) => state.stale);
+  const navigation = useNavigationStore((state) => state.status);
+  const navigationStale = useNavigationStore((state) => state.stale);
+  const navigationSubmitting = useNavigationStore((state) => state.submitting);
+  const navigationCanceling = useNavigationStore((state) => state.canceling);
+  const navigationOperationId = useNavigationStore((state) => state.activeOperationId);
+  const navigationError = useNavigationStore((state) => state.lastError);
 
   const connected = status === 'connected' && Boolean(transport);
   const missionConnected = connected && !isDemo;
   const missionState = mission?.state ?? MISSION_STATE.NONE;
   const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
+  const navigationReady = !runtimeStale && runtime?.mode === AUTONOMY_MODE.SINGLE_POINT_READY &&
+    runtime.ready === true && runtime.phase === AUTONOMY_PHASE.READY;
+  const navigationKnownActive = ACTIVE_NAVIGATION_STATES.includes(
+    navigation?.state ?? NAVIGATION_STATE.IDLE,
+  );
+  const navigationActive = !navigationStale && navigationKnownActive;
+  const navigationCancelable = navigationKnownActive && Boolean(navigationOperationId);
+  const mapIdentityReady = navigationReady && Boolean(runtime?.map_id) &&
+    (runtime?.map_version ?? 0) > 0 && Boolean(runtime?.map_checksum);
+  const mapAssetIdentityKey = runtime?.manager_epoch && runtime.map_id &&
+    runtime.map_version > 0 && runtime.map_checksum
+    ? [
+      runtime?.manager_epoch,
+      runtime?.map_id,
+      runtime?.map_version,
+      runtime?.map_checksum,
+    ].join('\u0000')
+    : '';
 
-  // 控制台是建图、单点导航和巡检三个入口的共同父组件，只在这里订阅一次。
+  // 控制台是建图、录线、单点导航和巡检入口的共同父组件，只在这里订阅一次。
   useAutonomyRuntimeFeed(missionConnected);
+  useNavigationFeed(missionConnected);
 
   const cameraSelection = useMemo(
     () => preferredWidget(layouts, activeLayoutId, 'camera'),
@@ -210,19 +289,58 @@ export function ControlCockpit({
       visibleWhen: { key: 'source', value: 'transport' },
     },
   ], [zh]);
-  const mapConfig = useMemo(
-    () => ({ ...mapWidget.defaultConfig, ...(preferredWidget(layouts, activeLayoutId, 'map')?.node.config ?? {}), enableNav2Goal: false }),
+  const mapSelection = useMemo(
+    () => preferredWidget(layouts, activeLayoutId, 'map'),
     [activeLayoutId, layouts],
+  );
+  const mapConfig = useMemo(
+    () => ({
+      ...mapWidget.defaultConfig,
+      ...(mapSelection?.node.config ?? {}),
+      // 产品导航目标固定在 omni_tf_manager 的 canonical TF 树；主控制台
+      // 不允许历史布局用 map/base_link 覆盖安全默认值。
+      mapFrame: OMNI_MAP_FRAME,
+      odomFrame: OMNI_ODOM_FRAME,
+      robotFrame: OMNI_BASE_FRAME,
+    }),
+    [mapSelection],
+  );
+  const pointCloudSelection = useMemo(
+    () => preferredWidget(layouts, activeLayoutId, 'pointcloud3d'),
+    [activeLayoutId, layouts],
+  );
+  const pointCloudConfig = useMemo(
+    () => ({
+      ...pointCloud3DWidget.defaultConfig,
+      ...(pointCloudSelection?.node.config ?? {}),
+      mapFrame: OMNI_MAP_FRAME,
+      robotFrame: OMNI_BASE_FRAME,
+    }),
+    [pointCloudSelection],
+  );
+  const usePointCloudScene = pointCloudSelection?.layoutId === activeLayoutId &&
+    mapSelection?.layoutId !== activeLayoutId;
+  const mapSettingsSchema = useMemo(
+    () => (mapWidget.configSchema ?? []).filter(
+      (field) => !['mapFrame', 'odomFrame', 'robotFrame'].includes(field.key),
+    ),
+    [],
+  );
+  const pointCloudSettingsSchema = useMemo(
+    () => (pointCloud3DWidget.configSchema ?? []).filter(
+      (field) => !['mapFrame', 'robotFrame'].includes(field.key),
+    ),
+    [],
   );
   const joystickConfig = useMemo(
     () => ({
       topic: DEFAULTS.cmdVelTopic,
       useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
-      frameId: 'base_link',
       maxLinearVel: DEFAULTS.maxLinearVel,
       maxAngularVel: DEFAULTS.maxAngularVel,
       requireLocoMode: true,
       ...(preferredWidget(layouts, activeLayoutId, 'joystick')?.node.config ?? {}),
+      frameId: OMNI_BASE_FRAME,
       overlayMode: true,
     }),
     [activeLayoutId, layouts],
@@ -271,6 +389,8 @@ export function ControlCockpit({
 
   const dispatchSelectedRoute = useCallback(() => {
     if (!transport || !selectedRouteId) return;
+    const selectedRoute = routes.find((route) => route.routeId === selectedRouteId);
+    if (!selectedRoute) return;
     Alert.alert(
       zh ? '开始巡检任务？' : 'Start inspection mission?',
       zh ? `将派发路线「${selectedRouteId}」，机器人会进入自主巡检。` : `Dispatch route “${selectedRouteId}” for autonomous inspection.`,
@@ -280,13 +400,31 @@ export function ControlCockpit({
           text: zh ? '确认开始' : 'Start',
           onPress: async () => {
             const store = useMissionStore.getState();
-            const pending = store.pendingDispatch;
-            const requestId = pending?.routeId === selectedRouteId ? pending.requestId : generateRequestId();
-            store.setPendingDispatch({ requestId, routeId: selectedRouteId });
+            const pending = store.pendingDispatch?.routeId === selectedRouteId
+              ? store.pendingDispatch
+              : {
+                ...createMissionRequestEnvelope(
+                  'inspection',
+                  INSPECTION_COMMAND_TTL_SEC,
+                ),
+                routeId: selectedRouteId,
+              };
+            store.setPendingDispatch(pending);
             store.setDispatching(true);
             store.setError(null);
             try {
-              const response = await dispatchMission(transport, { routeId: selectedRouteId, requestId });
+              const response = await dispatchMission(transport, {
+                routeId: selectedRouteId,
+                requestId: pending.requestId,
+                sequence: pending.sequence,
+                source: pending.source,
+                requestedAt: pending.requestedAt,
+                deadline: pending.deadline,
+                mapId: selectedRoute.mapId,
+                mapVersion: selectedRoute.mapVersion,
+                mapChecksum: selectedRoute.mapChecksum,
+                routeChecksum: selectedRoute.routeChecksum,
+              });
               if (response.accepted) {
                 store.setPendingDispatch(null);
                 setMissionsOpen(false);
@@ -302,7 +440,7 @@ export function ControlCockpit({
         },
       ],
     );
-  }, [selectedRouteId, transport, zh]);
+  }, [routes, selectedRouteId, transport, zh]);
 
   const runMissionControl = useCallback(async (call: (missionId?: string) => Promise<ControlResponse>) => {
     const store = useMissionStore.getState();
@@ -330,20 +468,234 @@ export function ControlCockpit({
     );
   }, [runMissionControl, transport, zh]);
 
+  const submitMapGoal = useCallback(async (goal: MapGoalSelection) => {
+    const snapshot = useAutonomyRuntimeStore.getState();
+    const current = snapshot.status;
+    const navigationSnapshot = useNavigationStore.getState();
+    const currentMissionState = useMissionStore.getState().status?.state ?? MISSION_STATE.NONE;
+    if (!transport || snapshot.stale || !current ||
+        current.mode !== AUTONOMY_MODE.SINGLE_POINT_READY || !current.ready ||
+        current.phase !== AUTONOMY_PHASE.READY || !current.map_id ||
+        current.map_version <= 0 || !current.map_checksum || navigationSnapshot.stale ||
+        ACTIVE_NAVIGATION_STATES.includes(
+          navigationSnapshot.status?.state ?? NAVIGATION_STATE.IDLE,
+        ) || ACTIVE_MISSION_STATES.includes(currentMissionState)) {
+      navigationSnapshot.setPendingSubmit(null);
+      setPendingMapGoal(null);
+      Alert.alert(
+        zh ? '导航不可用' : 'Navigation unavailable',
+        zh ? '导航状态、运行时或地图身份已变化，请重新同步后选择目标。' : 'Navigation status, runtime, or map identity changed. Resync before selecting a goal.',
+      );
+      return;
+    }
+    if (navigationSnapshot.submitting || navigationSnapshot.canceling) return;
+    const targetPose = buildNavigationTargetPose(
+      OMNI_MAP_FRAME,
+      goal.x,
+      goal.y,
+    );
+    const retainedRequest = navigationSnapshot.pendingSubmit;
+    const retainedPosition = retainedRequest?.targetPose.pose.position;
+    const canRetryIdempotently = retainedRequest !== null &&
+      retainedRequest.managerEpoch === current.manager_epoch &&
+      retainedRequest.mapId === current.map_id &&
+      retainedRequest.mapVersion === current.map_version &&
+      retainedRequest.mapChecksum === current.map_checksum &&
+      retainedRequest.targetPose.header.frame_id === targetPose.header.frame_id &&
+      retainedPosition?.x === goal.x && retainedPosition?.y === goal.y;
+    const request = canRetryIdempotently
+      ? retainedRequest
+      : {
+        ...createMissionRequestEnvelope('nav-goal', 10 * 60),
+        managerEpoch: current.manager_epoch,
+        mapId: current.map_id,
+        mapVersion: current.map_version,
+        mapChecksum: current.map_checksum,
+        targetPose,
+        useFinalYaw: false,
+        speedScale: 0,
+      };
+    navigationSnapshot.setPendingSubmit(request);
+    if (!useNavigationStore.getState().beginSubmit()) return;
+    try {
+      const response = await submitNavigationGoal(transport, {
+        mapId: request.mapId,
+        mapVersion: request.mapVersion,
+        mapChecksum: request.mapChecksum,
+        targetPose: request.targetPose,
+        requestId: request.requestId,
+        sequence: request.sequence,
+        source: request.source,
+        requestedAt: request.requestedAt,
+        deadline: request.deadline,
+        useFinalYaw: request.useFinalYaw,
+        speedScale: request.speedScale,
+      });
+      useNavigationStore.getState().completeSubmit(response);
+      if (response.accepted) {
+        // service 已返回 operation identity 后立即关闭草稿编辑器，禁止在
+        // NavigationStatus 首帧到达前重复点击造成并发目标。
+        setPendingMapGoal(null);
+      } else {
+        setPendingMapGoal(null);
+        Alert.alert(
+          zh ? '目标下发失败' : 'Goal rejected',
+          response.reason_text || (zh ? '任务管理器拒绝了导航目标。' : 'Mission Manager rejected the navigation goal.'),
+        );
+      }
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      // The service may have accepted the request before the response was lost.
+      // Keep both draft and envelope so an explicit retry uses the same identity.
+      useNavigationStore.getState().failCommand(message);
+      Alert.alert(zh ? '目标下发失败' : 'Goal failed', message);
+    }
+  }, [transport, zh]);
+
+  const onMapGoalSelected = useCallback((goal: MapGoalSelection) => {
+    if (!runtime) return;
+    if (goal.frameId.replace(/^\//, '') !== OMNI_MAP_FRAME) {
+      Alert.alert(
+        zh ? '目标坐标系不可用' : 'Goal frame unavailable',
+        zh
+          ? `只能在 ${OMNI_MAP_FRAME} 中选择导航目标，请等待规范地图数据。`
+          : `Navigation goals must be selected in ${OMNI_MAP_FRAME}. Wait for canonical map data.`,
+      );
+      return;
+    }
+    // 先保留为可编辑草稿，用户微调并确认后才调用 Mission typed service。
+    useNavigationStore.getState().setPendingSubmit(null);
+    setPendingMapGoal({
+      ...goal,
+      frameId: OMNI_MAP_FRAME,
+      assetIdentityKey: mapAssetIdentityKey,
+    });
+  }, [mapAssetIdentityKey, runtime, zh]);
+
+  const nudgePendingGoal = useCallback((deltaX: number, deltaY: number) => {
+    useNavigationStore.getState().setPendingSubmit(null);
+    setPendingMapGoal((goal) => goal ? {
+      ...goal,
+      x: goal.x + deltaX,
+      y: goal.y + deltaY,
+      frameId: OMNI_MAP_FRAME,
+    } : null);
+  }, []);
+
+  const confirmCancelNavigation = useCallback(() => {
+    if (!transport || !navigationOperationId) return;
+    Alert.alert(
+      zh ? '取消导航？' : 'Cancel navigation?',
+      zh ? '现在停止当前单点导航目标吗？' : 'Stop the current point-navigation goal?',
+      [
+        { text: zh ? '返回' : 'Back', style: 'cancel' },
+        {
+          text: zh ? '取消导航' : 'Cancel goal',
+          style: 'destructive',
+          onPress: async () => {
+            if (!useNavigationStore.getState().beginCancel()) return;
+            try {
+              const response = await cancelNavigationGoal(transport, {
+                targetOperationId: navigationOperationId,
+              });
+              useNavigationStore.getState().completeCancel(response);
+              if (!response.accepted) {
+                Alert.alert(
+                  zh ? '取消失败' : 'Cancellation rejected',
+                  response.reason_text || (zh ? '任务管理器拒绝了取消请求。' : 'Mission Manager rejected cancellation.'),
+                );
+              }
+            } catch (error: any) {
+              const message = error?.message || String(error);
+              useNavigationStore.getState().failCommand(message);
+              Alert.alert(zh ? '取消失败' : 'Cancellation failed', message);
+            }
+          },
+        },
+      ],
+    );
+  }, [navigationOperationId, transport, zh]);
+
+  useEffect(() => {
+    if (!runtimeStale && !navigationReady) {
+      setPendingMapGoal(null);
+      useNavigationStore.getState().setPendingSubmit(null);
+    }
+  }, [navigationReady, runtimeStale]);
+
+  useEffect(() => {
+    setPendingMapGoal((goal) => {
+      if (!goal || goal.assetIdentityKey === mapAssetIdentityKey) return goal;
+      useNavigationStore.getState().setPendingSubmit(null);
+      return null;
+    });
+  }, [mapAssetIdentityKey]);
+
+  useEffect(() => {
+    if (pendingMapGoal) cancelActiveTouches();
+  }, [pendingMapGoal]);
+
+  useEffect(() => {
+    if (pendingMapGoal && navigationOperationId &&
+        navigation?.operation_id === navigationOperationId) {
+      setPendingMapGoal(null);
+    }
+  }, [navigation?.operation_id, navigationOperationId, pendingMapGoal]);
+
+  const navigationGoalMarker = navigation?.target_pose?.pose?.position &&
+    navigation.map_id === runtime?.map_id
+    ? {
+      x: navigation.target_pose.pose.position.x,
+      y: navigation.target_pose.pose.position.y,
+      frameId: navigation.target_pose.header.frame_id,
+    }
+    : null;
+  const goalMarker = pendingMapGoal ?? navigationGoalMarker;
+
   return (
     <View
       style={styles.root}
-      onTouchStart={(event) => dispatchTouchStart([...event.nativeEvent.changedTouches])}
-      onTouchMove={(event) => dispatchTouchMove([...event.nativeEvent.changedTouches])}
-      onTouchEnd={(event) => dispatchTouchEnd([...event.nativeEvent.changedTouches])}
-      onTouchCancel={(event) => dispatchTouchEnd([...event.nativeEvent.changedTouches])}
+      onTouchStart={(event) => {
+        if (!pendingMapGoal) dispatchTouchStart([...event.nativeEvent.changedTouches]);
+      }}
+      onTouchMove={(event) => {
+        if (!pendingMapGoal) dispatchTouchMove([...event.nativeEvent.changedTouches]);
+      }}
+      onTouchEnd={(event) => {
+        if (!pendingMapGoal) dispatchTouchEnd([...event.nativeEvent.changedTouches]);
+      }}
+      onTouchCancel={(event) => {
+        if (!pendingMapGoal) dispatchTouchEnd([...event.nativeEvent.changedTouches]);
+      }}
     >
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View pointerEvents={scene === 'map' ? 'box-none' : 'none'} style={StyleSheet.absoluteFill}>
         {connected ? (
           scene === 'video' ? (
             <CameraFeed config={cameraConfig} width={width} height={height} />
           ) : (
-            <MapWidget config={mapConfig} width={width} height={height} />
+            usePointCloudScene ? (
+              <PointCloud3DWidget
+                config={pointCloudConfig}
+                width={width}
+                height={height}
+                assetIdentityKey={mapAssetIdentityKey}
+                goalSelectionEnabled={mapIdentityReady && !navigationStale && !navigationActive &&
+                  !navigationSubmitting && !navigationOperationId && !missionActive}
+                goalMarker={goalMarker}
+                onGoalSelected={onMapGoalSelected}
+              />
+            ) : (
+              <MapWidget
+                config={mapConfig}
+                width={width}
+                height={height}
+                assetIdentityKey={mapAssetIdentityKey}
+                goalSelectionEnabled={mapIdentityReady && !navigationStale && !navigationActive &&
+                  !navigationSubmitting && !navigationOperationId && !missionActive}
+                goalMarker={goalMarker}
+                onGoalSelected={onMapGoalSelected}
+              />
+            )
           )
         ) : (
           <View style={styles.offlineBackground}>
@@ -352,8 +704,8 @@ export function ControlCockpit({
             <Text style={styles.offlineMessage}>{zh ? '退出控制页并前往设备页建立连接' : 'Exit control and connect from the Devices tab'}</Text>
           </View>
         )}
-        <View style={styles.sceneShadeTop} />
-        <View style={styles.sceneShadeBottom} />
+        <View pointerEvents="none" style={styles.sceneShadeTop} />
+        <View pointerEvents="none" style={styles.sceneShadeBottom} />
         {scene === 'video' && connected ? <View style={styles.reticle}><View style={styles.reticleH} /><View style={styles.reticleV} /></View> : null}
       </View>
 
@@ -380,7 +732,9 @@ export function ControlCockpit({
           </TouchableOpacity>
           <TouchableOpacity style={[styles.sceneSwitchItem, scene === 'map' && styles.sceneSwitchItemActive]} onPress={() => setScene('map')}>
             <Ionicons name="map-outline" size={17} color={scene === 'map' ? '#FFFFFF' : theme.colors.textSecondary} />
-            <Text style={[styles.sceneSwitchText, scene === 'map' && styles.sceneSwitchTextActive]}>{zh ? '地图' : 'Map'}</Text>
+            <Text style={[styles.sceneSwitchText, scene === 'map' && styles.sceneSwitchTextActive]}>
+              {usePointCloudScene ? (zh ? '点云' : 'Point cloud') : (zh ? '地图' : 'Map')}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -392,10 +746,27 @@ export function ControlCockpit({
       <View pointerEvents="box-none" style={[styles.rightDock, { right: Math.max(12, insets.right + 10) }]}>
         <CockpitButton
           icon="settings-outline"
-          label={zh ? '视频设置' : 'Video settings'}
+          label={scene === 'video'
+            ? (zh ? '视频设置' : 'Video settings')
+            : usePointCloudScene
+              ? (zh ? '点云设置' : 'Point-cloud settings')
+              : (zh ? '地图设置' : 'Map settings')}
           active={editMode}
           onPress={() => setEditMode(true)}
         />
+        {navigationReady || navigationCancelable ? (
+          <CockpitButton
+            icon={navigationCancelable ? 'close-circle-outline' : 'locate-outline'}
+            label={navigationCancelable
+              ? (navigationCanceling ? (zh ? '取消中' : 'Canceling') : (zh ? '取消导航' : 'Cancel navigation'))
+              : navigationStale
+                ? (zh ? '同步导航状态' : 'Syncing navigation')
+                : (zh ? '长按选点' : 'Long-press goal')}
+            active={scene === 'map' || navigationCancelable}
+            danger={navigationCancelable}
+            onPress={navigationCancelable ? confirmCancelNavigation : () => setScene('map')}
+          />
+        ) : null}
         <CockpitButton
           icon="navigate-circle-outline"
           label={missionActive ? missionStateLabel(missionState, zh) : (zh ? '巡检任务' : 'Inspection')}
@@ -405,11 +776,70 @@ export function ControlCockpit({
         <CockpitButton icon="options-outline" label={zh ? '机器人动作' : 'Actions'} onPress={onOpenRobotActions} />
       </View>
 
+      {pendingMapGoal && scene === 'map' && !navigationActive ? (
+        <View
+          accessibilityLabel={zh ? '导航目标编辑器' : 'Navigation goal editor'}
+          style={[styles.goalEditor, { bottom: Math.max(66, insets.bottom + 58) }]}
+        >
+          <View style={styles.goalEditorCopy}>
+            <Text style={styles.goalEditorTitle}>
+              {zh ? '确认导航目标' : 'Confirm navigation goal'}
+            </Text>
+            <Text style={styles.goalEditorCoordinates}>
+              X {pendingMapGoal.x.toFixed(2)} m · Y {pendingMapGoal.y.toFixed(2)} m
+            </Text>
+          </View>
+          <View style={styles.goalNudgeRow}>
+            <GoalNudgeButton label="X−" onPress={() => nudgePendingGoal(-0.25, 0)} />
+            <GoalNudgeButton label="X+" onPress={() => nudgePendingGoal(0.25, 0)} />
+            <GoalNudgeButton label="Y−" onPress={() => nudgePendingGoal(0, -0.25)} />
+            <GoalNudgeButton label="Y+" onPress={() => nudgePendingGoal(0, 0.25)} />
+          </View>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={zh ? '取消目标' : 'Cancel goal draft'}
+            style={styles.goalEditorCancel}
+            onPress={() => {
+              useNavigationStore.getState().setPendingSubmit(null);
+              setPendingMapGoal(null);
+            }}
+          >
+            <Text style={styles.goalEditorCancelText}>{zh ? '取消' : 'Cancel'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={zh ? '开始导航' : 'Start navigation'}
+            style={[styles.goalEditorSubmit, navigationSubmitting && styles.goalEditorSubmitDisabled]}
+            disabled={navigationSubmitting}
+            onPress={() => void submitMapGoal(pendingMapGoal)}
+          >
+            <Ionicons name="navigate" size={16} color="#061014" />
+            <Text style={styles.goalEditorSubmitText}>
+              {navigationSubmitting ? (zh ? '下发中…' : 'Sending…') : (zh ? '开始导航' : 'Navigate')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       <View pointerEvents="none" style={styles.bottomCenterStatus}>
-        <Text style={styles.bottomCenterTitle}>{scene === 'video' ? (zh ? '实时画面' : 'LIVE VIEW') : (zh ? '实时地图' : 'LIVE MAP')}</Text>
+        <Text style={styles.bottomCenterTitle}>
+          {scene === 'video'
+            ? (zh ? '实时画面' : 'LIVE VIEW')
+            : usePointCloudScene
+              ? (zh ? '三维地图' : '3D MAP')
+              : (zh ? '实时地图' : 'LIVE MAP')}
+        </Text>
         <Text style={styles.bottomCenterValue}>
           {missionActive
             ? `${missionStateLabel(missionState, zh)} · ${Math.round(Math.max(0, Math.min(1, mission?.progress || 0)) * 100)}%`
+            : navigation && !navigationStale && navigation.state !== NAVIGATION_STATE.IDLE
+              ? `${navigationStateLabel(navigation.state, zh)} · ${Math.max(0, navigation.remaining_distance_m).toFixed(1)} m`
+              : navigationKnownActive && navigationStale
+                ? (zh ? '导航状态同步中，可取消当前目标' : 'Navigation status is stale; the current goal can still be canceled')
+              : navigationError
+                ? navigationError
+                : navigationReady && scene === 'map'
+                  ? (zh ? '长按地图选择目标，可用 X/Y 按钮微调' : 'Long-press to select; use X/Y buttons to adjust')
             : (zh ? '左摇杆 X / Y · 右摇杆 YAW' : 'Left X / Y · Right YAW')}
         </Text>
       </View>
@@ -429,20 +859,48 @@ export function ControlCockpit({
 
       <WidgetSettings
         visible={editMode}
-        widgetName={zh ? '视频画面' : 'Video'}
+        widgetName={scene === 'video'
+          ? (zh ? '视频画面' : 'Video')
+          : usePointCloudScene
+            ? (zh ? '三维点云' : '3D point cloud')
+            : (zh ? '二维地图' : '2D map')}
         language={language}
-        description={zh ? '选择机器人视频话题；保存后立即应用到控制页。' : 'Choose the robot video topic. Changes apply immediately after saving.'}
-        configSchema={cameraSettingsSchema}
-        config={cameraConfig}
-        recommendedConfig={{
-          topic: DEFAULTS.cameraTopic,
-          source: 'transport',
-          maxFps: 10,
-          mjpegPort: DEFAULTS.mjpegPort,
-        }}
+        description={scene === 'video'
+          ? (zh ? '选择机器人视频话题；保存后立即应用到控制页。' : 'Choose the robot video topic. Changes apply immediately after saving.')
+          : (zh ? `可调整数据话题；导航 frame 固定为 ${OMNI_MAP_FRAME}/${OMNI_BASE_FRAME}。` : `Adjust data topics; navigation frames stay locked to ${OMNI_MAP_FRAME}/${OMNI_BASE_FRAME}.`)}
+        configSchema={scene === 'video'
+          ? cameraSettingsSchema
+          : usePointCloudScene
+            ? pointCloudSettingsSchema
+            : mapSettingsSchema}
+        config={scene === 'video'
+          ? cameraConfig
+          : usePointCloudScene
+            ? pointCloudConfig
+            : mapConfig}
+        recommendedConfig={scene === 'video'
+          ? {
+            topic: DEFAULTS.cameraTopic,
+            source: 'transport',
+            maxFps: 10,
+            mjpegPort: DEFAULTS.mjpegPort,
+          }
+          : usePointCloudScene
+            ? pointCloud3DWidget.defaultConfig
+            : mapWidget.defaultConfig}
+        recommendedDescription={scene === 'video'
+          ? undefined
+          : usePointCloudScene
+            ? (zh ? '恢复 Matrix 全局点云话题和规范 TF。' : 'Restore the Matrix global cloud topic and canonical TF.')
+            : (zh ? '恢复地图、激光和规范 TF 默认配置。' : 'Restore map, scan, and canonical TF defaults.')}
         onConfigChange={(nextConfig) => {
-          if (!cameraSelection) return;
-          updateWidgetConfigInLayout(cameraSelection.layoutId, cameraSelection.node.id, nextConfig);
+          const selection = scene === 'video'
+            ? cameraSelection
+            : usePointCloudScene
+              ? pointCloudSelection
+              : mapSelection;
+          if (!selection) return;
+          updateWidgetConfigInLayout(selection.layoutId, selection.node.id, nextConfig);
         }}
         onClose={() => setEditMode(false)}
       />
@@ -500,7 +958,13 @@ export function ControlCockpit({
                         <View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name="git-branch-outline" size={20} color={selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View>
                         <View style={styles.routeCopy}>
                           <Text style={styles.routeName}>{route.routeId}</Text>
-                          <Text style={styles.routeMeta}>{route.mapId ? `${zh ? '地图' : 'Map'}: ${route.mapId}` : (zh ? '未绑定地图' : 'No map binding')}</Text>
+                          <Text style={styles.routeMeta} numberOfLines={1}>
+                            {route.mapId
+                              ? `${zh ? '地图' : 'Map'}: ${route.mapId}${route.mapVersion ? ` · ${route.mapVersion.startsWith('v') ? route.mapVersion : `v${route.mapVersion}`}` : ''}`
+                              : (zh ? '未绑定地图' : 'No map binding')}
+                            {route.pointCount > 0 ? ` · ${route.pointCount}${zh ? '点' : ' pts'}` : ''}
+                            {route.distanceM > 0 ? ` · ${route.distanceM.toFixed(1)} m` : ''}
+                          </Text>
                         </View>
                         <Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selected ? theme.colors.accentPrimary : theme.colors.borderDefault} />
                       </TouchableOpacity>
@@ -550,6 +1014,18 @@ const styles = StyleSheet.create({
   sceneSwitchTextActive: { color: '#FFFFFF' },
   rightDock: { position: 'absolute', top: 92, flexDirection: 'row', gap: 9, alignItems: 'flex-start' },
   hiddenLayoutManager: { position: 'absolute', width: 0, height: 0, overflow: 'hidden' },
+  goalEditor: { position: 'absolute', alignSelf: 'center', minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 14, borderWidth: 1, borderColor: theme.colors.accentPrimary + 'AA', backgroundColor: '#071116F2' },
+  goalEditorCopy: { minWidth: 128, paddingHorizontal: 3 },
+  goalEditorTitle: { color: theme.colors.textPrimary, fontSize: 11, fontWeight: '800' },
+  goalEditorCoordinates: { color: theme.colors.accentPrimary, fontFamily: 'SpaceMono', fontSize: 9, marginTop: 3 },
+  goalNudgeRow: { flexDirection: 'row', gap: 4 },
+  goalNudgeButton: { minWidth: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 9, borderWidth: 1, borderColor: '#FFFFFF24', backgroundColor: '#FFFFFF0C' },
+  goalNudgeButtonText: { color: theme.colors.textPrimary, fontFamily: 'SpaceMono', fontSize: 10, fontWeight: '700' },
+  goalEditorCancel: { height: 36, justifyContent: 'center', paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: '#FFFFFF24' },
+  goalEditorCancelText: { color: theme.colors.textSecondary, fontSize: 10, fontWeight: '700' },
+  goalEditorSubmit: { height: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 12, borderRadius: 9, backgroundColor: theme.colors.accentPrimary },
+  goalEditorSubmitDisabled: { opacity: 0.45 },
+  goalEditorSubmitText: { color: '#061014', fontSize: 10, fontWeight: '800' },
   bottomCenterStatus: { position: 'absolute', bottom: 15, left: '35%', right: '35%', minHeight: 41, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: '#FFFFFF18', backgroundColor: '#061014B8' },
   bottomCenterTitle: { color: theme.colors.textMuted, fontSize: 8, fontWeight: '700', letterSpacing: 1 },
   bottomCenterValue: { color: theme.colors.textValue, fontFamily: 'SpaceMono', fontSize: 9, marginTop: 2 },

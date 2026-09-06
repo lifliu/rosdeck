@@ -9,8 +9,6 @@ export const LOCOMOTION_COMMAND = { data: `loco:${CONTROL_CLIENT_ID}` } as const
 
 const ACK_TIMEOUT_MS = 10000;
 const RETRY_DELAY_MS = 2000;
-const SERVICE_NAME = '/locomotion/set_run_mode';
-const SERVICE_TYPE = 'function_msgs/srv/SetRunMode';
 
 interface ModeEntry {
   ready: boolean;
@@ -91,19 +89,9 @@ async function requestLocoMode(transport: Transport): Promise<void> {
     return requestBridgeLocoMode(transport);
   }
 
-  const response = await transport.callService(SERVICE_NAME, SERVICE_TYPE, {
-    target_state: 1,
-    mode: 2,
-    req_id: 'rosdeck',
-    pre_check: false,
-    has_is_traction_user_param: false,
-    is_traction_user_param: false,
-  });
-  if (response?.success !== true) {
-    throw new Error(
-      response?.message || `SetRunMode failed (${response?.error_code ?? 'unknown'})`,
-    );
-  }
+  // APP 不能绕过 Bridge 直接调用厂商 locomotion 服务。这样才能保证控制权、
+  // 急停、审计和 SDK 单 owner 在仿真与真机上使用完全相同的边界。
+  throw new Error('Robot Bridge locomotion control is unavailable');
 }
 
 export function ensureLocoMode(transport: Transport): Promise<void> {

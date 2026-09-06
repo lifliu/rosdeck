@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { EmptyState, InlineNotice, Metric, ProductButton, ProductCard, ProductHeader, SectionHeader, StatusPill } from '../../components/ProductUI';
 import { theme } from '../../constants/theme';
+import { createMissionRequestEnvelope } from '../../lib/autonomy-runtime';
 import { useOrientation } from '../../hooks/useOrientation';
 import { useTranslation, type TranslationKey } from '../../lib/i18n';
 import {
@@ -23,7 +24,6 @@ import {
   ROBOT_STATE_TYPE,
   cancelMission,
   dispatchMission,
-  generateRequestId,
   listRoutes,
   pauseMission,
   resumeMission,
@@ -157,13 +157,30 @@ export default function MissionTab() {
       // bridge flake is a replay the Manager answers with the original
       // outcome, not a second dispatch.
       const pending = store.pendingDispatch;
-      const requestId =
-        pending && pending.routeId === routeId ? pending.requestId : generateRequestId();
-      store.setPendingDispatch({ requestId, routeId });
+      const request = pending && pending.routeId === routeId
+        ? pending
+        : { ...createMissionRequestEnvelope('inspection', 30), routeId };
+      const route = store.routes.find((entry) => entry.routeId === routeId);
+      if (!route) {
+        store.setError(t('mission.reason.routeNotFound'));
+        return;
+      }
+      store.setPendingDispatch(request);
       store.setDispatching(true);
       store.setError(null);
       try {
-        const response = await dispatchMission(transport!, { routeId, requestId });
+        const response = await dispatchMission(transport!, {
+          routeId,
+          requestId: request.requestId,
+          sequence: request.sequence,
+          source: request.source,
+          requestedAt: request.requestedAt,
+          deadline: request.deadline,
+          mapId: route.mapId,
+          mapVersion: route.mapVersion,
+          mapChecksum: route.mapChecksum,
+          routeChecksum: route.routeChecksum,
+        });
         if (response.accepted) {
           store.setPendingDispatch(null);
         } else {
@@ -285,7 +302,17 @@ export default function MissionTab() {
           <ProductCard style={styles.routesCard}>
             {!routesLoaded ? <View style={styles.loadingRow}><Ionicons name="sync-outline" size={18} color={theme.colors.textMuted} /><Text style={styles.muted}>{t('mission.routesLoading')}</Text></View> : routes.length === 0 ? <Text style={styles.muted}>{t('mission.noRoutes')}</Text> : routes.map((route) => {
               const selected = route.routeId === selectedRouteId;
-              return <TouchableOpacity key={route.routeId} style={[styles.routeRow, selected && styles.routeRowSelected]} activeOpacity={0.75} onPress={() => useMissionStore.getState().selectRoute(selected ? null : route.routeId)}><View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name="git-branch-outline" size={19} color={selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View><View style={styles.routeMain}><Text style={styles.routeId}>{route.routeId}</Text><Text style={styles.muted}>{route.mapId ? t('mission.routeMap', { map: route.mapId }) : t('mission.routeUnbound')}</Text></View><Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={21} color={selected ? theme.colors.accentPrimary : theme.colors.borderDefault} /></TouchableOpacity>;
+              const version = route.mapVersion
+                ? (route.mapVersion.startsWith('v') ? route.mapVersion : `v${route.mapVersion}`)
+                : '';
+              const assetMeta = [
+                route.mapId
+                  ? `${t('mission.routeMap', { map: route.mapId })}${version ? ` · ${version}` : ''}`
+                  : t('mission.routeUnbound'),
+                route.pointCount > 0 ? `${route.pointCount}${language === 'zh' ? '点' : ' pts'}` : '',
+                route.distanceM > 0 ? `${route.distanceM.toFixed(1)} m` : '',
+              ].filter(Boolean).join(' · ');
+              return <TouchableOpacity key={route.routeId} style={[styles.routeRow, selected && styles.routeRowSelected]} activeOpacity={0.75} onPress={() => useMissionStore.getState().selectRoute(selected ? null : route.routeId)}><View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name="git-branch-outline" size={19} color={selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View><View style={styles.routeMain}><Text style={styles.routeId}>{route.routeId}</Text><Text style={styles.muted} numberOfLines={1}>{assetMeta}</Text></View><Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={21} color={selected ? theme.colors.accentPrimary : theme.colors.borderDefault} /></TouchableOpacity>;
             })}
             <ProductButton label={dispatching ? t('mission.dispatching') : t('mission.dispatch')} icon="send" loading={dispatching} disabled={!selectedRouteId || dispatching} onPress={onDispatchPress} />
           </ProductCard>

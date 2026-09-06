@@ -23,4 +23,14 @@ describe('MappingControl runtime migration', () => {
     expect(source).toContain('MAPPING_DISPOSITION.SAVE');
     expect(source).toContain('MAPPING_DISPOSITION.DISCARD');
   });
+
+  it('keeps the future map id local until FinishMapping SAVE', () => {
+    expect(source).toContain('setMappingTargetId(mapId)');
+    const startCall = source.match(
+      /setAutonomyMode\(transport,\s*\{[\s\S]*?\n\s*\}\);/,
+    )?.[0] ?? '';
+    expect(startCall).not.toMatch(/\n\s*mapId(?:\s*:|\s*,)/);
+    expect(source).toContain('mapId: targetMapId');
+    expect(source).toContain('runtime?.map_id || generateMappingMapId()');
+  });
 });

@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>The mobile dashboard for ROS2 robots.</strong><br/>
-  Teleop joystick, live camera, 2D map, Nav2 goals, diagnostics, and gamepad support — all from your phone.<br/>
+  Teleop joystick, live camera, 2D/3D map goals, diagnostics, and gamepad support — all from your phone.<br/>
   Connect over WiFi via rosbridge or Foxglove. No DDS, no VPN, no laptop required.<br/><br/>
   <a href="https://rosdeck.github.io">Sign up for the beta</a> or build it yourself.
 </p>
@@ -34,8 +34,9 @@
 - **Fail-closed safety panel** — shows live Safety Supervisor and velocity-arbiter health, rejects stale status, and requires two independent confirmations before arming the supervisor and resetting the Bridge E-stop
 - **Bluetooth gamepad support** — connect an Xbox, PS5, or generic BT controller; auto-maps sticks to joystick widgets with configurable deadzone and layout
 - **Live camera** — subscribe to `CompressedImage` topics or connect to an MJPEG stream
-- **2D map** — render `OccupancyGrid`, overlay `LaserScan` point clouds, show robot pose from TF
-- **Nav2 integration** — tap the map to publish goal poses
+- **2D/3D map** — render `OccupancyGrid`, `LaserScan` or Matrix registered point clouds and show the robot pose from the canonical Omni TF tree
+- **Managed point navigation** — long-press either a grid map or verified `omni_map` point cloud, fine-tune X/Y on the phone, then submit only through Mission Manager's typed navigation API
+- **Authoritative map picker** — refresh `/omni/maps/list` from Mission Manager before navigation or route recording and carry the selected ID/version/SHA-256 tuple unchanged; phone cache is never treated as an asset source
 - **Rosbridge & Foxglove** — connect via `rosbridge_server` (port 9090) or `foxglove_bridge` (port 8765), no DDS configuration needed
 - **Customizable layouts** — tmux-style split panes, swap and resize widgets, save/load per robot
 - **Auto-layout** — detects available topics on connect and suggests a matching layout
@@ -54,12 +55,20 @@
 | Sensor   | IMU          | `sensor_msgs/Imu`, `MagneticField`        |
 | Sensor   | Line Chart   | Any numeric topic field                   |
 | Nav      | Map          | `nav_msgs/OccupancyGrid` + TF + LaserScan |
+| Nav      | 3D Point Cloud | `sensor_msgs/PointCloud2` + TF           |
 | Debug    | Topic Viewer | Any topic (raw JSON)                      |
 | Debug    | Rosout       | `rcl_interfaces/Log`                      |
 | Debug    | Diagnostics  | `diagnostic_msgs/DiagnosticArray`         |
 | Debug    | TF Tree      | `/tf`, `/tf_static`                       |
 
-The map widget supports Nav2 goal pose publishing, costmap overlays, and laser scan visualization.
+The map widgets never publish legacy `/goal_pose` commands. They produce an editable
+`omni_map` target draft; the control cockpit verifies the active map identity and sends it
+through `/omni/mission/navigation/submit`.
+
+Starting point navigation or route recording opens the robot-backed map catalog, including
+after a cold App/Manager start where runtime status has no map identity. The picker calls only
+the public `/omni/maps/list` service; the gateway denies direct access to
+`/omni/slam/maps/list`.
 
 ## Getting Started
 

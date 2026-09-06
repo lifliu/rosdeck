@@ -3,6 +3,7 @@ import {
   parsePointCloud2,
   projectPointCloud,
   TfPositionTracker,
+  unprojectPointCloudGround,
   type PointCloudPoint,
 } from '../../../widgets/pointcloud3d/transforms';
 
@@ -36,6 +37,14 @@ describe('PointCloud2 transforms', () => {
   it('parses the VBot FAST-LIO FLOAT32 field layout', () => {
     expect(parsePointCloud2(makeCloud([[1.25, -2.5, 0.75, 42]]))).toEqual([
       { x: 1.25, y: -2.5, z: 0.75, intensity: 42 },
+    ]);
+  });
+
+  it('parses rosbridge base64 PointCloud2 payloads', () => {
+    const cloud = makeCloud([[1.5, -2, 0.25, 9]]);
+    const binary = Array.from(cloud.data, (value) => String.fromCharCode(value)).join('');
+    expect(parsePointCloud2({ ...cloud, data: btoa(binary) })).toEqual([
+      { x: 1.5, y: -2, z: 0.25, intensity: 9 },
     ]);
   });
 
@@ -83,6 +92,35 @@ describe('PointCloud2 transforms', () => {
     expect(withFarPoint[0]).toEqual(first[0]);
   });
 
+  it('roundtrips a screen touch onto the navigation ground plane', () => {
+    const camera = {
+      yaw: -0.7,
+      pitch: 0.75,
+      zoom: 1.8,
+      target: { x: 3, y: -2, z: 0.42 },
+      viewMeters: 20,
+    };
+    const target = { x: 6.25, y: 1.5, z: 0, intensity: 0 };
+    const projected = projectPointCloud([target], 640, 360, camera)[0];
+    const restored = unprojectPointCloudGround(
+      projected.x, projected.y, 640, 360, camera, 0,
+    );
+    expect(restored).not.toBeNull();
+    expect(restored?.x).toBeCloseTo(target.x);
+    expect(restored?.y).toBeCloseTo(target.y);
+    expect(restored?.z).toBe(0);
+  });
+
+  it('refuses a view parallel to the ground plane', () => {
+    expect(unprojectPointCloudGround(50, 50, 100, 100, {
+      yaw: 0,
+      pitch: Math.PI / 2,
+      zoom: 1,
+      target: { x: 0, y: 0, z: 1 },
+      viewMeters: 20,
+    })).toBeNull();
+  });
+
   it('resolves robot position through forward and inverse TF chains', () => {
     const tracker = new TfPositionTracker();
     tracker.update({ transforms: [
@@ -105,6 +143,33 @@ describe('PointCloud2 transforms', () => {
     ] });
     expect(tracker.lookupPosition('map_frame', 'base_link')).toEqual({ x: 12, y: 3, z: 1 });
     expect(tracker.lookupPosition('base_link', 'map_frame')).toEqual({ x: -12, y: -3, z: -1 });
+  });
+
+  it('transforms FAST-LIO omni_odom points into omni_map before accumulation', () => {
+    const tracker = new TfPositionTracker();
+    tracker.update({ transforms: [{
+      header: { frame_id: 'omni_map' },
+      child_frame_id: 'omni_odom',
+      transform: {
+        translation: { x: 10, y: -2, z: 1 },
+        rotation: {
+          x: 0,
+          y: 0,
+          z: Math.sin(Math.PI / 4),
+          w: Math.cos(Math.PI / 4),
+        },
+      },
+    }] });
+
+    expect(tracker.transformPointCloud([
+      { x: 2, y: 1, z: 0.5, intensity: 7 },
+    ], 'omni_odom', 'omni_map')).toEqual([{
+      x: 9,
+      y: 0,
+      z: 1.5,
+      intensity: 7,
+    }]);
+    expect(tracker.transformPointCloud([], 'missing', 'omni_map')).toBeNull();
   });
 
   it('restores the configured voxel size after clearing', () => {

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { RosTime } from '../lib/autonomy-runtime';
 import {
   MISSION_STATE,
   type MissionEventMessage,
@@ -13,6 +14,10 @@ export const MAX_EVENTS_SHOWN = 50;
 export interface PendingDispatch {
   requestId: string;
   routeId: string;
+  sequence: number;
+  source: string;
+  requestedAt: RosTime;
+  deadline: RosTime;
 }
 
 interface MissionStore {

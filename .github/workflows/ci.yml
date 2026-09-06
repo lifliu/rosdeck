@@ -81,6 +81,21 @@ jobs:
       - name: omni_ws_gateway
         run: python3 -m unittest discover -s robot/omni_ws_gateway/test -v
 
+  gateway-package-smoke:
+    name: Gateway colcon install + ros2 run smoke
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
+    needs: changes
+    if: needs.changes.outputs.robot == 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install colcon
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-colcon-common-extensions
+      - name: Verify ROS package executable layout
+        run: bash robot/omni_ws_gateway/test/test_colcon_install_smoke.sh
+
   app:
     name: App typecheck + unit tests
     runs-on: ubuntu-22.04

@@ -52,6 +52,10 @@ selects one authorized, fresh command and applies E-stop and motion limits.
 | --- | --- | --- |
 | Mission Manager | `/omni/mission/execute`, `/omni/mission/dispatch` | Start an inspection mission |
 | Mission Manager | `/omni/mission/control`, `/omni/mission/status` | Pause/resume/cancel and observe state |
+| Mission Manager | `/omni/mission/runtime/set_mode`, `/omni/mission/runtime/status` | Ensure mapping, localization, navigation, or route-recording capability |
+| Mission Manager | `/omni/mission/navigation/submit`, `/omni/mission/navigation/cancel`, `/omni/mission/navigation/status` | Submit, cancel, and observe a map-bound point-navigation operation |
+| Mission Manager | `/omni/mission/runtime/finish_mapping`, `/omni/mission/runtime/finish_route_recording` | Explicitly save or discard an asset session |
+| Mission Manager | `/omni/maps/list` | Return the verified current map catalog for cold-start App selection |
 | Mission Manager | `/omni/mission/return_to_dock` | Global return and docking handoff |
 | Docking | `/omni/docking/dock`, `/omni/docking/undock` | Final docking operations |
 | Docking | `/omni/docking/config`, `/omni/docking/status` | Dock pose lookup and state |
@@ -60,10 +64,13 @@ selects one authorized, fresh command and applies E-stop and motion limits.
 | Robot Bridge | `/omni/robot_state`, `/battery_state`, `/diagnostics` | Product state and health |
 | TF Manager | `/omni/tf_manager/ready`, `/omni/slam/status` | TF and localization readiness gates |
 
-The Bridge currently retains the legacy `/rosdeck/control_command` and
-`/rosdeck/control_status` string lease façade. Mission/Docking must migrate to
-the typed `/omni/control/authority` service over the same internal lease state
-machine before the legacy façade is removed.
+The operator role permits the Mission services above by exact name; it is not
+allowed to publish Planner goal or velocity topics. It may call the public
+`/omni/maps/list`, but not the SLAM-internal `/omni/slam/maps/list`. The App and
+Mission use the typed `/omni/control/authority` service. The Bridge
+temporarily retains `/rosdeck/control_command` and `/rosdeck/control_status` as
+an internal compatibility façade for older deployments; the operator gateway
+does not grant new APP clients permission to publish the legacy command topic.
 
 Detailed QoS, payload and compatibility requirements live in each runtime
 repository's `docs/INTERFACES.md`; their `docs/TODO.md` is the authoritative

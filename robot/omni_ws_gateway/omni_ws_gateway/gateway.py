@@ -27,18 +27,19 @@ import base64
 import json
 import os
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import cbor_lite, ws_frames
 from .auth_store import RateLimiter, UserStore
 from .audit import AuditLog
-from .policy import Policy
+from .policy import Policy, PolicyDecision
 
 __all__ = ["GatewayConfig", "Gateway", "Upstream"]
 
 LOGIN_OPS = ("login",)
 MAX_GATE_BUFFER = 1 << 20  # 1 MiB before the login deadline
 MAX_MSG_BUFFER = 16 << 20  # 16 MiB accumulated data between parsed frames
+STREAM_CLOSE_TIMEOUT = 1.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,17 @@ class GatewayConfig:
     audit_dir: str = "/var/lib/omni/audit"
     policy_path: str | None = None
     login_timeout: float = 10.0
+
+
+@dataclass
+class ProtocolState:
+    """Per-session Foxglove IDs needed for RBAC on binary data frames."""
+
+    services: dict[int, str] = field(default_factory=dict)
+    client_channels: dict[int, str] = field(default_factory=dict)
+    server_channels: dict[int, str] = field(default_factory=dict)
+    subscriptions: dict[int, str] = field(default_factory=dict)
+    pending_service_calls: dict[int, tuple[int, str]] = field(default_factory=dict)
 
 
 class Gateway:
@@ -126,14 +138,17 @@ class Gateway:
                 await _send_close(writer, 1011, "upstream unavailable")
                 return
             self.audit.record("session_start", user=user, role=role, peer=peer)
+            protocol_state = ProtocolState()
 
             to_up = asyncio.create_task(
                 self._forward_client_to_upstream(reader, writer, upstream,
-                                                  user, role, peer, carryover)
+                                                  user, role, peer, carryover,
+                                                  protocol_state)
             )
             to_app = asyncio.create_task(
                 self._forward_upstream_to_client(writer, upstream,
-                                                  user, role, peer)
+                                                  user, role, peer,
+                                                  protocol_state)
             )
             done, pending = await asyncio.wait(
                 {to_up, to_app}, return_when=asyncio.FIRST_COMPLETED
@@ -162,13 +177,13 @@ class Gateway:
         except ConnectionError:
             pass
         finally:
-            if upstream is not None:
-                upstream.close()
-            try:
-                writer.close()
-            except Exception:  # noqa: BLE001
-                pass
+            # 必须在第一个 await 前同步触发上下游 close。否则 handler 在等待
+            # 任一侧关闭时被取消，另一侧 transport 会永远没有机会进入关闭状态。
+            upstream_writer = upstream.begin_close() if upstream is not None else None
+            _begin_stream_writer_close(writer)
             self.limiter.forget(peer)
+            await _wait_stream_writer_closed(writer)
+            await _wait_stream_writer_closed(upstream_writer)
 
     # -- login gate ---------------------------------------------------------
 
@@ -261,24 +276,70 @@ class Gateway:
         return True  # PONG: nothing to do
 
     async def _dispatch_client_message(self, writer, upstream, user, role,
-                                       peer, opcode, payload) -> bool:
+                                       peer, opcode, payload,
+                                       protocol_state: ProtocolState) -> bool:
         """Process one complete client data message; False ends the session."""
         if opcode not in (ws_frames.OP_TEXT, ws_frames.OP_BINARY):
             self.audit.record("protocol_error", user=user, peer=peer,
                               reason="bad opcode in session")
             await _send_close(writer, 1002, "bad opcode")
-            upstream.close()
+            await upstream.close()
             return False
         msg = _decode_frame(opcode, payload)
+        if msg is None and opcode == ws_frames.OP_BINARY:
+            sdk_frame = _decode_sdk_client_frame(payload, protocol_state)
+            if sdk_frame is not None:
+                op, topic, call_id, service_id = sdk_frame
+                decision = self.policy.check_client_op(role, op, topic)
+                if (
+                    decision.allowed
+                    and call_id is not None
+                    and call_id in protocol_state.pending_service_calls
+                ):
+                    decision = PolicyDecision(False, "duplicate service call id")
+                self.audit.record(
+                    "client_op", user=user, role=role, peer=peer, op=op,
+                    topic=topic, allowed=decision.allowed,
+                    reason=None if decision.allowed else decision.reason,
+                )
+                if not decision.allowed:
+                    await _send_error(writer, opcode, f"denied: {decision.reason}")
+                    return True
+                if (
+                    call_id is not None
+                    and service_id is not None
+                    and topic is not None
+                ):
+                    protocol_state.pending_service_calls[call_id] = (
+                        service_id,
+                        topic,
+                    )
+                await upstream.send_frame(opcode, payload)
+                return True
         if msg is None:
             self.audit.record("decode_error", user=user, peer=peer)
             await _send_close(writer, 1003, "bad data")
-            upstream.close()
+            await upstream.close()
             return False
         op = str(msg.get("op", ""))
         topic = msg.get("topic") or msg.get("service")
         topic = str(topic) if topic else None
-        decision = self.policy.check_client_op(role, op, topic)
+        advertised_channels = _client_advertised_channels(msg)
+        if op == "advertise" and advertised_channels is not None:
+            decisions = [
+                self.policy.check_client_op(role, op, channel_topic)
+                for _, channel_topic in advertised_channels
+            ]
+            decision = next(
+                (item for item in decisions if not item.allowed),
+                PolicyDecision(True),
+            )
+            topic = ",".join(value for _, value in advertised_channels) or None
+        else:
+            decision = self.policy.check_client_op(role, op, topic)
+        subscriptions = _client_subscriptions(msg, protocol_state)
+        if op == "subscribe" and "subscriptions" in msg and subscriptions is None:
+            decision = PolicyDecision(False, "invalid or unknown subscription channel")
         self.audit.record(
             "client_op", user=user, role=role, peer=peer, op=op,
             topic=topic, allowed=decision.allowed,
@@ -287,13 +348,29 @@ class Gateway:
         if not decision.allowed:
             await _send_error(writer, opcode, f"denied: {decision.reason}")
             return True
+        if op == "advertise" and advertised_channels is not None:
+            for channel_id, channel_topic in advertised_channels:
+                protocol_state.client_channels[channel_id] = channel_topic
+        elif op == "unadvertise":
+            for channel_id in msg.get("channelIds", []):
+                if isinstance(channel_id, int):
+                    protocol_state.client_channels.pop(channel_id, None)
+        elif op == "subscribe" and subscriptions is not None:
+            for subscription_id, subscription_topic in subscriptions:
+                protocol_state.subscriptions[subscription_id] = subscription_topic
+        elif op == "unsubscribe":
+            for subscription_id in msg.get("subscriptionIds", []):
+                if isinstance(subscription_id, int):
+                    protocol_state.subscriptions.pop(subscription_id, None)
         await upstream.send_frame(opcode, payload)
         return True
 
     async def _forward_client_to_upstream(self, reader, writer, upstream,
                                           user, role, peer,
-                                          carryover: bytearray | None = None
+                                          carryover: bytearray | None = None,
+                                          protocol_state: ProtocolState | None = None,
                                           ) -> None:
+        protocol_state = protocol_state or ProtocolState()
         buf = bytearray(carryover) if carryover else bytearray()
         asm = ws_frames.MessageAssembler()
         while True:
@@ -313,7 +390,8 @@ class Gateway:
                         return
                     continue
                 if not await self._dispatch_client_message(
-                    writer, upstream, user, role, peer, opcode, payload
+                    writer, upstream, user, role, peer, opcode, payload,
+                    protocol_state,
                 ):
                     return
             data = await reader.read(65536)
@@ -324,11 +402,14 @@ class Gateway:
             if len(buf) > MAX_MSG_BUFFER:
                 self.audit.record("frame_oversized", user=user, peer=peer)
                 await _send_close(writer, 1009, "message too big")
-                upstream.close()
+                await upstream.close()
                 return
 
     async def _forward_upstream_to_client(self, writer, upstream,
-                                          user, role, peer) -> None:
+                                          user, role, peer,
+                                          protocol_state: ProtocolState | None = None
+                                          ) -> None:
+        protocol_state = protocol_state or ProtocolState()
         buf = bytearray()
         asm = ws_frames.MessageAssembler()
         while True:
@@ -340,7 +421,7 @@ class Gateway:
             if len(buf) > MAX_MSG_BUFFER:
                 self.audit.record("frame_oversized", user=user, peer=peer)
                 await _send_close(writer, 1009, "message too big")
-                upstream.close()
+                await upstream.close()
                 return
             while True:
                 frame = ws_frames.read_frame(buf)
@@ -354,7 +435,7 @@ class Gateway:
                 if kind == "control":
                     if opcode == ws_frames.OP_CLOSE:
                         await _send_close(writer, 1000, "upstream closed")
-                        upstream.close()
+                        await upstream.close()
                         return
                     if opcode == ws_frames.OP_PING:
                         await upstream.send_frame(
@@ -363,10 +444,53 @@ class Gateway:
                     continue  # PONG and the rest: ignore
                 msg = _decode_frame(opcode, payload)
                 if msg is None:
-                    # Undecodable server data: do not forward it.
+                    # Foxglove SDK data and service responses are binary envelopes,
+                    # not CBOR control objects. Only frames that exactly match a
+                    # previously authorized subscription/service call may pass.
+                    sdk_frame = None
+                    if opcode == ws_frames.OP_BINARY:
+                        sdk_frame = _authorize_sdk_server_frame(
+                            payload,
+                            protocol_state,
+                        )
+                    if sdk_frame is not None:
+                        sdk_op, sdk_topic = sdk_frame
+                        decision = self.policy.check_server_op(
+                            role,
+                            sdk_op,
+                            sdk_topic,
+                        )
+                        if not decision.allowed:
+                            self.audit.record(
+                                "server_filtered",
+                                user=user,
+                                role=role,
+                                op=sdk_op,
+                                topic=sdk_topic,
+                                reason=decision.reason,
+                            )
+                            continue
+                        writer.write(ws_frames.build_frame(opcode, payload))
+                        await writer.drain()
+                        continue
                     self.audit.record("decode_error", user=user, peer=peer,
                                       reason="server frame")
                     continue
+                if msg.get("op") == "serviceCallFailure":
+                    service_topic = _consume_sdk_service_failure(
+                        msg,
+                        protocol_state,
+                    )
+                    if service_topic is None:
+                        self.audit.record(
+                            "server_filtered",
+                            user=user,
+                            role=role,
+                            op="serviceCallFailure",
+                            reason="unknown or mismatched service call",
+                        )
+                        continue
+                _update_server_protocol_state(msg, protocol_state)
                 op = str(msg.get("op", ""))
                 topic = msg.get("topic") or msg.get("service")
                 topic = str(topic) if topic else None
@@ -396,6 +520,179 @@ def _peer_str(peername) -> str:
         return f"{peername[0]}:{peername[1]}"
     except Exception:  # noqa: BLE001
         return str(peername)
+
+
+def _client_advertised_channels(msg: dict) -> list[tuple[int, str]] | None:
+    """Extract standard SDK ``advertise.channels`` entries for topic RBAC."""
+    if msg.get("op") != "advertise" or "channels" not in msg:
+        return None
+    channels = msg.get("channels")
+    if not isinstance(channels, list):
+        return [(-1, "")]
+    result: list[tuple[int, str]] = []
+    for channel in channels:
+        if not isinstance(channel, dict):
+            return [(-1, "")]
+        channel_id = channel.get("id")
+        topic = channel.get("topic")
+        if not isinstance(channel_id, int) or channel_id < 0 or not isinstance(topic, str) or not topic:
+            return [(-1, "")]
+        result.append((channel_id, topic))
+    return result
+
+
+def _client_subscriptions(
+    msg: dict,
+    protocol_state: ProtocolState,
+) -> list[tuple[int, str]] | None:
+    """Resolve standard SDK subscription IDs to advertised topic names."""
+    if msg.get("op") != "subscribe" or "subscriptions" not in msg:
+        return None
+    subscriptions = msg.get("subscriptions")
+    if not isinstance(subscriptions, list):
+        return None
+    result: list[tuple[int, str]] = []
+    for subscription in subscriptions:
+        if not isinstance(subscription, dict):
+            return None
+        subscription_id = subscription.get("id")
+        channel_id = subscription.get("channelId")
+        if not isinstance(subscription_id, int) or subscription_id < 0:
+            return None
+        if not isinstance(channel_id, int) or channel_id < 0:
+            return None
+        topic = protocol_state.server_channels.get(channel_id)
+        if topic is None:
+            return None
+        result.append((subscription_id, topic))
+    return result
+
+
+def _decode_sdk_client_frame(
+    payload: bytes,
+    protocol_state: ProtocolState,
+) -> tuple[str, str | None, int | None, int | None] | None:
+    """Map a Foxglove SDK binary envelope back to its authorized ROS name."""
+    if not payload:
+        return None
+    binary_opcode = payload[0]
+    if binary_opcode == 0x01:
+        if len(payload) < 5:
+            return None
+        channel_id = int.from_bytes(payload[1:5], "little")
+        return (
+            "publish",
+            protocol_state.client_channels.get(channel_id),
+            None,
+            None,
+        )
+    if binary_opcode == 0x02:
+        if len(payload) < 13:
+            return None
+        service_id = int.from_bytes(payload[1:5], "little")
+        call_id = int.from_bytes(payload[5:9], "little")
+        encoding_length = int.from_bytes(payload[9:13], "little")
+        if encoding_length > len(payload) - 13:
+            return None
+        return (
+            "service_call",
+            protocol_state.services.get(service_id),
+            call_id,
+            service_id,
+        )
+    return None
+
+
+def _authorize_sdk_server_frame(
+    payload: bytes,
+    protocol_state: ProtocolState,
+) -> tuple[str, str] | None:
+    """Resolve a server binary envelope to prior per-session authority."""
+    if not payload:
+        return None
+    if payload[0] == 0x01:
+        if len(payload) < 13:
+            return None
+        subscription_id = int.from_bytes(payload[1:5], "little")
+        topic = protocol_state.subscriptions.get(subscription_id)
+        if topic is None:
+            return None
+        return ("publish", topic)
+    if payload[0] == 0x03:
+        if len(payload) < 13:
+            return None
+        service_id = int.from_bytes(payload[1:5], "little")
+        call_id = int.from_bytes(payload[5:9], "little")
+        encoding_length = int.from_bytes(payload[9:13], "little")
+        if encoding_length > len(payload) - 13:
+            return None
+        pending = protocol_state.pending_service_calls.get(call_id)
+        if pending is None or pending[0] != service_id:
+            return None
+        protocol_state.pending_service_calls.pop(call_id, None)
+        return ("service_call", pending[1])
+    return None
+
+
+def _consume_sdk_service_failure(
+    msg: dict,
+    protocol_state: ProtocolState,
+) -> str | None:
+    """Consume a text service failure only for the exact pending request."""
+    service_id = msg.get("serviceId")
+    call_id = msg.get("callId")
+    if not isinstance(service_id, int) or not isinstance(call_id, int):
+        return None
+    pending = protocol_state.pending_service_calls.get(call_id)
+    if pending is None or pending[0] != service_id:
+        return None
+    protocol_state.pending_service_calls.pop(call_id, None)
+    return pending[1]
+
+
+def _update_server_protocol_state(msg: dict, protocol_state: ProtocolState) -> None:
+    op = msg.get("op")
+    if op == "advertise":
+        for channel in msg.get("channels", []):
+            if not isinstance(channel, dict):
+                continue
+            channel_id = channel.get("id")
+            topic = channel.get("topic")
+            if isinstance(channel_id, int) and channel_id >= 0 and isinstance(topic, str) and topic:
+                protocol_state.server_channels[channel_id] = topic
+    elif op == "unadvertise":
+        removed_topics = set()
+        for channel_id in msg.get("channelIds", []):
+            if isinstance(channel_id, int):
+                topic = protocol_state.server_channels.pop(channel_id, None)
+                if topic is not None:
+                    removed_topics.add(topic)
+        if removed_topics:
+            protocol_state.subscriptions = {
+                subscription_id: topic
+                for subscription_id, topic in protocol_state.subscriptions.items()
+                if topic not in removed_topics
+            }
+    elif op == "advertiseServices":
+        for service in msg.get("services", []):
+            if not isinstance(service, dict):
+                continue
+            service_id = service.get("id")
+            name = service.get("name")
+            if isinstance(service_id, int) and service_id >= 0 and isinstance(name, str) and name:
+                protocol_state.services[service_id] = name
+    elif op == "unadvertiseServices":
+        removed_service_ids = set()
+        for service_id in msg.get("serviceIds", []):
+            if isinstance(service_id, int):
+                protocol_state.services.pop(service_id, None)
+                removed_service_ids.add(service_id)
+        if removed_service_ids:
+            protocol_state.pending_service_calls = {
+                call_id: pending
+                for call_id, pending in protocol_state.pending_service_calls.items()
+                if pending[0] not in removed_service_ids
+            }
 
 
 def _decode_frame(opcode: int, payload: bytes):
@@ -488,6 +785,39 @@ async def _upstream_send_close(upstream: Upstream, status: int) -> None:
         pass
 
 
+def _abort_stream_writer(writer: asyncio.StreamWriter) -> None:
+    """立即中止底层 transport；仅用于正常关闭失败或超时的兜底。"""
+    try:
+        writer.transport.abort()
+    except (ConnectionError, OSError, ssl.SSLError):
+        pass
+
+
+def _begin_stream_writer_close(writer: asyncio.StreamWriter | None) -> None:
+    """同步触发关闭，保证后续 task 取消也不会遗漏 transport。"""
+    if writer is None:
+        return
+    try:
+        writer.close()
+    except (ConnectionError, OSError, ssl.SSLError):
+        _abort_stream_writer(writer)
+
+
+async def _wait_stream_writer_closed(writer: asyncio.StreamWriter | None) -> None:
+    """有界等待 TCP/TLS transport 完成关闭。"""
+    if writer is None:
+        return
+    try:
+        await asyncio.wait_for(writer.wait_closed(), STREAM_CLOSE_TIMEOUT)
+    except asyncio.TimeoutError:
+        # 对端可能拒绝完成 TLS close_notify；超时后必须中止底层 transport，
+        # 不能让恶意或半开连接无限拖住 Gateway handler。
+        _abort_stream_writer(writer)
+    except (ConnectionError, OSError, ssl.SSLError):
+        # 连接复位属于关闭阶段的正常竞态；abort 确保异常路径同样完成回收。
+        _abort_stream_writer(writer)
+
+
 async def _send_error(writer: asyncio.StreamWriter, offending_opcode: int,
                       message: str) -> None:
     """Send a protocol ``error`` op back in the same serialization as the
@@ -550,10 +880,12 @@ class Upstream:
         await self.send_frame(ws_frames.OP_CLOSE,
                               status.to_bytes(2, "big"), mask=True)
 
-    def close(self) -> None:
-        if self.writer is not None:
-            try:
-                self.writer.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self.writer = None
+    def begin_close(self) -> asyncio.StreamWriter | None:
+        """取走 writer 并同步触发关闭，使重复清理保持幂等。"""
+        writer = self.writer
+        self.writer = None
+        _begin_stream_writer_close(writer)
+        return writer
+
+    async def close(self) -> None:
+        await _wait_stream_writer_closed(self.begin_close())

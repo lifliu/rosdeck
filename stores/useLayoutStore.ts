@@ -11,6 +11,7 @@ import {
 } from '../types/layout';
 import { buildDefaultLayouts } from '../constants/presets';
 import { DEFAULTS } from '../constants/defaults';
+import { OMNI_BASE_FRAME, OMNI_MAP_FRAME, OMNI_ODOM_FRAME } from '../lib/frames';
 import { getWidget } from '../widgets/registry';
 import {
   LEGACY_VBOT_TELEOP_TOPIC,
@@ -20,7 +21,7 @@ import {
 } from '../lib/teleop';
 
 const STORAGE_KEY_PREFIX = 'ros2mobile_layouts_';
-const LAYOUT_SCHEMA_VERSION = 8;
+const LAYOUT_SCHEMA_VERSION = 9;
 let latestLayoutInitRequest = 0;
 
 const LEGACY_DEFAULT_CAMERA_TOPICS = new Set([
@@ -52,22 +53,6 @@ export function migrateLayoutsForUnifiedTeleop(layouts: SavedLayout[]): SavedLay
         ...node,
         children: [migrateNode(node.children[0]), migrateNode(node.children[1])],
       };
-    }
-    if (node.widgetType === 'pointcloud3d') {
-      const robotFrame = node.config?.robotFrame;
-      if (!robotFrame || robotFrame === 'base_link') {
-        return {
-          ...node,
-          config: {
-            ...node.config,
-            mapFrame: node.config?.mapFrame || 'map_frame',
-            robotFrame: 'lidar_frame',
-            odomTopic: node.config?.odomTopic || '/Odometry',
-            viewMeters: node.config?.viewMeters || 20,
-          },
-        };
-      }
-      return node;
     }
     if (node.widgetType !== 'joystick') return node;
 
@@ -114,6 +99,66 @@ export function migrateLayoutsForUnifiedTeleop(layouts: SavedLayout[]): SavedLay
     if (mappingLayout) migrated.push(mappingLayout);
   }
   return migrated;
+}
+
+/**
+ * 将历史内置 frame 默认值迁移到 omni_tf_manager 的 canonical TF 树。
+ *
+ * 只改写旧产品默认值；用户明确填写的自定义 frame 保持原样。主控制台在
+ * 导航选点时还会拒绝非 canonical frame，避免“只换 frame 标签、不做变换”。
+ */
+export function migrateLayoutsForCanonicalFrames(layouts: SavedLayout[]): SavedLayout[] {
+  const migrateNode = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      const first = migrateNode(node.children[0]);
+      const second = migrateNode(node.children[1]);
+      return first === node.children[0] && second === node.children[1]
+        ? node
+        : { ...node, children: [first, second] };
+    }
+
+    const config = node.config ?? {};
+    let nextConfig = config;
+    const setValue = (key: string, value: unknown) => {
+      if (nextConfig === config) nextConfig = { ...config };
+      nextConfig[key] = value;
+    };
+
+    if (node.widgetType === 'map') {
+      if (!config.mapFrame || config.mapFrame === 'map') {
+        setValue('mapFrame', OMNI_MAP_FRAME);
+      }
+      if (!config.odomFrame || config.odomFrame === 'odom') {
+        setValue('odomFrame', OMNI_ODOM_FRAME);
+      }
+      if (!config.robotFrame || config.robotFrame === 'base_link') {
+        setValue('robotFrame', OMNI_BASE_FRAME);
+      }
+    } else if (node.widgetType === 'pointcloud3d') {
+      if (!config.topic || config.topic === '/cloud_registered') {
+        setValue('topic', '/cloud_registered_global');
+      }
+      if (!config.mapFrame || config.mapFrame === 'map' || config.mapFrame === 'map_frame') {
+        setValue('mapFrame', OMNI_MAP_FRAME);
+      }
+      if (!config.robotFrame || config.robotFrame === 'base_link' ||
+          config.robotFrame === 'lidar_frame') {
+        setValue('robotFrame', OMNI_BASE_FRAME);
+      }
+      if (!config.odomTopic) setValue('odomTopic', '/Odometry');
+      if (!config.viewMeters) setValue('viewMeters', 20);
+    } else if (node.widgetType === 'joystick' &&
+        (!config.frameId || config.frameId === 'base_link')) {
+      setValue('frameId', OMNI_BASE_FRAME);
+    }
+
+    return nextConfig === config ? node : { ...node, config: nextConfig };
+  };
+
+  return layouts.map((layout) => {
+    const tree = migrateNode(layout.tree);
+    return tree === layout.tree ? layout : { ...layout, tree };
+  });
 }
 
 /**
@@ -234,7 +279,11 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
         const data = JSON.parse(stored);
         const needsMigration = data.schemaVersion !== LAYOUT_SCHEMA_VERSION;
         const layouts = needsMigration
-          ? migrateLayoutsForCanonicalCamera(migrateLayoutsForUnifiedTeleop(data.layouts ?? []))
+          ? migrateLayoutsForCanonicalFrames(
+            migrateLayoutsForCanonicalCamera(
+              migrateLayoutsForUnifiedTeleop(data.layouts ?? []),
+            ),
+          )
           : data.layouts;
         const activeLayoutId = needsMigration && url.startsWith('demo://') && data.activeLayoutId === 'dashboard'
           ? 'drive-camera'

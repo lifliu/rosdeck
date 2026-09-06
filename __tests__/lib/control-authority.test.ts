@@ -1,15 +1,97 @@
 import {
-  CONTROL_COMMAND_TOPIC,
-  CONTROL_MESSAGE_TYPE,
-  CONTROL_STATUS_TOPIC,
+  CONTROL_AUTHORITY_OPERATION,
+  CONTROL_AUTHORITY_OWNER_APP,
+  CONTROL_AUTHORITY_SERVICE,
+  CONTROL_AUTHORITY_SERVICE_TYPE,
+  CONTROL_AUTHORITY_STATE,
+  CONTROL_AUTHORITY_STATUS_TOPIC,
+  CONTROL_AUTHORITY_STATUS_TYPE,
   parseControlStatus,
+  parseTypedControlStatus,
+  requestControlAuthority,
 } from '../../lib/control-authority';
+import type { Transport } from '../../lib/transport';
 
 describe('mobile control authority protocol', () => {
-  it('uses stable ROS 2 standard-message topics', () => {
-    expect(CONTROL_COMMAND_TOPIC).toBe('/rosdeck/control_command');
-    expect(CONTROL_STATUS_TOPIC).toBe('/rosdeck/control_status');
-    expect(CONTROL_MESSAGE_TYPE).toBe('std_msgs/msg/String');
+  it('uses typed Bridge command and status contracts', () => {
+    expect(CONTROL_AUTHORITY_SERVICE).toBe('/omni/control/authority');
+    expect(CONTROL_AUTHORITY_SERVICE_TYPE).toBe(
+      'omni_robot_interfaces/srv/ControlAuthority',
+    );
+    expect(CONTROL_AUTHORITY_STATUS_TOPIC).toBe('/omni/control/authority/status');
+    expect(CONTROL_AUTHORITY_STATUS_TYPE).toBe(
+      'omni_robot_interfaces/msg/ControlAuthorityStatus',
+    );
+  });
+
+  it('distinguishes the Mission base lease from this APP manual override', () => {
+    expect(parseTypedControlStatus({
+      state: CONTROL_AUTHORITY_STATE.ACTIVE,
+      base_owner_type: 2,
+      base_client_id: 'mission-42',
+      manual_override_active: false,
+    })).toEqual({ state: 'override_available', baseOwnerId: 'mission-42' });
+
+    expect(parseTypedControlStatus({
+      state: CONTROL_AUTHORITY_STATE.ACTIVE,
+      base_owner_type: 2,
+      base_client_id: 'mission-42',
+      manual_override_active: true,
+      manual_override_client_id: 'app-phone',
+    })).toEqual({
+      state: 'override_acquired',
+      ownerId: 'app-phone',
+      baseOwnerId: 'mission-42',
+    });
+  });
+
+  it('normalizes typed lifecycle and cooldown states', () => {
+    expect(parseTypedControlStatus({
+      state: CONTROL_AUTHORITY_STATE.ACQUIRING,
+      base_owner_type: 1,
+      base_client_id: 'app-phone',
+    })).toEqual({ state: 'acquiring', ownerId: 'app-phone' });
+    expect(parseTypedControlStatus({
+      state: CONTROL_AUTHORITY_STATE.COOLDOWN,
+      cooldown_remaining_sec: 2.2,
+    })).toEqual({ state: 'cooldown', remainingSeconds: 3 });
+    expect(parseTypedControlStatus({ state: 99 })).toBeNull();
+  });
+
+  it('sends APP acquire and renew through the typed authority contract', async () => {
+    const callService = jest.fn().mockResolvedValue({
+      accepted: true,
+      active_owner_type: CONTROL_AUTHORITY_OWNER_APP,
+      active_client_id: 'app-phone',
+      reason_code: 0,
+      reason_text: 'ok',
+    });
+    const transport = { callService } as unknown as Transport;
+
+    await expect(requestControlAuthority(transport, 'acquire', 'test')).resolves.toEqual({
+      accepted: true,
+      activeOwnerType: CONTROL_AUTHORITY_OWNER_APP,
+      activeClientId: 'app-phone',
+      reasonCode: 0,
+      reasonText: 'ok',
+    });
+    expect(callService).toHaveBeenCalledWith(
+      CONTROL_AUTHORITY_SERVICE,
+      CONTROL_AUTHORITY_SERVICE_TYPE,
+      expect.objectContaining({
+        op: CONTROL_AUTHORITY_OPERATION.ACQUIRE,
+        owner_type: CONTROL_AUTHORITY_OWNER_APP,
+        lease_sec: 5,
+        reason: 'test',
+      }),
+    );
+
+    await requestControlAuthority(transport, 'renew');
+    expect(callService).toHaveBeenLastCalledWith(
+      CONTROL_AUTHORITY_SERVICE,
+      CONTROL_AUTHORITY_SERVICE_TYPE,
+      expect.objectContaining({ op: CONTROL_AUTHORITY_OPERATION.RENEW }),
+    );
   });
 
   it('parses ownership states', () => {

@@ -1,4 +1,5 @@
 import {
+  cancelActiveTouches,
   dispatchTouchEnd,
   dispatchTouchMove,
   dispatchTouchStart,
@@ -8,8 +9,27 @@ import {
 
 describe('touch dispatcher multi-stick routing', () => {
   afterEach(() => {
+    cancelActiveTouches();
     unregisterTouchEntry('left-stick');
     unregisterTouchEntry('right-stick');
+  });
+
+  it('ends routed joystick gestures when an overlay takes touch ownership', () => {
+    const end = jest.fn();
+    const move = jest.fn();
+    registerTouchEntry('left-stick', {
+      bounds: { x: 0, y: 0, width: 100, height: 100 },
+      onTouchStart: jest.fn(),
+      onTouchMove: move,
+      onTouchEnd: end,
+    });
+    dispatchTouchStart([{ identifier: 11, pageX: 50, pageY: 50 }]);
+
+    cancelActiveTouches();
+    dispatchTouchMove([{ identifier: 11, pageX: 60, pageY: 60 }]);
+
+    expect(end).toHaveBeenCalledWith(11);
+    expect(move).not.toHaveBeenCalled();
   });
 
   it('tracks two fingers on independent joystick bounds', () => {

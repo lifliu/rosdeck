@@ -12,6 +12,12 @@
 
 import type { Transport } from '../transport';
 import {
+  AUTONOMY_REQUEST_SOURCE,
+  resolveMissionCommandSequence,
+  toRosTime,
+  type RosTime,
+} from '../autonomy-runtime';
+import {
   MISSION_CONTROL_CMD,
   type ControlResponse,
   type DispatchResponse,
@@ -35,6 +41,7 @@ export const MISSION_EVENTS_TOPIC = '/omni/mission/events';
 export const MISSION_EVENTS_TYPE = 'omni_robot_interfaces/msg/MissionEvent';
 export const ROBOT_STATE_TOPIC = '/omni/robot_state';
 export const ROBOT_STATE_TYPE = 'omni_robot_interfaces/msg/RobotState';
+export const DEFAULT_INSPECTION_DEADLINE_MS = 30 * 60 * 1000;
 
 // rosbridge and foxglove both deliver IDL field names as-is (snake_case);
 // the camelCase fallback guards against a bridge that re-cases fields.
@@ -71,6 +78,11 @@ export interface DispatchOptions {
   missionId?: string;
   mapId?: string;
   mapVersion?: string;
+  source?: string;
+  requestedAt?: RosTime;
+  deadline?: RosTime;
+  mapChecksum?: string;
+  routeChecksum?: string;
 }
 
 function normalizeDispatchResponse(raw: any): DispatchResponse {
@@ -91,24 +103,42 @@ function normalizeControlResponse(raw: any): ControlResponse {
 }
 
 function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((v) => typeof v === 'string') : [];
+  // ListRoutes 使用平行数组，不能过滤坏值后让后续资产元数据错位。
+  return Array.isArray(value) ? value.map((v) => typeof v === 'string' ? v : '') : [];
+}
+
+function asNumberArray(value: unknown): number[] {
+  const values = Array.isArray(value)
+    ? value
+    : ArrayBuffer.isView(value)
+      ? Array.from(value as unknown as ArrayLike<unknown>)
+      : [];
+  return values.map((v) => typeof v === 'number' && Number.isFinite(v) ? v : 0);
 }
 
 export async function dispatchMission(
   transport: Transport,
   options: DispatchOptions,
 ): Promise<DispatchResponse> {
+  const nowMs = Date.now();
   const raw = await transport.callService(
     MISSION_DISPATCH_SERVICE,
     MISSION_DISPATCH_SERVICE_TYPE,
     {
       mission_id: options.missionId ?? '',
       request_id: options.requestId,
-      sequence: options.sequence ?? 1,
+      sequence: resolveMissionCommandSequence(options.sequence),
       map_id: options.mapId ?? '',
       map_version: options.mapVersion ?? '',
       route_id: options.routeId,
       checkpoint_ids: [],
+      source: options.source ?? AUTONOMY_REQUEST_SOURCE,
+      requested_at: options.requestedAt ?? toRosTime(nowMs),
+      // deadline 覆盖准备与执行全程；30 分钟默认值既允许正常巡检完成，也能
+      // 阻止离线队列在很久以后重放同一个物理运动命令。
+      deadline: options.deadline ?? toRosTime(nowMs + DEFAULT_INSPECTION_DEADLINE_MS),
+      map_checksum: options.mapChecksum ?? '',
+      route_checksum: options.routeChecksum ?? '',
     },
   );
   return normalizeDispatchResponse(raw);
@@ -150,10 +180,20 @@ export async function listRoutes(transport: Transport): Promise<RouteEntry[]> {
   const mapIds = asStringArray(field(raw, 'map_ids'));
   const frameIds = asStringArray(field(raw, 'frame_ids'));
   const createdAt = asStringArray(field(raw, 'created_at'));
+  const mapVersions = asStringArray(field(raw, 'map_versions'));
+  const mapChecksums = asStringArray(field(raw, 'map_checksums'));
+  const routeChecksums = asStringArray(field(raw, 'route_checksums'));
+  const pointCounts = asNumberArray(field(raw, 'point_counts'));
+  const distancesM = asNumberArray(field(raw, 'distances_m'));
   return routeIds.map((routeId, i) => ({
     routeId,
     mapId: mapIds[i] ?? '',
     frameId: frameIds[i] ?? '',
     createdAt: createdAt[i] ?? '',
+    mapVersion: mapVersions[i] ?? '',
+    mapChecksum: mapChecksums[i] ?? '',
+    routeChecksum: routeChecksums[i] ?? '',
+    pointCount: pointCounts[i] ?? 0,
+    distanceM: distancesM[i] ?? 0,
   }));
 }

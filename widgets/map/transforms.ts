@@ -100,3 +100,53 @@ export function canvasToWorld(
   const worldY = mapInfo.origin.y + (mapInfo.height - gridY) * mapInfo.resolution;
   return [worldX, worldY];
 }
+
+/**
+ * 将无 OccupancyGrid 的机器人中心视图坐标换算到世界坐标。
+ *
+ * Mode B 在 Canvas 中使用 `(worldX, -worldY)`，因此纵轴换算必须显式
+ * 反向。`center` 是跟随模式下的机器人位置；自由平移模式传入世界原点，
+ * 并通过 pan 表达视图偏移。
+ */
+export function robotCentricCanvasToWorld(
+  canvasX: number,
+  canvasY: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  pixelsPerMeter: number,
+  center: { x: number; y: number },
+  panX = 0,
+  panY = 0,
+): [number, number] {
+  if (![canvasX, canvasY, canvasWidth, canvasHeight, pixelsPerMeter,
+    center.x, center.y, panX, panY].every(Number.isFinite) ||
+      canvasWidth <= 0 || canvasHeight <= 0 || pixelsPerMeter <= 0) {
+    throw new Error('Robot-centric viewport requires finite positive dimensions');
+  }
+  return [
+    center.x + (canvasX - canvasWidth / 2 - panX) / pixelsPerMeter,
+    center.y - (canvasY - canvasHeight / 2 - panY) / pixelsPerMeter,
+  ];
+}
+
+/** `robotCentricCanvasToWorld` 的逆变换，供目标标记和单元测试复用。 */
+export function robotCentricWorldToCanvas(
+  worldX: number,
+  worldY: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  pixelsPerMeter: number,
+  center: { x: number; y: number },
+  panX = 0,
+  panY = 0,
+): [number, number] {
+  if (![worldX, worldY, canvasWidth, canvasHeight, pixelsPerMeter,
+    center.x, center.y, panX, panY].every(Number.isFinite) ||
+      canvasWidth <= 0 || canvasHeight <= 0 || pixelsPerMeter <= 0) {
+    throw new Error('Robot-centric viewport requires finite positive dimensions');
+  }
+  return [
+    canvasWidth / 2 + panX + (worldX - center.x) * pixelsPerMeter,
+    canvasHeight / 2 + panY - (worldY - center.y) * pixelsPerMeter,
+  ];
+}

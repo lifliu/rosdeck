@@ -1,4 +1,5 @@
 import type { WidgetDefinition } from '../../types/layout';
+import { OMNI_BASE_FRAME } from '../../lib/frames';
 import { Joystick } from '../../components/Joystick';
 import { DEFAULTS } from '../../constants/defaults';
 
@@ -11,7 +12,7 @@ export const joystickWidget: WidgetDefinition = {
   defaultConfig: {
     topic: DEFAULTS.cmdVelTopic,
     useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
-    frameId: 'base_link',
+    frameId: OMNI_BASE_FRAME,
     controlScheme: 'dual',
     maxLinearVel: DEFAULTS.maxLinearVel,
     maxAngularVel: DEFAULTS.maxAngularVel,

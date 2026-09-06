@@ -1,4 +1,5 @@
 import type { WidgetDefinition } from '../../types/layout';
+import { OMNI_BASE_FRAME, OMNI_MAP_FRAME } from '../../lib/frames';
 import { PointCloud3DWidget } from './PointCloud3DWidget';
 
 export const pointCloud3DWidget: WidgetDefinition = {
@@ -8,9 +9,9 @@ export const pointCloud3DWidget: WidgetDefinition = {
   category: 'sensor',
   supportedMessageTypes: ['sensor_msgs/msg/PointCloud2'],
   defaultConfig: {
-    topic: '/cloud_registered',
-    mapFrame: 'map_frame',
-    robotFrame: 'lidar_frame',
+    topic: '/cloud_registered_global',
+    mapFrame: OMNI_MAP_FRAME,
+    robotFrame: OMNI_BASE_FRAME,
     odomTopic: '/Odometry',
     viewMeters: 20,
   },
@@ -25,13 +26,13 @@ export const pointCloud3DWidget: WidgetDefinition = {
       key: 'mapFrame',
       label: 'Map Frame',
       type: 'text',
-      placeholder: 'map_frame',
+      placeholder: OMNI_MAP_FRAME,
     },
     {
       key: 'robotFrame',
       label: 'Robot Frame',
       type: 'text',
-      placeholder: 'lidar_frame',
+      placeholder: OMNI_BASE_FRAME,
     },
     {
       key: 'odomTopic',

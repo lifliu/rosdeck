@@ -260,7 +260,9 @@ describe('FoxgloveTransport connection', () => {
 
     const encoding = new TextEncoder().encode('cdr');
     const responseWriter = new MessageWriter(parseMessageDefinition(
-      'string[] route_ids\nstring[] map_ids\nstring[] frame_ids\nstring[] created_at',
+      'string[] route_ids\nstring[] map_ids\nstring[] frame_ids\nstring[] created_at\n' +
+      'string[] map_versions\nstring[] map_checksums\nstring[] route_checksums\n' +
+      'uint32[] point_counts\nfloat32[] distances_m',
       { ros2: true },
     ));
     const body = responseWriter.writeMessage({
@@ -268,6 +270,11 @@ describe('FoxgloveTransport connection', () => {
       map_ids: ['matrix_sim'],
       frame_ids: ['omni_map'],
       created_at: ['2026-09-04T19:30:00Z'],
+      map_versions: ['2'],
+      map_checksums: ['map-sha'],
+      route_checksums: ['route-sha'],
+      point_counts: new Uint32Array([12]),
+      distances_m: new Float32Array([8.5]),
     });
     const response = new Uint8Array(13 + encoding.length + body.length);
     const responseView = new DataView(response.buffer);
@@ -284,6 +291,11 @@ describe('FoxgloveTransport connection', () => {
       map_ids: ['matrix_sim'],
       frame_ids: ['omni_map'],
       created_at: ['2026-09-04T19:30:00Z'],
+      map_versions: ['2'],
+      map_checksums: ['map-sha'],
+      route_checksums: ['route-sha'],
+      point_counts: new Uint32Array([12]),
+      distances_m: new Float32Array([8.5]),
     });
   });
 
@@ -307,6 +319,157 @@ describe('FoxgloveTransport connection', () => {
       op: 'serviceCallFailure', serviceId: 9, callId, message: 'service unavailable',
     }) });
     await expect(promise).rejects.toThrow('service unavailable');
+  });
+});
+
+describe('FoxgloveTransport topic subscriptions', () => {
+  let socket: any;
+  let WebSocketMock: jest.Mock;
+
+  const makeServerMessage = (subscriptionId: number, payload: Uint8Array): Uint8Array => {
+    const message = new Uint8Array(13 + payload.byteLength);
+    const view = new DataView(message.buffer);
+    view.setUint8(0, 0x01);
+    view.setUint32(1, subscriptionId, true);
+    message.set(payload, 13);
+    return message;
+  };
+
+  const subscribeFrames = (): any[] => socket.send.mock.calls
+    .map(([value]: [unknown]) => value)
+    .filter((value: unknown): value is string => typeof value === 'string')
+    .map((value: string) => JSON.parse(value))
+    .filter((value: any) => value.op === 'subscribe');
+
+  beforeEach(() => {
+    socket = {
+      binaryType: 'blob',
+      protocol: 'foxglove.sdk.v1',
+      close: jest.fn(),
+      send: jest.fn(),
+      onopen: null,
+      onerror: null,
+      onclose: null,
+      onmessage: null,
+    };
+    WebSocketMock = jest.fn(() => socket);
+    global.WebSocket = WebSocketMock as any;
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('re-subscribes to a replacement channel and rebuilds a changed same-name schema reader', async () => {
+    const topic = '/points';
+    const messageType = 'example_msgs/msg/Sample';
+    const oldSchema = 'float32 value';
+    const newSchema = 'float32 value\nuint32 generation';
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertise',
+      channels: [{ id: 21, topic, encoding: 'cdr', schemaName: messageType, schema: oldSchema }],
+    }) });
+
+    const originalCallback = jest.fn();
+    const originalSubscription = transport.subscribe(topic, messageType, originalCallback);
+    const survivingCallback = jest.fn();
+    transport.subscribe(topic, messageType, survivingCallback);
+    const bridgeSubId = subscribeFrames()[0].subscriptions[0].id;
+    const oldPayload = new MessageWriter(
+      parseMessageDefinition(oldSchema, { ros2: true }),
+    ).writeMessage({ value: 1.5 });
+    socket.onmessage?.({ data: makeServerMessage(bridgeSubId, oldPayload) });
+    expect(survivingCallback).toHaveBeenLastCalledWith({ value: 1.5 });
+
+    // 首个内部订阅退出后，bridge subId 仍应服务同 topic 的其它回调。
+    originalSubscription.unsubscribe();
+    socket.onmessage?.({ data: JSON.stringify({ op: 'unadvertise', channelIds: [21] }) });
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertise',
+      channels: [{ id: 22, topic, encoding: 'cdr', schemaName: messageType, schema: newSchema }],
+    }) });
+
+    expect(subscribeFrames()).toEqual([
+      { op: 'subscribe', subscriptions: [{ id: bridgeSubId, channelId: 21 }] },
+      { op: 'subscribe', subscriptions: [{ id: bridgeSubId, channelId: 22 }] },
+    ]);
+
+    const newPayload = new MessageWriter(
+      parseMessageDefinition(newSchema, { ros2: true }),
+    ).writeMessage({ value: 2.5, generation: 7 });
+    socket.onmessage?.({ data: makeServerMessage(bridgeSubId, newPayload) });
+
+    expect(originalCallback).toHaveBeenCalledTimes(1);
+    expect(survivingCallback).toHaveBeenLastCalledWith({ value: 2.5, generation: 7 });
+  });
+
+  it('applies throttleRate before CDR deserialization', async () => {
+    const topic = '/scan';
+    const messageType = 'example_msgs/msg/Sample';
+    const schema = 'float32 value';
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertise',
+      channels: [{ id: 31, topic, encoding: 'cdr', schemaName: messageType, schema }],
+    }) });
+
+    const callback = jest.fn();
+    transport.subscribe(topic, messageType, callback, 100);
+    const bridgeSubId = subscribeFrames()[0].subscriptions[0].id;
+    const payload = new MessageWriter(
+      parseMessageDefinition(schema, { ros2: true }),
+    ).writeMessage({ value: 3.5 });
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const readMessage = jest.spyOn(MessageReader.prototype, 'readMessage');
+
+    socket.onmessage?.({ data: makeServerMessage(bridgeSubId, payload) });
+    expect(readMessage).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(1_050);
+    socket.onmessage?.({ data: makeServerMessage(bridgeSubId, payload) });
+    expect(readMessage).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(1_100);
+    socket.onmessage?.({ data: makeServerMessage(bridgeSubId, payload) });
+    expect(readMessage).toHaveBeenCalledTimes(2);
+    expect(callback).toHaveBeenCalledTimes(2);
+  });
+
+  it('decodes only the bounded payload of a non-zero-offset Uint8Array frame', async () => {
+    const topic = '/json_state';
+    const messageType = 'example_msgs/msg/State';
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertise',
+      channels: [{ id: 41, topic, encoding: 'json', schemaName: messageType }],
+    }) });
+
+    const callback = jest.fn();
+    transport.subscribe(topic, messageType, callback);
+    const bridgeSubId = subscribeFrames()[0].subscriptions[0].id;
+    const frame = makeServerMessage(
+      bridgeSubId,
+      new TextEncoder().encode(JSON.stringify({ value: 42 })),
+    );
+    const backing = new Uint8Array(frame.byteLength + 12);
+    backing.fill('x'.charCodeAt(0));
+    backing.set(frame, 5);
+
+    // 模拟原生 WebSocket 交付共享 backing buffer 中的一段有界 view。
+    socket.onmessage?.({ data: backing.subarray(5, 5 + frame.byteLength) });
+
+    expect(callback).toHaveBeenCalledWith({ value: 42 });
   });
 });
 

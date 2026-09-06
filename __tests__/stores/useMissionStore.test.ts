@@ -32,6 +32,9 @@ function status(overrides: Partial<MissionStatusMessage> = {}): MissionStatusMes
     progress: 0,
     reason_code: 0,
     reason_text: '',
+    request_source: 'test-app',
+    map_checksum: '',
+    route_checksum: '',
     ...overrides,
   };
 }
@@ -76,6 +79,10 @@ describe('onStatus pendingDispatch rules', () => {
     useMissionStore.getState().setPendingDispatch({
       requestId: 'req-1',
       routeId: 'route-a',
+      sequence: 1,
+      source: 'test-app',
+      requestedAt: { sec: 1, nanosec: 0 },
+      deadline: { sec: 31, nanosec: 0 },
     });
 
   it('keeps the intent for the same request_id (replay across a reconnect)', () => {
@@ -130,9 +137,17 @@ describe('onRobotState', () => {
 describe('resetFeed', () => {
   it('drops feed state but keeps lastError', () => {
     const store = useMissionStore.getState();
-    store.setRoutes([{ routeId: 'a', mapId: 'm', frameId: '', createdAt: '' }]);
+    store.setRoutes([{
+      routeId: 'a', mapId: 'm', frameId: '', createdAt: '',
+      mapVersion: '1', mapChecksum: 'map-sha', routeChecksum: 'route-sha',
+      pointCount: 3, distanceM: 2.5,
+    }]);
     store.selectRoute('a');
-    store.setPendingDispatch({ requestId: 'r', routeId: 'a' });
+    store.setPendingDispatch({
+      requestId: 'r', routeId: 'a', sequence: 1, source: 'test-app',
+      requestedAt: { sec: 1, nanosec: 0 },
+      deadline: { sec: 31, nanosec: 0 },
+    });
     store.setDispatching(true);
     store.setControlling(true);
     store.setError('boom');

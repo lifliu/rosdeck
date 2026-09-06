@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
+import { MapCatalogPicker } from './MapCatalogPicker';
 import { theme } from '../constants/theme';
 import {
   AUTONOMY_MODE,
@@ -8,6 +9,12 @@ import {
   setAutonomyMode,
 } from '../lib/autonomy-runtime';
 import { useTranslation } from '../lib/i18n';
+import {
+  isCompleteMapIdentity,
+  mapIdentityKey,
+  type MapCatalogEntry,
+  type MapIdentity,
+} from '../lib/maps';
 import { ACTIVE_MISSION_STATES, MISSION_STATE } from '../lib/mission/types';
 import { useAutonomyRuntimeStore } from '../stores/useAutonomyRuntimeStore';
 import { useMissionStore } from '../stores/useMissionStore';
@@ -27,6 +34,7 @@ export function NavigationControl({ compact = false }: { compact?: boolean }) {
   const runtimeStale = useAutonomyRuntimeStore((state) => state.stale);
   const pendingCommand = useAutonomyRuntimeStore((state) => state.pendingCommand);
   const missionState = useMissionStore((state) => state.status?.state ?? MISSION_STATE.NONE);
+  const [mapPickerOpen, setMapPickerOpen] = useState(false);
   const { t } = useTranslation();
 
   const phase = runtime?.phase ?? AUTONOMY_PHASE.IDLE;
@@ -40,15 +48,32 @@ export function NavigationControl({ compact = false }: { compact?: boolean }) {
   const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
   const protectedMode = runtime?.mode === AUTONOMY_MODE.MAPPING ||
     runtime?.mode === AUTONOMY_MODE.ROUTE_RECORDING;
+  const currentMapIdentity = useMemo<MapIdentity | null>(() => {
+    const candidate = runtime ? {
+      mapId: runtime.map_id,
+      mapVersion: runtime.map_version,
+      mapChecksum: runtime.map_checksum,
+    } : null;
+    return isCompleteMapIdentity(candidate) ? candidate : null;
+  }, [runtime?.map_checksum, runtime?.map_id, runtime?.map_version]);
 
-  const requestNavigationMode = useCallback(async () => {
-    if (!transport || !useAutonomyRuntimeStore.getState().beginCommand({
+  const requestNavigationMode = useCallback(async (mapIdentity: MapIdentity) => {
+    if (!transport || !isCompleteMapIdentity(mapIdentity)) {
+      Alert.alert(t('navigation.failedTitle'), t('navigation.mapRequired'));
+      return;
+    }
+    if (!useAutonomyRuntimeStore.getState().beginCommand({
       kind: 'set_mode',
       desiredMode: AUTONOMY_MODE.SINGLE_POINT_READY,
     })) return;
     try {
       const response = await setAutonomyMode(transport, {
         desiredMode: AUTONOMY_MODE.SINGLE_POINT_READY,
+        // 三个字段来自一次目录响应中的同一项；这里不再读取可能已经变化的
+        // runtime 快照，避免请求组合出跨版本身份。
+        mapId: mapIdentity.mapId,
+        mapVersion: mapIdentity.mapVersion,
+        mapChecksum: mapIdentity.mapChecksum,
       });
       useAutonomyRuntimeStore.getState().completeCommand(response);
       if (!response.accepted) {
@@ -68,19 +93,24 @@ export function NavigationControl({ compact = false }: { compact?: boolean }) {
   }, [t, transport]);
 
   const confirmNavigation = useCallback(() => {
-    Alert.alert(
-      t('navigation.confirmTitle'),
-      t('navigation.confirmMessage'),
-      [
-        { text: t('navigation.cancel'), style: 'cancel' },
-        { text: t('navigation.start'), onPress: () => void requestNavigationMode() },
-      ],
-    );
-  }, [requestNavigationMode, t]);
+    // 即使 runtime 仍保留上一张地图，也重新读取目录；这既允许多地图切换，
+    // 也避免把旧运行时快照当成当前资产目录。
+    setMapPickerOpen(true);
+  }, []);
+
+  const selectCatalogMap = useCallback((entry: MapCatalogEntry) => {
+    setMapPickerOpen(false);
+    if (currentMapIdentity &&
+        mapIdentityKey(entry) === mapIdentityKey(currentMapIdentity) &&
+        navigationReady) {
+      return;
+    }
+    void requestNavigationMode(entry);
+  }, [currentMapIdentity, navigationReady, requestNavigationMode]);
 
   const connected = connectionStatus === 'connected' && Boolean(transport) && !url.startsWith('demo://');
   const canEnsureNavigation = synchronized && !transitioning && !runtimeFault &&
-    !navigationReady && !missionActive && !protectedMode;
+    !missionActive && !protectedMode;
   const disabled = !connected || pendingCommand !== null || !canEnsureNavigation;
   const navigationCommandPending = pendingCommand?.kind === 'set_mode' &&
     pendingCommand.desiredMode === AUTONOMY_MODE.SINGLE_POINT_READY;
@@ -91,7 +121,7 @@ export function NavigationControl({ compact = false }: { compact?: boolean }) {
     : navigationCommandPending || navigationStarting
       ? 'navigation.startingButton'
       : navigationReady
-        ? 'navigation.readyButton'
+        ? 'navigation.changeMapButton'
         : runtimeFault
           ? 'navigation.unavailableButton'
           : !synchronized
@@ -101,38 +131,48 @@ export function NavigationControl({ compact = false }: { compact?: boolean }) {
               : 'navigation.button';
 
   return (
-    <TouchableOpacity
-      accessibilityRole="button"
-      accessibilityLabel={t(labelKey)}
-      style={[
-        styles.button,
-        navigationReady && styles.readyButton,
-        compact && styles.compactButton,
-        disabled && styles.disabled,
-      ]}
-      disabled={disabled}
-      onPress={confirmNavigation}
-      activeOpacity={0.75}
-    >
-      <Ionicons
-        name={navigationCommandPending || navigationStarting
-          ? 'hourglass-outline'
-          : navigationReady
-            ? 'checkmark-circle-outline'
-            : runtimeFault
-              ? 'warning-outline'
-              : 'navigate-outline'}
-        size={compact ? 20 : 16}
-        color={disabled && !navigationReady
-          ? theme.colors.textMuted
-          : theme.colors.statusConnected}
+    <>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={t(labelKey)}
+        style={[
+          styles.button,
+          navigationReady && styles.readyButton,
+          compact && styles.compactButton,
+          disabled && styles.disabled,
+        ]}
+        disabled={disabled}
+        onPress={confirmNavigation}
+        activeOpacity={0.75}
+      >
+        <Ionicons
+          name={navigationCommandPending || navigationStarting
+            ? 'hourglass-outline'
+            : navigationReady
+              ? 'checkmark-circle-outline'
+              : runtimeFault
+                ? 'warning-outline'
+                : 'navigate-outline'}
+          size={compact ? 20 : 16}
+          color={disabled && !navigationReady
+            ? theme.colors.textMuted
+            : theme.colors.statusConnected}
+        />
+        {!compact && (
+          <Text style={[styles.text, disabled && !navigationReady && styles.disabledText]}>
+            {t(labelKey)}
+          </Text>
+        )}
+      </TouchableOpacity>
+      <MapCatalogPicker
+        visible={mapPickerOpen}
+        title={t('mapCatalog.navigationTitle')}
+        confirmLabel={t('mapCatalog.prepareNavigation')}
+        currentIdentity={currentMapIdentity}
+        onCancel={() => setMapPickerOpen(false)}
+        onSelect={selectCatalogMap}
       />
-      {!compact && (
-        <Text style={[styles.text, disabled && !navigationReady && styles.disabledText]}>
-          {t(labelKey)}
-        </Text>
-      )}
-    </TouchableOpacity>
+    </>
   );
 }
 

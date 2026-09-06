@@ -12,6 +12,7 @@ jest.mock('../../widgets/registry', () => ({
 
 import {
   migrateLayoutsForCanonicalCamera,
+  migrateLayoutsForCanonicalFrames,
   migrateLayoutsForUnifiedTeleop,
   migrateLegacyTeleopForUnifiedRobot,
   useLayoutStore,
@@ -176,21 +177,57 @@ describe('useLayoutStore', () => {
       expect(migrated.tree).toEqual(custom.tree);
     });
 
-    it('moves the old point-cloud reference frame to lidar_frame', () => {
+    it('moves built-in map and point-cloud frames to the canonical Omni tree', () => {
       const legacy = {
         id: 'mapping-3d',
         name: '3D Mapping',
-        tree: createWidgetNode('pointcloud3d', {
-          topic: '/cloud_registered',
-          robotFrame: 'base_link',
+        tree: createSplitNode(
+          'horizontal',
+          createWidgetNode('pointcloud3d', {
+            topic: '/cloud_registered',
+            mapFrame: 'map_frame',
+            robotFrame: 'lidar_frame',
+          }),
+          createWidgetNode('map', {
+            topic: '/map',
+            mapFrame: 'map',
+            robotFrame: 'base_link',
+          }),
+        ),
+      };
+      const [migrated] = migrateLayoutsForCanonicalFrames([legacy]);
+      expect(migrated.tree.type).toBe('split');
+      if (migrated.tree.type === 'split') {
+        expect(migrated.tree.children[0].type).toBe('widget');
+        expect(migrated.tree.children[1].type).toBe('widget');
+        if (migrated.tree.children[0].type === 'widget') {
+          expect(migrated.tree.children[0].config).toMatchObject({
+            topic: '/cloud_registered_global',
+            mapFrame: 'omni_map',
+            robotFrame: 'omni_base_link',
+          });
+        }
+        if (migrated.tree.children[1].type === 'widget') {
+          expect(migrated.tree.children[1].config).toMatchObject({
+            mapFrame: 'omni_map',
+            odomFrame: 'omni_odom',
+            robotFrame: 'omni_base_link',
+          });
+        }
+      }
+    });
+
+    it('preserves explicitly customized frames', () => {
+      const custom = {
+        id: 'custom-map',
+        name: 'Custom map',
+        tree: createWidgetNode('map', {
+          mapFrame: 'site_map',
+          odomFrame: 'site_odom',
+          robotFrame: 'site_base',
         }),
       };
-      const [migrated] = migrateLayoutsForUnifiedTeleop([legacy]);
-      expect(migrated.tree.type).toBe('widget');
-      if (migrated.tree.type === 'widget') {
-        expect(migrated.tree.config.robotFrame).toBe('lidar_frame');
-        expect(migrated.tree.config.mapFrame).toBe('map_frame');
-      }
+      expect(migrateLayoutsForCanonicalFrames([custom])[0]).toBe(custom);
     });
 
     it('seeds new layouts with authenticated teleop', () => {

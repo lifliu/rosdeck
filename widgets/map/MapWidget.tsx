@@ -20,6 +20,11 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS, useSharedValue, useDerivedValue } from "react-native-reanimated";
 import { WidgetEmptyState } from "../../components/WidgetEmptyState";
 import { theme } from "../../constants/theme";
+import {
+  OMNI_BASE_FRAME,
+  OMNI_MAP_FRAME,
+  OMNI_ODOM_FRAME,
+} from "../../lib/frames";
 import { useRosStore } from "../../stores/useRosStore";
 import type { WidgetProps } from "../../types/layout";
 import { laserScanToPoints } from "../laserscan/transforms";
@@ -27,7 +32,7 @@ import {
   canvasToWorld,
   costmapGridToPixels,
   occupancyGridToPixels,
-  worldToCanvas,
+  robotCentricCanvasToWorld,
 } from "./transforms";
 
 interface MapInfo {
@@ -35,6 +40,7 @@ interface MapInfo {
   height: number;
   resolution: number;
   origin: { x: number; y: number };
+  frameId?: string;
 }
 
 interface RobotPose {
@@ -47,6 +53,21 @@ interface Transform2D {
   x: number;
   y: number;
   yaw: number;
+}
+
+export interface MapGoalSelection {
+  x: number;
+  y: number;
+  frameId: string;
+}
+
+export interface MapWidgetRuntimeProps extends Partial<WidgetProps> {
+  /** 只有 Mission 已确认 SINGLE_POINT_READY 时，控制台才会打开该交互。 */
+  goalSelectionEnabled?: boolean;
+  onGoalSelected?: (goal: MapGoalSelection) => void;
+  goalMarker?: MapGoalSelection | null;
+  /** Canonical map identity; changing it invalidates every cached raster/TF. */
+  assetIdentityKey?: string;
 }
 
 function quaternionToYaw(q: {
@@ -107,22 +128,27 @@ function lookupTransform(
 }
 
 
-export function MapWidget(props: Partial<WidgetProps>) {
+export function MapWidget(props: MapWidgetRuntimeProps) {
   const transport = useRosStore((s) => s.transport);
   const status = useRosStore((s) => s.connection.status);
   const topic = props?.config?.topic || "/map";
   const scanTopic = props?.config?.scanTopic || "/scan";
-  const mapFrame: string = (props?.config?.mapFrame || "map").replace(
+  const mapFrame: string = (props?.config?.mapFrame || OMNI_MAP_FRAME).replace(
     /^\//,
     "",
   );
-  const robotFrame: string = (props?.config?.robotFrame || "base_link").replace(
+  const odomFrame: string = (props?.config?.odomFrame || OMNI_ODOM_FRAME).replace(
+    /^\//,
+    "",
+  );
+  const robotFrame: string = (props?.config?.robotFrame || OMNI_BASE_FRAME).replace(
     /^\//,
     "",
   );
   const flipIndicator: boolean = props?.config?.flipIndicator ?? false;
-  const enableNav2Goal = props?.config?.enableNav2Goal || false;
-  const nav2GoalTopic = props?.config?.nav2GoalTopic || "/goal_pose";
+  const goalSelectionEnabled = props.goalSelectionEnabled === true &&
+    typeof props.onGoalSelected === "function";
+  const canonicalGoalFrameConfigured = mapFrame === OMNI_MAP_FRAME;
   const globalCostmapTopic = props?.config?.globalCostmapTopic || "";
   const localCostmapTopic = props?.config?.localCostmapTopic || "";
   const updateRateHz: number = props?.config?.updateRate ?? 0;
@@ -315,6 +341,39 @@ export function MapWidget(props: Partial<WidgetProps>) {
   const pendingLocalCostmapMsgRef = useRef<any>(null);
   const localCostmapConversionPendingRef = useRef(false);
 
+  useEffect(() => {
+    pendingMapMsgRef.current = null;
+    mapConversionPendingRef.current = false;
+    pendingGlobalCostmapMsgRef.current = null;
+    globalCostmapConversionPendingRef.current = false;
+    pendingLocalCostmapMsgRef.current = null;
+    localCostmapConversionPendingRef.current = false;
+    tfTransformsRef.current = new Map();
+    robotPoseRef.current = null;
+    scanPointsRef.current = [];
+    scanFrameIdRef.current = "";
+    mapToOdomRef.current = { x: 0, y: 0, yaw: 0 };
+    setMapData(null);
+    setGlobalCostmap(null);
+    setLocalCostmap(null);
+    setRobotPose(null);
+    setScanPoints([]);
+    setMapToOdom({ x: 0, y: 0, yaw: 0 });
+    setGoalPosition(null);
+    setFollowRobot(false);
+  }, [
+    status,
+    transport,
+    topic,
+    scanTopic,
+    globalCostmapTopic,
+    localCostmapTopic,
+    mapFrame,
+    odomFrame,
+    robotFrame,
+    props.assetIdentityKey,
+  ]);
+
   // --- Subscriptions (unchanged) ---
 
   // Map subscription
@@ -339,6 +398,9 @@ export function MapWidget(props: Partial<WidgetProps>) {
                 x: latest.info?.origin?.position?.x || 0,
                 y: latest.info?.origin?.position?.y || 0,
               },
+              // Missing metadata is not proof of canonical coordinates. The
+              // raster may still render, but navigation selection stays closed.
+              frameId: String(latest.header?.frame_id || "").replace(/^\//, ""),
             };
             if (info.width === 0 || info.height === 0) return;
             const pixels = occupancyGridToPixels(latest.data, info.width, info.height);
@@ -348,7 +410,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
       },
     );
     return () => sub.unsubscribe();
-  }, [transport, status, topic]);
+  }, [transport, status, topic, mapFrame]);
 
   // Global costmap
   useEffect(() => {
@@ -377,7 +439,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
               },
             };
             if (info.width === 0 || info.height === 0) return;
-            const frameId = (latest.header?.frame_id || "map").replace(/^\//, "");
+            const frameId = (latest.header?.frame_id || mapFrame).replace(/^\//, "");
             setGlobalCostmap({
               pixels: costmapGridToPixels(latest.data, info.width, info.height),
               info,
@@ -388,7 +450,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
       },
     );
     return () => sub.unsubscribe();
-  }, [transport, status, globalCostmapTopic]);
+  }, [transport, status, globalCostmapTopic, mapFrame]);
 
   // Local costmap
   useEffect(() => {
@@ -417,7 +479,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
               },
             };
             if (info.width === 0 || info.height === 0) return;
-            const frameId = (latest.header?.frame_id || "odom").replace(/^\//, "");
+            const frameId = (latest.header?.frame_id || odomFrame).replace(/^\//, "");
             setLocalCostmap({
               pixels: costmapGridToPixels(latest.data, info.width, info.height),
               info,
@@ -428,7 +490,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
       },
     );
     return () => sub.unsubscribe();
-  }, [transport, status, localCostmapTopic]);
+  }, [transport, status, localCostmapTopic, odomFrame]);
 
   // TF (dynamic + static) — builds full transform tree, derives robot pose and map->odom
   useEffect(() => {
@@ -456,8 +518,12 @@ export function MapWidget(props: Partial<WidgetProps>) {
         mapFrame,
         robotFrame,
       );
-      if (robotTf) robotPoseRef.current = robotTf;
-      const mapOdomTf = lookupTransform(tfTransformsRef.current, "map", "odom");
+      robotPoseRef.current = robotTf;
+      const mapOdomTf = lookupTransform(
+        tfTransformsRef.current,
+        mapFrame,
+        odomFrame,
+      );
       if (mapOdomTf) mapToOdomRef.current = mapOdomTf;
       scheduleStateFlush();
     };
@@ -472,7 +538,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
       sub2.unsubscribe();
       tfTransformsRef.current = new Map();
     };
-  }, [transport, status, mapFrame, robotFrame]);
+  }, [transport, status, mapFrame, odomFrame, robotFrame]);
 
   // LaserScan
   useEffect(() => {
@@ -517,8 +583,16 @@ export function MapWidget(props: Partial<WidgetProps>) {
         const mp = robotMapPixelSV.value;
         const s  = fitScaleSV.value * zoomSV.value;
         if (mp) {
-          savedPanXSV.value = -(mp.gx - mapWidthSV.value / 2) * s;
-          savedPanYSV.value = -(mp.gy - mapHeightSV.value / 2) * s;
+          if (mapWidthSV.value > 0 && mapHeightSV.value > 0) {
+            savedPanXSV.value = -(mp.gx - mapWidthSV.value / 2) * s;
+            savedPanYSV.value = -(mp.gy - mapHeightSV.value / 2) * s;
+          } else {
+            // Mode B 的绘制点是 (worldX, -worldY)。从跟随切到自由平移时
+            // 把当前机器人位置折算成 pan，避免画面在首次拖动时跳变。
+            const worldScale = basePpmSV.value * zoomSV.value;
+            savedPanXSV.value = -mp.gx * worldScale;
+            savedPanYSV.value = mp.gy * worldScale;
+          }
         } else {
           savedPanXSV.value = 0;
           savedPanYSV.value = 0;
@@ -542,14 +616,17 @@ export function MapWidget(props: Partial<WidgetProps>) {
   const robotInMap = robotPose;
 
   // Scan frame origin in map frame — uses TF to correctly place the sensor, falls back to robot pose
-  const scanOrigin =
-    (scanFrameIdRef.current
-      ? lookupTransform(
-          tfTransformsRef.current,
-          mapFrame,
-          scanFrameIdRef.current,
-        )
-      : null) ?? robotInMap;
+  const scanFrameTransform = scanFrameIdRef.current
+    ? lookupTransform(
+        tfTransformsRef.current,
+        mapFrame,
+        scanFrameIdRef.current,
+      )
+    : null;
+  const scanOrigin = scanPoints.length > 0 ? scanFrameTransform : robotInMap;
+  const modeBCanonicalTfReady = canonicalGoalFrameConfigured &&
+    robotInMap !== null &&
+    (scanPoints.length === 0 || scanFrameTransform !== null);
 
   // --- Animated group matrix for Mode A (map-pixel space) ---
   const groupMatrix = useDerivedValue((): Matrix4 => {
@@ -597,7 +674,8 @@ export function MapWidget(props: Partial<WidgetProps>) {
 
   // --- Memoized Mode B scan vecs in world coordinates ---
   const scanVecsModeBMemo = useMemo(() => {
-    const scanOriginB = scanOrigin ?? (robotPose as RobotPose | null) ?? { x: 0, y: 0, yaw: 0 };
+    if (!scanOrigin) return [];
+    const scanOriginB = scanOrigin;
     return scanPoints.map(([px, py]) => {
       const cos = Math.cos(scanOriginB.yaw);
       const sin = Math.sin(scanOriginB.yaw);
@@ -624,9 +702,12 @@ export function MapWidget(props: Partial<WidgetProps>) {
   }, [robotPose, flipIndicator, mapData?.info, width, height]);
 
   const goalPathMemo = useMemo(() => {
-    if (!goalPosition || !mapData) return null;
-    const gx = (goalPosition.x - mapData.info.origin.x) / mapData.info.resolution;
-    const gy = mapData.info.height - (goalPosition.y - mapData.info.origin.y) / mapData.info.resolution;
+    // 传入 null 表示父组件明确要求清除标记；只有完全未传该属性时，才使用
+    // MapWidget 自己记录的最近一次选择，避免取消确认框后留下“幽灵目标点”。
+    const marker = props.goalMarker === undefined ? goalPosition : props.goalMarker;
+    if (!marker || !mapData) return null;
+    const gx = (marker.x - mapData.info.origin.x) / mapData.info.resolution;
+    const gy = mapData.info.height - (marker.y - mapData.info.origin.y) / mapData.info.resolution;
     const fitScale = Math.min(width / mapData.info.width, height / mapData.info.height);
     const crossSize = 6 / fitScale;
     const path = Skia.Path.Make();
@@ -635,7 +716,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
     path.moveTo(gx + crossSize, gy - crossSize);
     path.lineTo(gx - crossSize, gy + crossSize);
     return path;
-  }, [goalPosition, mapData?.info, width, height]);
+  }, [goalPosition, props.goalMarker, mapData?.info, width, height]);
 
   const scanVecsMemo = useMemo(() => {
     if (!mapData) return [];
@@ -662,7 +743,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
     const mapInfo = mapData.info;
     const cmW_px = cmInfo.width  * (cmInfo.resolution / mapInfo.resolution);
     const cmH_px = cmInfo.height * (cmInfo.resolution / mapInfo.resolution);
-    if (globalCostmap.frameId === 'map') {
+    if (globalCostmap.frameId === mapFrame) {
       const cmLeft = (cmInfo.origin.x - mapInfo.origin.x) / mapInfo.resolution;
       const cmTop  = mapInfo.height - (cmInfo.origin.y + cmInfo.height * cmInfo.resolution - mapInfo.origin.y) / mapInfo.resolution;
       return { type: 'map' as const, cmLeft, cmTop, cmW_px, cmH_px };
@@ -682,7 +763,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
     const mapInfo = mapData.info;
     const cmW_px = cmInfo.width  * (cmInfo.resolution / mapInfo.resolution);
     const cmH_px = cmInfo.height * (cmInfo.resolution / mapInfo.resolution);
-    if (localCostmap.frameId === 'map') {
+    if (localCostmap.frameId === mapFrame) {
       const cmLeft = (cmInfo.origin.x - mapInfo.origin.x) / mapInfo.resolution;
       const cmTop  = mapInfo.height - (cmInfo.origin.y + cmInfo.height * cmInfo.resolution - mapInfo.origin.y) / mapInfo.resolution;
       return { type: 'map' as const, cmLeft, cmTop, cmW_px, cmH_px };
@@ -717,32 +798,30 @@ export function MapWidget(props: Partial<WidgetProps>) {
   // MODE A: Map-based rendering
   // ===========================
   if (hasMap) {
+    const mapDataFrame = String(mapData.info.frameId || "").replace(/^\//, "");
+    const mapGoalSelectionEnabled = goalSelectionEnabled &&
+      canonicalGoalFrameConfigured && mapDataFrame === OMNI_MAP_FRAME;
     const handleLongPress = (cx: number, cy: number) => {
-      if (!transport || !enableNav2Goal || !mapData) return;
+      if (!mapGoalSelectionEnabled || !props.onGoalSelected || !mapData) return;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       const fitScale = Math.min(width / mapData.info.width, height / mapData.info.height);
       const effectivePanX = followRobot && robotPose
-        ? -(robotMapPixelSV.value?.gx ?? 0 - mapData.info.width / 2) * fitScale * zoomSV.value
+        ? -((robotMapPixelSV.value?.gx ?? 0) - mapData.info.width / 2) * fitScale * zoomSV.value
         : panXSV.value;
       const effectivePanY = followRobot && robotPose
-        ? -(robotMapPixelSV.value?.gy ?? 0 - mapData.info.height / 2) * fitScale * zoomSV.value
+        ? -((robotMapPixelSV.value?.gy ?? 0) - mapData.info.height / 2) * fitScale * zoomSV.value
         : panYSV.value;
       const [wx, wy] = canvasToWorld(
         cx, cy, mapData.info, width, height,
         fitScale, zoomSV.value, effectivePanX, effectivePanY,
       );
-      const now = Date.now();
-      transport.publish(nav2GoalTopic, 'geometry_msgs/msg/PoseStamped', {
-        header: {
-          stamp: { sec: Math.floor(now / 1000), nanosec: (now % 1000) * 1_000_000 },
-          frame_id: 'map',
-        },
-        pose: {
-          position: { x: wx, y: wy, z: 0 },
-          orientation: { x: 0, y: 0, z: 0, w: 1 },
-        },
-      });
       setGoalPosition({ x: wx, y: wy });
+      // 地图组件只报告坐标，不持有 Mission/Planner 接口，更不能绕过控制面发布 goal topic。
+      props.onGoalSelected({
+        x: wx,
+        y: wy,
+        frameId: OMNI_MAP_FRAME,
+      });
     };
 
     const longPressGesture = Gesture.LongPress()
@@ -751,7 +830,7 @@ export function MapWidget(props: Partial<WidgetProps>) {
         if (success) runOnJS(handleLongPress)(e.x, e.y);
       });
 
-    const finalGesture = enableNav2Goal
+    const finalGesture = mapGoalSelectionEnabled
       ? Gesture.Race(longPressGesture, Gesture.Simultaneous(pinchGesture, panGesture))
       : Gesture.Simultaneous(pinchGesture, panGesture);
 
@@ -865,6 +944,13 @@ export function MapWidget(props: Partial<WidgetProps>) {
         <View style={styles.compass}>
           <Text style={styles.compassText}>N</Text>
         </View>
+        {goalSelectionEnabled && !mapGoalSelectionEnabled ? (
+          <View pointerEvents="none" style={styles.selectionWarning}>
+            <Text style={styles.selectionWarningText}>
+              等待 {OMNI_MAP_FRAME} 地图数据后开放选点
+            </Text>
+          </View>
+        ) : null}
         <MapControls
           followRobot={followRobot}
           onZoomIn={() => { zoomSV.value = Math.min(10, zoomSV.value * 1.5); }}
@@ -919,9 +1005,56 @@ export function MapWidget(props: Partial<WidgetProps>) {
     robotPathB.close();
   }
 
+  const markerB = props.goalMarker === undefined ? goalPosition : props.goalMarker;
+  let goalPathB: ReturnType<typeof Skia.Path.Make> | null = null;
+  if (markerB) {
+    const crossSize = 6 / (basePpm * zoomSV.value);
+    goalPathB = Skia.Path.Make();
+    goalPathB.moveTo(markerB.x - crossSize, -markerB.y - crossSize);
+    goalPathB.lineTo(markerB.x + crossSize, -markerB.y + crossSize);
+    goalPathB.moveTo(markerB.x + crossSize, -markerB.y - crossSize);
+    goalPathB.lineTo(markerB.x - crossSize, -markerB.y + crossSize);
+  }
+
+  const handleRobotCentricLongPress = (canvasX: number, canvasY: number) => {
+    if (!goalSelectionEnabled || !modeBCanonicalTfReady ||
+        !props.onGoalSelected) return;
+    const following = followRobot && robotPose !== null;
+    const center = following
+      ? { x: robotPose.x, y: robotPose.y }
+      : { x: 0, y: 0 };
+    const [worldX, worldY] = robotCentricCanvasToWorld(
+      canvasX,
+      canvasY,
+      width,
+      height,
+      basePpm * zoomSV.value,
+      center,
+      following ? 0 : panXSV.value,
+      following ? 0 : panYSV.value,
+    );
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setGoalPosition({ x: worldX, y: worldY });
+    props.onGoalSelected({ x: worldX, y: worldY, frameId: OMNI_MAP_FRAME });
+  };
+
+  const robotCentricLongPress = Gesture.LongPress()
+    .minDuration(500)
+    .onEnd((event, success) => {
+      if (success) {
+        runOnJS(handleRobotCentricLongPress)(event.x, event.y);
+      }
+    });
+  const robotCentricGesture = goalSelectionEnabled && modeBCanonicalTfReady
+    ? Gesture.Race(
+      robotCentricLongPress,
+      Gesture.Simultaneous(pinchGesture, panGesture),
+    )
+    : Gesture.Simultaneous(pinchGesture, panGesture);
+
   return (
     <View style={[styles.container, { width, height }]}>
-      <GestureDetector gesture={Gesture.Simultaneous(pinchGesture, panGesture)}>
+      <GestureDetector gesture={robotCentricGesture}>
         <View style={StyleSheet.absoluteFill}>
           <Canvas style={StyleSheet.absoluteFill}>
             <Group matrix={groupMatrixB}>
@@ -937,6 +1070,14 @@ export function MapWidget(props: Partial<WidgetProps>) {
               )}
               {robotPathB && (
                 <Path path={robotPathB} color={theme.colors.statusConnected} style="fill" />
+              )}
+              {goalPathB && (
+                <Path
+                  path={goalPathB}
+                  color={theme.colors.statusError}
+                  style="stroke"
+                  strokeWidth={2 / (basePpm * zoomSV.value)}
+                />
               )}
               {!robotPose && (() => {
                 const crossPath = Skia.Path.Make();
@@ -971,6 +1112,13 @@ export function MapWidget(props: Partial<WidgetProps>) {
           }
         }}
       />
+      {goalSelectionEnabled && !modeBCanonicalTfReady ? (
+        <View pointerEvents="none" style={styles.selectionWarning}>
+          <Text style={styles.selectionWarningText}>
+            等待 {OMNI_MAP_FRAME} 到机器人与传感器的规范 TF 后开放选点
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1042,6 +1190,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     color: theme.colors.textPrimary,
+  },
+  selectionWarning: {
+    position: "absolute",
+    top: 54,
+    alignSelf: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#2D2214DD",
+  },
+  selectionWarningText: {
+    color: theme.colors.statusConnecting,
+    fontSize: 9,
+    fontWeight: "700",
   },
   zoomControls: { position: "absolute", bottom: 8, right: 8, gap: 4 },
   zoomButton: {
