@@ -1,46 +1,28 @@
-jest.mock('react-native', () => ({
-  Alert: { alert: jest.fn() },
-  StyleSheet: { create: (value: unknown) => value },
-  Text: 'Text',
-  TouchableOpacity: 'TouchableOpacity',
-}));
+import fs from 'node:fs';
+import path from 'node:path';
+import { AUTONOMY_MODE } from '../../lib/autonomy-runtime';
+import { ACTIVE_MISSION_STATES, MISSION_STATE } from '../../lib/mission/types';
 
-jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+describe('NavigationControl runtime migration', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../../components/NavigationControl.tsx'),
+    'utf8',
+  );
 
-import {
-  extractNavigationStatus,
-  NAVIGATION_MESSAGE_TYPE,
-  NAVIGATION_STATUS_TOPIC,
-  parseNavigationRuntimeState,
-  START_NAVIGATION_MESSAGE,
-  START_NAVIGATION_TOPIC,
-  STOP_NAVIGATION_MESSAGE,
-} from '../../components/NavigationControl';
-
-describe('NavigationControl protocol', () => {
-  it('uses one Bool command type and one authoritative status topic', () => {
-    expect(START_NAVIGATION_TOPIC).toBe('/rosdeck/start_navigation');
-    expect(NAVIGATION_STATUS_TOPIC).toBe('/rosdeck/navigation_status');
-    expect(NAVIGATION_MESSAGE_TYPE).toBe('std_msgs/msg/Bool');
-    expect(START_NAVIGATION_MESSAGE).toEqual({ data: true });
-    expect(STOP_NAVIGATION_MESSAGE).toEqual({ data: false });
+  it('ensures the single-point mode through Mission Manager', () => {
+    expect(AUTONOMY_MODE.SINGLE_POINT_READY).toBe(3);
+    expect(source).toContain('setAutonomyMode');
+    expect(source).toContain('desiredMode: AUTONOMY_MODE.SINGLE_POINT_READY');
+    expect(source).not.toContain('/rosdeck/');
   });
 
-  it('distinguishes Bridge-managed and externally managed runtimes', () => {
-    expect(parseNavigationRuntimeState('running:managed')).toBe('running_managed');
-    expect(parseNavigationRuntimeState('running:external')).toBe('running_external');
-    expect(parseNavigationRuntimeState('blocked:inspection_runtime')).toBe('blocked_inspection');
-    expect(parseNavigationRuntimeState('blocked:inspection_mission_active')).toBe('blocked_inspection');
-    expect(parseNavigationRuntimeState('blocked:inspection_mission_unknown')).toBe('blocked_inspection_unknown');
-    expect(parseNavigationRuntimeState('switchable:inspection_runtime')).toBe('switchable_inspection');
-    expect(parseNavigationRuntimeState('switching:inspection_runtime')).toBe('starting');
-    expect(parseNavigationRuntimeState('partial:localization')).toBe('partial');
-    expect(parseNavigationRuntimeState('error:planner_publisher_conflict')).toBe('error');
-  });
-
-  it('extracts String messages and rejects malformed payloads', () => {
-    expect(extractNavigationStatus({ data: 'idle' })).toBe('idle');
-    expect(extractNavigationStatus({ data: 1 })).toBe('');
-    expect(extractNavigationStatus(null)).toBe('');
+  it('defines inspection-active UI only from non-terminal MissionStatus states', () => {
+    expect(ACTIVE_MISSION_STATES).toEqual([
+      MISSION_STATE.PENDING,
+      MISSION_STATE.EXECUTING,
+      MISSION_STATE.PAUSED,
+    ]);
+    expect(source).toContain('ACTIVE_MISSION_STATES.includes(missionState)');
+    expect(source).not.toContain('runtime?.mission_active');
   });
 });

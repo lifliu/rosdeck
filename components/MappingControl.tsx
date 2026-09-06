@@ -1,161 +1,183 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { theme } from '../constants/theme';
+import {
+  AUTONOMY_MODE,
+  AUTONOMY_PHASE,
+  MAPPING_DISPOSITION,
+  finishMapping,
+  generateAutonomyRequestId,
+  generateMappingMapId,
+  setAutonomyMode,
+  type MappingDisposition,
+} from '../lib/autonomy-runtime';
 import { useTranslation } from '../lib/i18n';
-import { useRosStore } from '../stores/useRosStore';
+import { ACTIVE_MISSION_STATES, MISSION_STATE } from '../lib/mission/types';
+import { useAutonomyRuntimeStore } from '../stores/useAutonomyRuntimeStore';
 import { useLayoutStore } from '../stores/useLayoutStore';
 import { useMappingStore } from '../stores/useMappingStore';
+import { useMissionStore } from '../stores/useMissionStore';
+import { useRosStore } from '../stores/useRosStore';
 
-export const START_MAPPING_TOPIC = '/rosdeck/start_3d_mapping';
-export const MAPPING_STATUS_TOPIC = '/rosdeck/mapping_status';
-export const START_MAPPING_MESSAGE_TYPE = 'std_msgs/msg/Bool';
-export const START_MAPPING_MESSAGE = { data: true } as const;
-export const STOP_MAPPING_MESSAGE = { data: false } as const;
-
-const ACK_TIMEOUT_MS = 5000;
-const STOP_TIMEOUT_MS = 60000;
-type PendingCommand = 'start' | 'stop';
-
-export function extractMappingStatus(message: any): string {
-  return typeof message?.data === 'string' ? message.data : '';
+function phaseIsTransitioning(phase: number): boolean {
+  return phase === AUTONOMY_PHASE.STARTING ||
+    phase === AUTONOMY_PHASE.SWITCHING ||
+    phase === AUTONOMY_PHASE.STOPPING;
 }
 
 export function MappingControl({ compact = false }: { compact?: boolean }) {
-  const status = useRosStore((state) => state.connection.status);
+  const connectionStatus = useRosStore((state) => state.connection.status);
   const transport = useRosStore((state) => state.transport);
   const url = useRosStore((state) => state.connection.url);
+  const runtime = useAutonomyRuntimeStore((state) => state.status);
+  const runtimeStale = useAutonomyRuntimeStore((state) => state.stale);
+  const pendingCommand = useAutonomyRuntimeStore((state) => state.pendingCommand);
+  const mappingTargetId = useAutonomyRuntimeStore((state) => state.mappingTargetId);
+  const missionState = useMissionStore((state) => state.status?.state ?? MISSION_STATE.NONE);
   const { t } = useTranslation();
-  const [waiting, setWaiting] = useState(false);
-  const [isMapping, setIsMapping] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingRef = useRef<PendingCommand | null>(null);
 
-  const clearAckTimeout = useCallback(() => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = null;
-  }, []);
+  const phase = runtime?.phase ?? AUTONOMY_PHASE.IDLE;
+  const transitioning = phaseIsTransitioning(phase);
+  const mappingRequested = runtime?.desired_mode === AUTONOMY_MODE.MAPPING;
+  const mappingActive = runtime?.mode === AUTONOMY_MODE.MAPPING;
+  const mappingReady = mappingActive && runtime?.ready === true && phase === AUTONOMY_PHASE.READY;
+  const mappingFinishable = mappingReady ||
+    (mappingActive && phase === AUTONOMY_PHASE.ERROR);
+  const mappingStarting = mappingRequested && transitioning && phase !== AUTONOMY_PHASE.STOPPING;
+  const mappingStopping = mappingActive && phase === AUTONOMY_PHASE.STOPPING;
+  const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
 
   useEffect(() => {
-    if (status !== 'connected' || !transport || url?.startsWith('demo://')) {
-      pendingRef.current = null;
-      setWaiting(false);
-      setIsMapping(false);
-      useMappingStore.getState().reset();
-      clearAckTimeout();
+    const mappingStore = useMappingStore.getState();
+    // 点云布局跟随运行时的实际模式，而不是跟随一次可能被拒绝的按钮点击。
+    if (mappingActive && !mappingStopping) {
+      if (!mappingStore.active) mappingStore.startSession();
+      if (useLayoutStore.getState().layouts.some((layout) => layout.id === 'mapping-3d')) {
+        useLayoutStore.getState().setActiveLayout('mapping-3d');
+      }
+    } else if (mappingStore.active) {
+      mappingStore.stopSession();
+    }
+  }, [mappingActive, mappingStopping]);
+
+  const reportRejected = useCallback((title: string, reason: string) => {
+    Alert.alert(title, t('mapping.error', { message: reason || 'unknown' }));
+  }, [t]);
+
+  const requestMappingMode = useCallback(async () => {
+    if (!transport || !useAutonomyRuntimeStore.getState().beginCommand({
+      kind: 'set_mode',
+      desiredMode: AUTONOMY_MODE.MAPPING,
+    })) return;
+    const mapId = generateMappingMapId();
+    useAutonomyRuntimeStore.getState().setMappingTargetId(mapId);
+    try {
+      const response = await setAutonomyMode(transport, {
+        desiredMode: AUTONOMY_MODE.MAPPING,
+        mapId,
+        // 每次开始建图都创建独立会话，防止上一次未完成会话污染新地图。
+        mappingSessionId: generateAutonomyRequestId('mapping-session'),
+      });
+      useAutonomyRuntimeStore.getState().completeCommand(response);
+      if (!response.accepted) {
+        useAutonomyRuntimeStore.getState().setMappingTargetId('');
+        reportRejected(t('mapping.failedTitle'), response.reason_text);
+      }
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      useAutonomyRuntimeStore.getState().failCommand(message);
+      useAutonomyRuntimeStore.getState().setMappingTargetId('');
+      reportRejected(t('mapping.failedTitle'), message);
+    }
+  }, [reportRejected, t, transport]);
+
+  const requestFinishMapping = useCallback(async (disposition: MappingDisposition) => {
+    const targetMapId = mappingTargetId || runtime?.map_id || '';
+    if (disposition === MAPPING_DISPOSITION.SAVE && !targetMapId) {
+      reportRejected(t('mapping.stopFailedTitle'), t('mapping.mapIdMissing'));
       return;
     }
-
-    const subscription = transport.subscribe(
-      MAPPING_STATUS_TOPIC,
-      'std_msgs/msg/String',
-      (message) => {
-        const mappingStatus = extractMappingStatus(message);
-        if (!mappingStatus) return;
-
-        if (mappingStatus.startsWith('started:') || mappingStatus === 'already_running') {
-          setIsMapping(true);
-          if (pendingRef.current === 'start') {
-            useMappingStore.getState().startSession();
-            if (useLayoutStore.getState().layouts.some((layout) => layout.id === 'mapping-3d')) {
-              useLayoutStore.getState().setActiveLayout('mapping-3d');
-            }
-            pendingRef.current = null;
-            clearAckTimeout();
-            setWaiting(false);
-            Alert.alert(t('mapping.startedTitle'), t('mapping.startedMessage'));
-          }
-        } else if (mappingStatus.startsWith('stopping:')) {
-          setIsMapping(true);
-        } else if (mappingStatus.startsWith('stopped:')) {
-          setIsMapping(false);
-          useMappingStore.getState().stopSession();
-          if (pendingRef.current === 'stop') {
-            pendingRef.current = null;
-            clearAckTimeout();
-            setWaiting(false);
-            Alert.alert(t('mapping.stoppedTitle'), t('mapping.stoppedMessage'));
-          }
-        } else if (mappingStatus.startsWith('exited:') || mappingStatus === 'not_running') {
-          const command = pendingRef.current;
-          setIsMapping(false);
-          useMappingStore.getState().stopSession();
-          if (command) {
-            pendingRef.current = null;
-            clearAckTimeout();
-            setWaiting(false);
-            Alert.alert(
-              t(command === 'stop' ? 'mapping.stopFailedTitle' : 'mapping.failedTitle'),
-              t('mapping.error', { message: mappingStatus }),
-            );
-          }
-        } else if (mappingStatus.startsWith('error:')) {
-          const command = pendingRef.current;
-          pendingRef.current = null;
-          clearAckTimeout();
-          setWaiting(false);
-          Alert.alert(
-            t(command === 'stop' ? 'mapping.stopFailedTitle' : 'mapping.failedTitle'),
-            t('mapping.error', { message: mappingStatus.slice('error:'.length) }),
-          );
-        }
-      },
-    );
-
-    return () => subscription.unsubscribe();
-  }, [status, transport, url, clearAckTimeout, t]);
-
-  useEffect(() => () => clearAckTimeout(), [clearAckTimeout]);
-
-  const sendRequest = useCallback((command: PendingCommand) => {
-    if (status !== 'connected' || !transport || url?.startsWith('demo://')) {
-      Alert.alert(t('mapping.failedTitle'), t('mapping.disconnected'));
-      return;
+    if (!transport || !useAutonomyRuntimeStore.getState().beginCommand({
+      kind: 'finish_mapping',
+    })) return;
+    try {
+      const response = await finishMapping(transport, {
+        disposition,
+        mapId: targetMapId,
+        makeCurrent: disposition === MAPPING_DISPOSITION.SAVE,
+      });
+      useAutonomyRuntimeStore.getState().completeCommand(response);
+      if (!response.accepted) {
+        reportRejected(t('mapping.stopFailedTitle'), response.reason_text);
+      }
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      useAutonomyRuntimeStore.getState().failCommand(message);
+      reportRejected(t('mapping.stopFailedTitle'), message);
     }
-
-    setWaiting(true);
-    pendingRef.current = command;
-    transport.publish(
-      START_MAPPING_TOPIC,
-      START_MAPPING_MESSAGE_TYPE,
-      command === 'start' ? START_MAPPING_MESSAGE : STOP_MAPPING_MESSAGE,
-    );
-    clearAckTimeout();
-    timeoutRef.current = setTimeout(() => {
-      pendingRef.current = null;
-      setWaiting(false);
-      Alert.alert(
-        t(command === 'stop' ? 'mapping.stopFailedTitle' : 'mapping.failedTitle'),
-        t('mapping.bridgeMissing'),
-      );
-    }, command === 'stop' ? STOP_TIMEOUT_MS : ACK_TIMEOUT_MS);
-  }, [status, transport, url, clearAckTimeout, t]);
+  }, [mappingTargetId, reportRejected, runtime?.map_id, t, transport]);
 
   const confirmCommand = useCallback(() => {
-    const command: PendingCommand = isMapping ? 'stop' : 'start';
+    if (mappingFinishable) {
+      Alert.alert(
+        t('mapping.stopConfirmTitle'),
+        t('mapping.stopConfirmMessage'),
+        [
+          { text: t('mapping.cancel'), style: 'cancel' },
+          {
+            text: t('mapping.discard'),
+            style: 'destructive',
+            onPress: () => void requestFinishMapping(MAPPING_DISPOSITION.DISCARD),
+          },
+          {
+            text: t('mapping.stop'),
+            onPress: () => void requestFinishMapping(MAPPING_DISPOSITION.SAVE),
+          },
+        ],
+      );
+      return;
+    }
+
     Alert.alert(
-      t(isMapping ? 'mapping.stopConfirmTitle' : 'mapping.confirmTitle'),
-      t(isMapping ? 'mapping.stopConfirmMessage' : 'mapping.confirmMessage'),
+      t('mapping.confirmTitle'),
+      t('mapping.confirmMessage'),
       [
         { text: t('mapping.cancel'), style: 'cancel' },
-        {
-          text: t(isMapping ? 'mapping.stop' : 'mapping.start'),
-          style: isMapping ? 'destructive' : 'default',
-          onPress: () => sendRequest(command),
-        },
+        { text: t('mapping.start'), onPress: () => void requestMappingMode() },
       ],
     );
-  }, [isMapping, sendRequest, t]);
+  }, [mappingFinishable, requestFinishMapping, requestMappingMode, t]);
 
-  const disabled = status !== 'connected' || !transport || url?.startsWith('demo://') || waiting;
+  const synchronized = runtime !== null && !runtimeStale;
+  const runtimeFault = phase === AUTONOMY_PHASE.ERROR || phase === AUTONOMY_PHASE.CONFLICT;
+  const connected = connectionStatus === 'connected' && Boolean(transport) && !url.startsWith('demo://');
+  const canStart = synchronized && !mappingActive && !transitioning && !runtimeFault && !missionActive;
+  const canFinish = synchronized && mappingFinishable;
+  const disabled = !connected || pendingCommand !== null || (!canStart && !canFinish);
 
+  const mappingCommandPending = pendingCommand?.kind === 'finish_mapping' ||
+    (pendingCommand?.kind === 'set_mode' && pendingCommand.desiredMode === AUTONOMY_MODE.MAPPING);
+  const labelKey = pendingCommand?.kind === 'finish_mapping' || mappingStopping
+    ? 'mapping.stoppingButton'
+    : mappingCommandPending || mappingStarting
+      ? 'mapping.startingButton'
+      : mappingFinishable
+        ? 'mapping.stopButton'
+        : runtimeFault
+          ? 'mapping.unavailableButton'
+          : !synchronized
+            ? 'mapping.checkingButton'
+            : 'mapping.button';
+
+  const activeStyle = mappingFinishable || mappingStarting || mappingStopping;
   return (
     <TouchableOpacity
       accessibilityRole="button"
-      accessibilityLabel={t(isMapping ? 'mapping.stopButton' : 'mapping.button')}
+      accessibilityLabel={t(labelKey)}
       style={[
         styles.button,
-        isMapping && styles.stopButton,
+        mappingFinishable && styles.stopButton,
         compact && styles.compactButton,
         disabled && styles.disabled,
       ]}
@@ -164,19 +186,21 @@ export function MappingControl({ compact = false }: { compact?: boolean }) {
       activeOpacity={0.75}
     >
       <Ionicons
-        name={waiting ? 'hourglass-outline' : isMapping ? 'stop-circle-outline' : 'cube-outline'}
+        name={mappingFinishable
+          ? 'stop-circle-outline'
+          : activeStyle
+            ? 'hourglass-outline'
+            : 'cube-outline'}
         size={compact ? 20 : 16}
-        color={
-          disabled
-            ? theme.colors.textMuted
-            : isMapping
-              ? theme.colors.statusError
-              : theme.colors.accentPrimary
-        }
+        color={disabled
+          ? theme.colors.textMuted
+          : mappingFinishable
+            ? theme.colors.statusError
+            : theme.colors.accentPrimary}
       />
       {!compact && (
-        <Text style={[styles.text, isMapping && styles.stopText]}>
-          {t(isMapping ? 'mapping.stopButton' : 'mapping.button')}
+        <Text style={[styles.text, mappingFinishable && styles.stopText]}>
+          {t(labelKey)}
         </Text>
       )}
     </TouchableOpacity>

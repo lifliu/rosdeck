@@ -1,289 +1,104 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { theme } from '../constants/theme';
+import {
+  AUTONOMY_MODE,
+  AUTONOMY_PHASE,
+  setAutonomyMode,
+} from '../lib/autonomy-runtime';
 import { useTranslation } from '../lib/i18n';
+import { ACTIVE_MISSION_STATES, MISSION_STATE } from '../lib/mission/types';
+import { useAutonomyRuntimeStore } from '../stores/useAutonomyRuntimeStore';
+import { useMissionStore } from '../stores/useMissionStore';
 import { useRosStore } from '../stores/useRosStore';
 
-export const START_NAVIGATION_TOPIC = '/rosdeck/start_navigation';
-export const NAVIGATION_STATUS_TOPIC = '/rosdeck/navigation_status';
-export const NAVIGATION_MESSAGE_TYPE = 'std_msgs/msg/Bool';
-export const START_NAVIGATION_MESSAGE = { data: true } as const;
-export const STOP_NAVIGATION_MESSAGE = { data: false } as const;
-
-const START_TIMEOUT_MS = 90000;
-const STOP_TIMEOUT_MS = 60000;
-const STATUS_STALE_TIMEOUT_MS = 3500;
-type PendingCommand = 'start' | 'stop';
-
-export type NavigationRuntimeState =
-  | 'unknown'
-  | 'disabled'
-  | 'idle'
-  | 'starting'
-  | 'running_managed'
-  | 'running_external'
-  | 'switchable_inspection'
-  | 'blocked_inspection'
-  | 'blocked_inspection_unknown'
-  | 'partial'
-  | 'stopping'
-  | 'error';
-
-export function extractNavigationStatus(message: any): string {
-  return typeof message?.data === 'string' ? message.data : '';
-}
-
-/**
- * 将 Bridge 的线协议收敛成 UI 状态。
- *
- * 外部运行与 Bridge 托管运行必须分开：前者只能展示和禁用重复启动，APP
- * 不能停止一个不属于 Bridge 的手工进程组。
- */
-export function parseNavigationRuntimeState(status: string): NavigationRuntimeState {
-  if (status === 'disabled') return 'disabled';
-  if (status === 'idle' || status.startsWith('stopped:')) return 'idle';
-  if (status.startsWith('starting:') || status.startsWith('switching:')) return 'starting';
-  if (status === 'running:managed') return 'running_managed';
-  if (status === 'running:external' || status === 'already_running') return 'running_external';
-  if (status === 'switchable:inspection_runtime') return 'switchable_inspection';
-  if (status === 'blocked:inspection_runtime' ||
-    status === 'blocked:inspection_mission_active') return 'blocked_inspection';
-  if (status.startsWith('blocked:inspection_')) return 'blocked_inspection_unknown';
-  if (status.startsWith('partial:')) return 'partial';
-  if (
-    status.startsWith('stopping:') ||
-    status.startsWith('terminating:') ||
-    status.startsWith('killing:')
-  ) return 'stopping';
-  if (status.startsWith('error:') || status.startsWith('exited:')) return 'error';
-  return 'unknown';
+function phaseIsTransitioning(phase: number): boolean {
+  return phase === AUTONOMY_PHASE.STARTING ||
+    phase === AUTONOMY_PHASE.SWITCHING ||
+    phase === AUTONOMY_PHASE.STOPPING;
 }
 
 export function NavigationControl({ compact = false }: { compact?: boolean }) {
   const connectionStatus = useRosStore((state) => state.connection.status);
   const transport = useRosStore((state) => state.transport);
   const url = useRosStore((state) => state.connection.url);
+  const runtime = useAutonomyRuntimeStore((state) => state.status);
+  const runtimeStale = useAutonomyRuntimeStore((state) => state.stale);
+  const pendingCommand = useAutonomyRuntimeStore((state) => state.pendingCommand);
+  const missionState = useMissionStore((state) => state.status?.state ?? MISSION_STATE.NONE);
   const { t } = useTranslation();
-  const [runtimeState, setRuntimeState] = useState<NavigationRuntimeState>('unknown');
-  const [waiting, setWaiting] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const statusStaleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingRef = useRef<PendingCommand | null>(null);
-  const launchInitiatedRef = useRef(false);
 
-  const clearAckTimeout = useCallback(() => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = null;
-  }, []);
+  const phase = runtime?.phase ?? AUTONOMY_PHASE.IDLE;
+  const synchronized = runtime !== null && !runtimeStale;
+  const transitioning = phaseIsTransitioning(phase);
+  const runtimeFault = phase === AUTONOMY_PHASE.ERROR || phase === AUTONOMY_PHASE.CONFLICT;
+  const navigationReady = runtime?.mode === AUTONOMY_MODE.SINGLE_POINT_READY &&
+    runtime.ready === true && phase === AUTONOMY_PHASE.READY;
+  const navigationStarting = runtime?.desired_mode === AUTONOMY_MODE.SINGLE_POINT_READY &&
+    transitioning;
+  const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
+  const protectedMode = runtime?.mode === AUTONOMY_MODE.MAPPING ||
+    runtime?.mode === AUTONOMY_MODE.ROUTE_RECORDING;
 
-  const clearStatusStaleTimeout = useCallback(() => {
-    if (statusStaleTimeoutRef.current) clearTimeout(statusStaleTimeoutRef.current);
-    statusStaleTimeoutRef.current = null;
-  }, []);
-
-  const finishPending = useCallback(() => {
-    pendingRef.current = null;
-    clearAckTimeout();
-    setWaiting(false);
-  }, [clearAckTimeout]);
-
-  useEffect(() => {
-    if (connectionStatus !== 'connected' || !transport || url?.startsWith('demo://')) {
-      pendingRef.current = null;
-      launchInitiatedRef.current = false;
-      setWaiting(false);
-      setRuntimeState('unknown');
-      clearAckTimeout();
-      clearStatusStaleTimeout();
-      return;
-    }
-
-    // Bridge 以 transient-local + 1 Hz heartbeat 发布权威状态；组件每次打开
-    // 都重新同步，因此手工启动的 SLAM/Planner 不会被误判为空闲。
-    const subscription = transport.subscribe(
-      NAVIGATION_STATUS_TOPIC,
-      'std_msgs/msg/String',
-      (message) => {
-        const status = extractNavigationStatus(message);
-        if (!status) return;
-
-        const nextState = parseNavigationRuntimeState(status);
-        setRuntimeState(nextState);
-
-        // Bridge 每秒发送一次心跳。状态源消失后必须回到不可操作状态，不能让
-        // transient-local 的最后一帧继续把“启动/停止”按钮伪装成可用。
-        clearStatusStaleTimeout();
-        statusStaleTimeoutRef.current = setTimeout(() => {
-          setRuntimeState('unknown');
-          if (pendingRef.current || launchInitiatedRef.current) {
-            const command = pendingRef.current || 'start';
-            launchInitiatedRef.current = false;
-            finishPending();
-            Alert.alert(
-              t(command === 'stop' ? 'navigation.stopFailedTitle' : 'navigation.failedTitle'),
-              t('navigation.bridgeMissing'),
-            );
-          }
-        }, STATUS_STALE_TIMEOUT_MS);
-
-        if (nextState === 'starting' && pendingRef.current === 'start') {
-          // Bridge 已接管进程组后，启动按钮立即变成可操作的“取消启动”。
-          // 重定位可能需要一分钟以上，不能强迫用户等待固定超时。
-          finishPending();
-          return;
-        }
-        if (nextState === 'running_managed' && launchInitiatedRef.current) {
-          launchInitiatedRef.current = false;
-          if (pendingRef.current === 'start') finishPending();
-          Alert.alert(t('navigation.startedTitle'), t('navigation.startedMessage'));
-          return;
-        }
-        if (nextState === 'running_external' && pendingRef.current === 'start') {
-          launchInitiatedRef.current = false;
-          finishPending();
-          Alert.alert(
-            t('navigation.externalRunningTitle'),
-            t('navigation.externalRunningMessage'),
-          );
-          return;
-        }
-        if (status.startsWith('stopped:') && pendingRef.current === 'stop') {
-          launchInitiatedRef.current = false;
-          finishPending();
-          Alert.alert(t('navigation.stoppedTitle'), t('navigation.stoppedMessage'));
-          return;
-        }
-        if (nextState === 'error' && (pendingRef.current || launchInitiatedRef.current)) {
-          const command = pendingRef.current || 'start';
-          launchInitiatedRef.current = false;
-          finishPending();
-          Alert.alert(
-            t(command === 'stop' ? 'navigation.stopFailedTitle' : 'navigation.failedTitle'),
-            t('navigation.error', { message: status.replace(/^error:/, '') }),
-          );
-        }
-      },
-    );
-
-    return () => {
-      subscription.unsubscribe();
-      clearStatusStaleTimeout();
-    };
-  }, [
-    connectionStatus,
-    transport,
-    url,
-    clearAckTimeout,
-    clearStatusStaleTimeout,
-    finishPending,
-    t,
-  ]);
-
-  useEffect(
-    () => () => {
-      clearAckTimeout();
-      clearStatusStaleTimeout();
-    },
-    [clearAckTimeout, clearStatusStaleTimeout],
-  );
-
-  const sendRequest = useCallback((command: PendingCommand) => {
-    if (connectionStatus !== 'connected' || !transport || url?.startsWith('demo://')) {
-      Alert.alert(t('navigation.failedTitle'), t('navigation.disconnected'));
-      return;
-    }
-
-    setWaiting(true);
-    pendingRef.current = command;
-    launchInitiatedRef.current = command === 'start';
-    // 单个 Topic 只使用单一 Bool 类型，消除旧实现 Bool/String 同名冲突。
-    transport.publish(
-      START_NAVIGATION_TOPIC,
-      NAVIGATION_MESSAGE_TYPE,
-      command === 'start' ? START_NAVIGATION_MESSAGE : STOP_NAVIGATION_MESSAGE,
-    );
-
-    clearAckTimeout();
-    timeoutRef.current = setTimeout(() => {
-      pendingRef.current = null;
-      launchInitiatedRef.current = false;
-      setWaiting(false);
+  const requestNavigationMode = useCallback(async () => {
+    if (!transport || !useAutonomyRuntimeStore.getState().beginCommand({
+      kind: 'set_mode',
+      desiredMode: AUTONOMY_MODE.SINGLE_POINT_READY,
+    })) return;
+    try {
+      const response = await setAutonomyMode(transport, {
+        desiredMode: AUTONOMY_MODE.SINGLE_POINT_READY,
+      });
+      useAutonomyRuntimeStore.getState().completeCommand(response);
+      if (!response.accepted) {
+        Alert.alert(
+          t('navigation.failedTitle'),
+          t('navigation.error', { message: response.reason_text || 'unknown' }),
+        );
+      }
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      useAutonomyRuntimeStore.getState().failCommand(message);
       Alert.alert(
-        t(command === 'stop' ? 'navigation.stopFailedTitle' : 'navigation.failedTitle'),
-        t('navigation.bridgeMissing'),
+        t('navigation.failedTitle'),
+        t('navigation.error', { message }),
       );
-    }, command === 'stop' ? STOP_TIMEOUT_MS : START_TIMEOUT_MS);
-  }, [connectionStatus, transport, url, clearAckTimeout, t]);
+    }
+  }, [t, transport]);
 
-  const managedRunning = runtimeState === 'running_managed';
-  const managedStarting = runtimeState === 'starting';
-  const switchFromInspection = runtimeState === 'switchable_inspection';
-  const confirmCommand = useCallback(() => {
-    if (runtimeState !== 'idle' && runtimeState !== 'starting' &&
-      runtimeState !== 'running_managed' && runtimeState !== 'switchable_inspection') return;
-    const command: PendingCommand = managedRunning || managedStarting ? 'stop' : 'start';
-    const cancellingStart = command === 'stop' && managedStarting;
+  const confirmNavigation = useCallback(() => {
     Alert.alert(
-      t(cancellingStart
-        ? 'navigation.cancelStartConfirmTitle'
-        : managedRunning
-          ? 'navigation.stopConfirmTitle'
-          : switchFromInspection
-            ? 'navigation.switchConfirmTitle'
-            : 'navigation.confirmTitle'),
-      t(cancellingStart
-        ? 'navigation.cancelStartConfirmMessage'
-        : managedRunning
-          ? 'navigation.stopConfirmMessage'
-          : switchFromInspection
-            ? 'navigation.switchConfirmMessage'
-            : 'navigation.confirmMessage'),
+      t('navigation.confirmTitle'),
+      t('navigation.confirmMessage'),
       [
         { text: t('navigation.cancel'), style: 'cancel' },
-        {
-          text: t(command === 'stop' ? 'navigation.stop' : 'navigation.start'),
-          style: command === 'stop' ? 'destructive' : 'default',
-          onPress: () => sendRequest(command),
-        },
+        { text: t('navigation.start'), onPress: () => void requestNavigationMode() },
       ],
     );
-  }, [managedRunning, managedStarting, runtimeState, sendRequest, switchFromInspection, t]);
+  }, [requestNavigationMode, t]);
 
-  const synchronized = runtimeState !== 'unknown';
-  const actionable = runtimeState === 'idle' || runtimeState === 'starting' ||
-    runtimeState === 'running_managed' || runtimeState === 'switchable_inspection';
-  const disabled =
-    connectionStatus !== 'connected' ||
-    !transport ||
-    url?.startsWith('demo://') ||
-    !synchronized ||
-    !actionable ||
-    waiting;
+  const connected = connectionStatus === 'connected' && Boolean(transport) && !url.startsWith('demo://');
+  const canEnsureNavigation = synchronized && !transitioning && !runtimeFault &&
+    !navigationReady && !missionActive && !protectedMode;
+  const disabled = !connected || pendingCommand !== null || !canEnsureNavigation;
+  const navigationCommandPending = pendingCommand?.kind === 'set_mode' &&
+    pendingCommand.desiredMode === AUTONOMY_MODE.SINGLE_POINT_READY;
 
-  const labelKey = waiting
-    ? pendingRef.current === 'stop'
-      ? 'navigation.stoppingButton'
-      : 'navigation.startingButton'
-    : runtimeState === 'starting'
-      ? 'navigation.cancelStartingButton'
-      : runtimeState === 'stopping'
-      ? 'navigation.stoppingButton'
-      : runtimeState === 'running_external'
-        ? 'navigation.externalRunningButton'
-        : runtimeState === 'blocked_inspection'
-          ? 'navigation.inspectionRunningButton'
-        : runtimeState === 'blocked_inspection_unknown'
-          ? 'navigation.inspectionCheckingButton'
-        : runtimeState === 'partial' || runtimeState === 'error'
-          ? 'navigation.incompleteButton'
-          : runtimeState === 'disabled'
-            ? 'navigation.unavailableButton'
-            : runtimeState === 'unknown'
-              ? 'navigation.checkingButton'
-              : managedRunning
-                ? 'navigation.stopButton'
-                : 'navigation.button';
+  // “巡检运行中”只由 MissionStatus 的三个非终态派生，不能用运行时模式替代任务事实。
+  const labelKey = missionActive
+    ? 'navigation.inspectionRunningButton'
+    : navigationCommandPending || navigationStarting
+      ? 'navigation.startingButton'
+      : navigationReady
+        ? 'navigation.readyButton'
+        : runtimeFault
+          ? 'navigation.unavailableButton'
+          : !synchronized
+            ? 'navigation.checkingButton'
+            : protectedMode
+              ? 'navigation.busyButton'
+              : 'navigation.button';
 
   return (
     <TouchableOpacity
@@ -291,44 +106,29 @@ export function NavigationControl({ compact = false }: { compact?: boolean }) {
       accessibilityLabel={t(labelKey)}
       style={[
         styles.button,
-        managedRunning && styles.stopButton,
-        runtimeState === 'running_external' && styles.runningButton,
+        navigationReady && styles.readyButton,
         compact && styles.compactButton,
         disabled && styles.disabled,
       ]}
       disabled={disabled}
-      onPress={confirmCommand}
+      onPress={confirmNavigation}
       activeOpacity={0.75}
     >
       <Ionicons
-        name={
-          waiting || runtimeState === 'stopping'
-            ? 'hourglass-outline'
-            : runtimeState === 'starting'
-              ? 'close-circle-outline'
-            : managedRunning
-              ? 'stop-circle-outline'
-              : runtimeState === 'running_external'
-                ? 'navigate'
-                : runtimeState === 'blocked_inspection'
-                  ? 'git-branch-outline'
-                : runtimeState === 'blocked_inspection_unknown'
-                  ? 'hourglass-outline'
-                : runtimeState === 'partial' || runtimeState === 'error'
-                  ? 'warning-outline'
-                  : 'navigate-outline'
-        }
+        name={navigationCommandPending || navigationStarting
+          ? 'hourglass-outline'
+          : navigationReady
+            ? 'checkmark-circle-outline'
+            : runtimeFault
+              ? 'warning-outline'
+              : 'navigate-outline'}
         size={compact ? 20 : 16}
-        color={
-          disabled
-            ? theme.colors.textMuted
-            : managedRunning
-              ? theme.colors.statusError
-              : theme.colors.statusConnected
-        }
+        color={disabled && !navigationReady
+          ? theme.colors.textMuted
+          : theme.colors.statusConnected}
       />
       {!compact && (
-        <Text style={[styles.text, managedRunning && styles.stopText]}>
+        <Text style={[styles.text, disabled && !navigationReady && styles.disabledText]}>
           {t(labelKey)}
         </Text>
       )}
@@ -355,13 +155,9 @@ const styles = StyleSheet.create({
     minHeight: 40,
     paddingHorizontal: 0,
   },
-  runningButton: {
+  readyButton: {
     borderColor: theme.colors.statusConnected + '88',
     backgroundColor: theme.colors.statusConnected + '16',
-  },
-  stopButton: {
-    borderColor: theme.colors.statusError + '88',
-    backgroundColor: theme.colors.statusErrorGlow,
   },
   disabled: {
     opacity: 0.58,
@@ -373,7 +169,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: theme.colors.statusConnected,
   },
-  stopText: {
-    color: theme.colors.statusError,
+  disabledText: {
+    color: theme.colors.textMuted,
   },
 });

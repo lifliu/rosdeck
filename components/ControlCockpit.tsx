@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Modal,
   Pressable,
@@ -29,14 +28,6 @@ import {
   pauseMission,
   resumeMission,
 } from '../lib/mission/api';
-import {
-  INSPECTION_RUNTIME_STATUS_TOPIC,
-  INSPECTION_RUNTIME_STATUS_TYPE,
-  commandInspectionRuntime,
-  extractInspectionRuntimeStatus,
-  parseInspectionRuntimeState,
-  type InspectionRuntimeState,
-} from '../lib/mission/runtime';
 import { ACTIVE_MISSION_STATES, MISSION_STATE, type ControlResponse } from '../lib/mission/types';
 import {
   dispatchTouchEnd,
@@ -47,6 +38,7 @@ import {
 import { useLayoutStore } from '../stores/useLayoutStore';
 import { useMissionStore } from '../stores/useMissionStore';
 import { useRosStore } from '../stores/useRosStore';
+import { useAutonomyRuntimeFeed } from '../hooks/useAutonomyRuntimeFeed';
 import type { LayoutNode, SavedLayout, WidgetConfigField, WidgetNode } from '../types/layout';
 import { cameraWidget } from '../widgets/camera';
 import { mapWidget } from '../widgets/map';
@@ -163,11 +155,6 @@ export function ControlCockpit({
   const updateWidgetConfigInLayout = useLayoutStore((state) => state.updateWidgetConfigInLayout);
   const [scene, setScene] = useState<Scene>('video');
   const [missionsOpen, setMissionsOpen] = useState(false);
-  const [inspectionRuntimeState, setInspectionRuntimeState] =
-    useState<InspectionRuntimeState>('unknown');
-  const [inspectionRuntimeStatus, setInspectionRuntimeStatus] = useState('');
-  const inspectionCommandSentRef = useRef(false);
-  const inspectionStatusStaleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const routes = useMissionStore((state) => state.routes);
   const routesLoaded = useMissionStore((state) => state.routesLoaded);
@@ -181,9 +168,9 @@ export function ControlCockpit({
   const missionConnected = connected && !isDemo;
   const missionState = mission?.state ?? MISSION_STATE.NONE;
   const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
-  const inspectionRuntimeReady =
-    inspectionRuntimeState === 'running_managed' ||
-    inspectionRuntimeState === 'running_external';
+
+  // 控制台是建图、单点导航和巡检三个入口的共同父组件，只在这里订阅一次。
+  useAutonomyRuntimeFeed(missionConnected);
 
   const cameraSelection = useMemo(
     () => preferredWidget(layouts, activeLayoutId, 'camera'),
@@ -253,101 +240,37 @@ export function ControlCockpit({
   useEffect(() => {
     if (!missionConnected || !transport) {
       useMissionStore.getState().resetFeed();
-      setInspectionRuntimeState('unknown');
-      setInspectionRuntimeStatus('');
-      inspectionCommandSentRef.current = false;
-      if (inspectionStatusStaleTimerRef.current) {
-        clearTimeout(inspectionStatusStaleTimerRef.current);
-        inspectionStatusStaleTimerRef.current = null;
-      }
       return;
     }
     const subscriptions = [
       transport.subscribe(MISSION_STATUS_TOPIC, MISSION_STATUS_TYPE, (message) => useMissionStore.getState().onStatus(message)),
       transport.subscribe(MISSION_EVENTS_TOPIC, MISSION_EVENTS_TYPE, (message) => useMissionStore.getState().onEvent(message)),
       transport.subscribe(ROBOT_STATE_TOPIC, ROBOT_STATE_TYPE, (message) => useMissionStore.getState().onRobotState(message)),
-      transport.subscribe(
-        INSPECTION_RUNTIME_STATUS_TOPIC,
-        INSPECTION_RUNTIME_STATUS_TYPE,
-        (message) => {
-          const runtimeStatus = extractInspectionRuntimeStatus(message);
-          if (!runtimeStatus) return;
-          setInspectionRuntimeStatus(runtimeStatus);
-          setInspectionRuntimeState(parseInspectionRuntimeState(runtimeStatus));
-
-          // Bridge 每秒发布一次权威心跳。状态源消失时回到 unknown，禁止继续
-          // 调 Mission Service，避免使用 transient-local 的陈旧最后一帧。
-          if (inspectionStatusStaleTimerRef.current) {
-            clearTimeout(inspectionStatusStaleTimerRef.current);
-          }
-          inspectionStatusStaleTimerRef.current = setTimeout(() => {
-            setInspectionRuntimeState('unknown');
-            setInspectionRuntimeStatus('');
-          }, 3500);
-        },
-      ),
     ];
     return () => {
       subscriptions.forEach((subscription) => subscription.unsubscribe());
-      if (inspectionStatusStaleTimerRef.current) {
-        clearTimeout(inspectionStatusStaleTimerRef.current);
-        inspectionStatusStaleTimerRef.current = null;
-      }
     };
   }, [missionConnected, transport]);
 
   const refreshRoutes = useCallback(() => {
-    if (!transport || !missionConnected || !inspectionRuntimeReady) return;
+    if (!transport || !missionConnected) return;
     useMissionStore.getState().setError(null);
     listRoutes(transport)
       .then((items) => useMissionStore.getState().setRoutes(items))
       .catch((error: any) => useMissionStore.getState().setError(error?.message || String(error)));
-  }, [inspectionRuntimeReady, missionConnected, transport]);
+  }, [missionConnected, transport]);
 
   useEffect(() => {
-    if (!missionsOpen) {
-      inspectionCommandSentRef.current = false;
-      return;
-    }
-    if (!transport || !missionConnected) return;
-
-    if ((inspectionRuntimeState === 'idle' ||
-      inspectionRuntimeState === 'switchable_navigation') &&
-      !inspectionCommandSentRef.current)
-    {
-      inspectionCommandSentRef.current = true;
-      useMissionStore.getState().setError(null);
-      commandInspectionRuntime(transport, true);
-      return;
-    }
-    if (inspectionRuntimeReady) {
-      refreshRoutes();
-    }
-  }, [
-    inspectionRuntimeReady,
-    inspectionRuntimeState,
-    missionConnected,
-    missionsOpen,
-    refreshRoutes,
-    transport,
-  ]);
+    if (missionsOpen && missionConnected) refreshRoutes();
+  }, [missionConnected, missionsOpen, refreshRoutes]);
 
   const openInspectionPanel = useCallback(() => {
     useMissionStore.getState().setError(null);
     setMissionsOpen(true);
   }, []);
 
-  const retryInspectionRuntime = useCallback(() => {
-    if (!transport || !missionConnected ||
-      (inspectionRuntimeState !== 'idle' &&
-      inspectionRuntimeState !== 'switchable_navigation')) return;
-    inspectionCommandSentRef.current = true;
-    useMissionStore.getState().setError(null);
-    commandInspectionRuntime(transport, true);
-  }, [inspectionRuntimeState, missionConnected, transport]);
-
   const dispatchSelectedRoute = useCallback(() => {
-    if (!transport || !selectedRouteId || !inspectionRuntimeReady) return;
+    if (!transport || !selectedRouteId) return;
     Alert.alert(
       zh ? '开始巡检任务？' : 'Start inspection mission?',
       zh ? `将派发路线「${selectedRouteId}」，机器人会进入自主巡检。` : `Dispatch route “${selectedRouteId}” for autonomous inspection.`,
@@ -379,7 +302,7 @@ export function ControlCockpit({
         },
       ],
     );
-  }, [inspectionRuntimeReady, selectedRouteId, transport, zh]);
+  }, [selectedRouteId, transport, zh]);
 
   const runMissionControl = useCallback(async (call: (missionId?: string) => Promise<ControlResponse>) => {
     const store = useMissionStore.getState();
@@ -475,12 +398,8 @@ export function ControlCockpit({
         />
         <CockpitButton
           icon="navigate-circle-outline"
-          label={missionActive
-            ? missionStateLabel(missionState, zh)
-            : inspectionRuntimeState === 'starting'
-              ? (zh ? '巡检准备中' : 'Preparing inspection')
-              : (zh ? '巡检任务' : 'Inspection')}
-          active={missionActive || inspectionRuntimeState === 'starting'}
+          label={missionActive ? missionStateLabel(missionState, zh) : (zh ? '巡检任务' : 'Inspection')}
+          active={missionActive}
           onPress={openInspectionPanel}
         />
         <CockpitButton icon="options-outline" label={zh ? '机器人动作' : 'Actions'} onPress={onOpenRobotActions} />
@@ -535,7 +454,7 @@ export function ControlCockpit({
             <View style={styles.panelHeader}>
               <View>
                 <Text style={styles.panelTitle}>{zh ? '巡检任务' : 'Inspection mission'}</Text>
-                <Text style={styles.panelSubtitle}>{zh ? '自动准备导航链路，就绪后选择路线' : 'Prepare navigation automatically, then select a route'}</Text>
+                <Text style={styles.panelSubtitle}>{zh ? '选择路线并交由任务管理器统一调度' : 'Select a route and let Mission Manager prepare the runtime'}</Text>
               </View>
               <TouchableOpacity style={styles.panelClose} onPress={() => setMissionsOpen(false)}>
                 <Ionicons name="close" size={22} color={theme.colors.textPrimary} />
@@ -561,48 +480,6 @@ export function ControlCockpit({
                   )}
                   <CockpitButton icon="stop-circle-outline" label={zh ? '停止任务' : 'Stop'} danger onPress={confirmCancelMission} />
                 </View>
-              </View>
-            ) : !inspectionRuntimeReady ? (
-              <View style={styles.panelEmpty}>
-                {inspectionRuntimeState === 'starting' || inspectionRuntimeState === 'unknown' ? (
-                  <ActivityIndicator size="large" color={theme.colors.accentPrimary} />
-                ) : (
-                  <Ionicons
-                    name={inspectionRuntimeState === 'idle' || inspectionRuntimeState === 'switchable_navigation' ? 'refresh-circle-outline' : 'warning-outline'}
-                    size={38}
-                    color={inspectionRuntimeState === 'idle' || inspectionRuntimeState === 'switchable_navigation' ? theme.colors.statusConnecting : theme.colors.statusError}
-                  />
-                )}
-                <Text style={styles.panelRuntimeTitle}>
-                  {inspectionRuntimeState === 'starting'
-                    ? (zh ? '正在准备巡检环境' : 'Preparing inspection runtime')
-                    : inspectionRuntimeState === 'unknown'
-                      ? (zh ? '正在等待 Bridge 状态' : 'Waiting for Bridge status')
-                      : inspectionRuntimeState === 'idle' || inspectionRuntimeState === 'switchable_navigation'
-                        ? (zh ? '巡检环境尚未启动' : 'Inspection runtime is not running')
-                        : inspectionRuntimeState === 'disabled'
-                          ? (zh ? '当前 Bridge 未启用巡检编排' : 'Inspection orchestration is disabled')
-                          : (zh ? '巡检链路存在冲突' : 'Inspection runtime conflict')}
-                </Text>
-                <Text style={styles.panelEmptyText}>
-                  {inspectionRuntimeState === 'starting'
-                    ? (inspectionRuntimeStatus.startsWith('switching:')
-                      ? (zh ? '正在停止单点导航并切换到巡检模式…' : 'Stopping point navigation and switching modes…')
-                      : (zh ? '正在依次启动重定位、Planner 和任务管理器…' : 'Starting localization, Planner and Mission Manager…'))
-                    : inspectionRuntimeState === 'partial'
-                      ? (zh ? '检测到手工启动的残留进程或 Planner 模式不正确，请停止后重试。' : 'A manual residual process or wrong Planner mode was detected. Stop it and retry.')
-                      : inspectionRuntimeState === 'error'
-                        ? `${zh ? '机器人端错误' : 'Robot-side error'}：${inspectionRuntimeStatus || 'unknown'}`
-                        : inspectionRuntimeState === 'unknown'
-                          ? (zh ? '若持续无状态，请确认已启动最新版本 Robot Bridge。' : 'If this persists, start the latest Robot Bridge.')
-                          : (zh ? '点击重试，由机器人端自动启动完整链路。' : 'Retry to start the complete robot-side runtime.')}
-                </Text>
-                {inspectionRuntimeState === 'idle' || inspectionRuntimeState === 'switchable_navigation' ? (
-                  <TouchableOpacity style={styles.runtimeRetryButton} onPress={retryInspectionRuntime}>
-                    <Ionicons name="play" size={17} color="#061014" />
-                    <Text style={styles.dispatchButtonText}>{zh ? '重新启动巡检环境' : 'Retry runtime startup'}</Text>
-                  </TouchableOpacity>
-                ) : null}
               </View>
             ) : (
               <>
@@ -686,8 +563,6 @@ const styles = StyleSheet.create({
   panelClose: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: theme.colors.bgSurface },
   panelEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
   panelEmptyText: { color: theme.colors.textMuted, fontSize: 13 },
-  panelRuntimeTitle: { color: theme.colors.textPrimary, fontSize: 15, fontWeight: '700', marginTop: 4 },
-  runtimeRetryButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 16, marginTop: 8, borderRadius: 12, backgroundColor: theme.colors.accentPrimary },
   routeSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 15, marginBottom: 8 },
   routeSectionTitle: { color: theme.colors.textSecondary, fontSize: 12, fontWeight: '700' },
   refreshButton: { flexDirection: 'row', alignItems: 'center', gap: 5, padding: 7 },

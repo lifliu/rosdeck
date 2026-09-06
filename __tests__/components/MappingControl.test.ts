@@ -1,45 +1,26 @@
-jest.mock('react-native', () => ({
-  Alert: { alert: jest.fn() },
-  StyleSheet: { create: (value: unknown) => value },
-  Text: 'Text',
-  TouchableOpacity: 'TouchableOpacity',
-}));
+import fs from 'node:fs';
+import path from 'node:path';
+import { MAPPING_DISPOSITION } from '../../lib/autonomy-runtime';
+import { translate } from '../../lib/i18n';
 
-jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+describe('MappingControl runtime migration', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../../components/MappingControl.tsx'),
+    'utf8',
+  );
 
-jest.mock('../../stores/useLayoutStore', () => ({
-  useLayoutStore: { getState: () => ({ layouts: [], setActiveLayout: jest.fn() }) },
-}));
-
-jest.mock('../../stores/useMappingStore', () => ({
-  useMappingStore: { getState: () => ({
-    reset: jest.fn(),
-    startSession: jest.fn(),
-    stopSession: jest.fn(),
-  }) },
-}));
-
-import {
-  extractMappingStatus,
-  MAPPING_STATUS_TOPIC,
-  START_MAPPING_MESSAGE,
-  START_MAPPING_MESSAGE_TYPE,
-  START_MAPPING_TOPIC,
-  STOP_MAPPING_MESSAGE,
-} from '../../components/MappingControl';
-
-describe('MappingControl protocol', () => {
-  it('uses fixed ROS topics for mapping commands and acknowledgements', () => {
-    expect(START_MAPPING_TOPIC).toBe('/rosdeck/start_3d_mapping');
-    expect(MAPPING_STATUS_TOPIC).toBe('/rosdeck/mapping_status');
-    expect(START_MAPPING_MESSAGE_TYPE).toBe('std_msgs/msg/Bool');
-    expect(START_MAPPING_MESSAGE).toEqual({ data: true });
-    expect(STOP_MAPPING_MESSAGE).toEqual({ data: false });
+  it('does not publish the retired Bridge process-control topics', () => {
+    expect(source).not.toContain('/rosdeck/');
+    expect(source).toContain('setAutonomyMode');
+    expect(source).toContain('finishMapping');
   });
 
-  it('extracts String messages and rejects malformed status payloads', () => {
-    expect(extractMappingStatus({ data: 'started:123' })).toBe('started:123');
-    expect(extractMappingStatus({ data: 123 })).toBe('');
-    expect(extractMappingStatus(null)).toBe('');
+  it('offers explicit save and discard dispositions', () => {
+    expect(MAPPING_DISPOSITION.SAVE).toBe(1);
+    expect(MAPPING_DISPOSITION.DISCARD).toBe(2);
+    expect(translate('zh', 'mapping.stopConfirmMessage')).toContain('保存');
+    expect(translate('zh', 'mapping.stopConfirmMessage')).toContain('丢弃');
+    expect(source).toContain('MAPPING_DISPOSITION.SAVE');
+    expect(source).toContain('MAPPING_DISPOSITION.DISCARD');
   });
 });
