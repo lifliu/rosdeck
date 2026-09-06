@@ -189,7 +189,7 @@ describe('useRosStore', () => {
       expect(state.reconnectTimer).toBeNull();
     });
 
-    it('keeps retrying after failed attempts and gives up after the maximum', async () => {
+    it('keeps retrying after the backoff reaches its maximum exponent', async () => {
       let calls = 0;
       jest.spyOn(FoxgloveTransport.prototype, 'connect').mockImplementation(() => {
         calls += 1;
@@ -205,24 +205,44 @@ describe('useRosStore', () => {
       useRosStore.getState().handleDisconnect();
       expect(useRosStore.getState().reconnectTimer).not.toBeNull();
 
-      for (let attempt = 1; attempt <= DEFAULTS.maxReconnectAttempts; attempt += 1) {
+      const attemptsToVerify = DEFAULTS.maxReconnectBackoffExponent + 3;
+      for (let attempt = 1; attempt <= attemptsToVerify; attempt += 1) {
         const delay = Math.min(
-          DEFAULTS.reconnectBackoffBase * Math.pow(2, attempt - 1),
+          DEFAULTS.reconnectBackoffBase * Math.pow(
+            2,
+            Math.min(attempt - 1, DEFAULTS.maxReconnectBackoffExponent),
+          ),
           DEFAULTS.reconnectBackoffMax,
         );
         jest.advanceTimersByTime(delay);
         await flushMicrotasks();
-        if (attempt < DEFAULTS.maxReconnectAttempts) {
-          // A failed retry must have re-armed the loop instead of stopping.
-          expect(useRosStore.getState().reconnectTimer).not.toBeNull();
-          expect(useRosStore.getState().connection.status).toBe('error');
-        }
+        // 网关可以晚于 APP 任意时长启动，失败后必须始终保留下一轮重试。
+        expect(useRosStore.getState().reconnectTimer).not.toBeNull();
+        expect(useRosStore.getState().connection.status).toBe('disconnected');
       }
 
       const state = useRosStore.getState();
-      expect(state.connection.status).toBe('error');
-      expect(state.connection.error).toBe('Connection lost — max reconnect attempts reached');
-      expect(calls).toBe(1 + DEFAULTS.maxReconnectAttempts);
+      expect(state.reconnectAttempts).toBe(DEFAULTS.maxReconnectBackoffExponent);
+      expect(calls).toBe(1 + attemptsToVerify);
+    });
+
+    it('does not schedule duplicate reconnect timers for repeated disconnect signals', () => {
+      useRosStore.setState({
+        connection: {
+          url: 'ws://192.168.1.50:8765',
+          status: 'connected',
+          error: null,
+          ros: null,
+        },
+      });
+
+      useRosStore.getState().handleDisconnect();
+      const firstTimer = useRosStore.getState().reconnectTimer;
+      useRosStore.getState().handleDisconnect();
+
+      expect(firstTimer).not.toBeNull();
+      expect(useRosStore.getState().reconnectTimer).toBe(firstTimer);
+      expect(jest.getTimerCount()).toBe(1);
     });
   });
 
@@ -308,6 +328,39 @@ describe('useRosStore', () => {
         'ros2mobile_saved_connections',
         JSON.stringify(useRosStore.getState().savedConnections),
       );
+    });
+
+    it('restores and connects the most recently used real robot', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify([
+        { url: 'ws://robot-old:9090', transport: 'rosbridge', lastUsed: 100 },
+        { url: 'ws://10.0.2.2:8765', transport: 'foxglove', lastUsed: 200 },
+      ]));
+      const connect = jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+
+      await useRosStore.getState().restoreMostRecentConnection();
+
+      expect(useRosStore.getState().transportType).toBe('foxglove');
+      expect(connect).toHaveBeenCalledWith('ws://10.0.2.2:8765', undefined);
+      expect(useRosStore.getState().connection.status).toBe('connected');
+    });
+
+    it('does not overwrite a manual connection started while storage is loading', async () => {
+      let finishLoading!: (value: string) => void;
+      (AsyncStorage.getItem as jest.Mock).mockReturnValueOnce(
+        new Promise<string>((resolve) => { finishLoading = resolve; }),
+      );
+      const connect = jest.spyOn(FoxgloveTransport.prototype, 'connect').mockResolvedValue();
+
+      const restore = useRosStore.getState().restoreMostRecentConnection();
+      useRosStore.getState().setTransportType('foxglove');
+      await useRosStore.getState().connectToUrl('manual.local');
+      finishLoading(JSON.stringify([
+        { url: 'ws://saved.local:8765', transport: 'foxglove', lastUsed: 200 },
+      ]));
+      await restore;
+
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(useRosStore.getState().connection.url).toBe('ws://manual.local:8765');
     });
   });
 

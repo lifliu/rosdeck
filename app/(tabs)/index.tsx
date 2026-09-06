@@ -15,19 +15,16 @@ import {
 import { theme } from '../../constants/theme';
 import { useOrientation } from '../../hooks/useOrientation';
 import { useProductCopy } from '../../lib/product-copy';
+import { resolveHomeModeKey } from '../../lib/runtime-presentation';
 import {
-  MISSION_STATUS_TOPIC,
-  MISSION_STATUS_TYPE,
-  ROBOT_STATE_TOPIC,
-  ROBOT_STATE_TYPE,
   cancelMission,
   pauseMission,
   resumeMission,
 } from '../../lib/mission/api';
 import { LOCALIZATION_STATE, MISSION_STATE } from '../../lib/mission/types';
 import { useControlAuthorityStore } from '../../stores/useControlAuthorityStore';
+import { useAutonomyRuntimeStore } from '../../stores/useAutonomyRuntimeStore';
 import { useLayoutStore } from '../../stores/useLayoutStore';
-import { useMappingStore } from '../../stores/useMappingStore';
 import { useMissionStore } from '../../stores/useMissionStore';
 import { useRosStore } from '../../stores/useRosStore';
 
@@ -69,9 +66,12 @@ export default function HomeScreen() {
   const transport = useRosStore((s) => s.transport);
   const mission = useMissionStore((s) => s.status);
   const robot = useMissionStore((s) => s.robotStrip);
+  const missionStatusStale = useMissionStore((s) => s.missionStatusStale);
+  const robotStateStale = useMissionStore((s) => s.robotStateStale);
   const lastError = useMissionStore((s) => s.lastError);
-  const mappingActive = useMappingStore((s) => s.active);
   const authorityStatus = useControlAuthorityStore((s) => s.status);
+  const runtime = useAutonomyRuntimeStore((s) => s.status);
+  const runtimeStale = useAutonomyRuntimeStore((s) => s.stale);
   const [battery, setBattery] = useState<number | undefined>();
   const [missionBusy, setMissionBusy] = useState(false);
 
@@ -80,39 +80,46 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!connected || !transport) return;
-    const subscriptions = [
-      transport.subscribe(MISSION_STATUS_TOPIC, MISSION_STATUS_TYPE, (message) => {
-        if (!demo) useMissionStore.getState().onStatus(message);
-      }),
-      transport.subscribe(ROBOT_STATE_TOPIC, ROBOT_STATE_TYPE, (message) => {
-        if (!demo) useMissionStore.getState().onRobotState(message);
-      }),
-      transport.subscribe('/battery_state', 'sensor_msgs/msg/BatteryState', (message) => {
+    const subscription = transport.subscribe(
+      '/battery_state',
+      'sensor_msgs/msg/BatteryState',
+      (message) => {
         const value = Number(message?.percentage);
         if (Number.isFinite(value)) setBattery(value);
-      }, 1000),
-    ];
-    return () => subscriptions.forEach((subscription) => subscription.unsubscribe());
-  }, [connected, demo, transport]);
+      },
+      1000,
+    );
+    return () => subscription.unsubscribe();
+  }, [connected, transport]);
 
-  const activeMission = !!mission && ([MISSION_STATE.PENDING, MISSION_STATE.EXECUTING, MISSION_STATE.PAUSED] as number[]).includes(mission.state);
-  const warning = lastError || robot?.estop_latched
-    ? (lastError || (language === 'zh' ? '急停当前处于锁止状态' : 'Emergency stop is latched'))
-    : robot?.localization_state === LOCALIZATION_STATE.LOST
+  const freshRobot = robotStateStale ? null : robot;
+  const activeMission = !missionStatusStale && !!mission &&
+    ([MISSION_STATE.PENDING, MISSION_STATE.EXECUTING, MISSION_STATE.PAUSED] as number[])
+      .includes(mission.state);
+  const warning = lastError || (!demo && connected && (missionStatusStale || robotStateStale))
+    ? (lastError || (language === 'zh' ? '机器人业务状态已过期，正在等待新心跳' : 'Robot runtime state is stale; waiting for fresh heartbeats'))
+    : freshRobot?.estop_latched
+      ? (language === 'zh' ? '急停当前处于锁止状态' : 'Emergency stop is latched')
+    : freshRobot?.localization_state === LOCALIZATION_STATE.LOST
       ? (language === 'zh' ? '机器人定位已丢失' : 'Robot localization is lost')
       : null;
 
-  const mode = mappingActive
-    ? pc('home.modeMapping')
-    : activeMission
-      ? pc('home.modeMission')
-      : pc('home.modeManual');
+  const mode = useMemo(() => {
+    return pc(resolveHomeModeKey({
+      runtime,
+      runtimeStale,
+      demo,
+      activeMission,
+      appOwnsBaseControl: authorityStatus === 'acquired',
+    }));
+  }, [activeMission, authorityStatus, demo, pc, runtime, runtimeStale]);
 
   const authority = useMemo(() => {
     if (demo || authorityStatus === 'unsupported') return language === 'zh' ? '无需接管' : 'Not required';
     if (authorityStatus === 'acquired') return language === 'zh' ? '本机控制' : 'Mobile control';
     if (authorityStatus === 'override_acquired') return language === 'zh' ? '人工覆盖导航' : 'Manual override';
     if (authorityStatus === 'override_available') return language === 'zh' ? '导航可人工覆盖' : 'Override available';
+    if (authorityStatus === 'stale') return language === 'zh' ? '状态已过期' : 'Status stale';
     if (authorityStatus === 'owned_by_other') return language === 'zh' ? '其他终端' : 'Other operator';
     return language === 'zh' ? '未接管' : 'Not acquired';
   }, [authorityStatus, demo, language]);
@@ -180,9 +187,9 @@ export default function HomeScreen() {
                 <StatusPill label={pc('home.online')} tone={demo ? 'warning' : 'success'} />
               </View>
               <View style={styles.metrics}>
-                <Metric icon="battery-half" label={pc('home.battery')} value={formatBattery(robot?.battery_percentage ?? battery, demo)} tone="success" />
+                <Metric icon="battery-half" label={pc('home.battery')} value={formatBattery(freshRobot?.battery_percentage ?? battery, demo)} tone="success" />
                 <Metric icon="wifi" label={pc('home.network')} value={pc('home.networkStable')} tone="success" />
-                <Metric icon="navigate-circle-outline" label={pc('home.localization')} value={demo || robot?.localization_state === LOCALIZATION_STATE.LOCALIZED ? pc('home.localized') : pc('home.localizationUnknown')} />
+                <Metric icon="navigate-circle-outline" label={pc('home.localization')} value={demo || freshRobot?.localization_state === LOCALIZATION_STATE.LOCALIZED ? pc('home.localized') : pc('home.localizationUnknown')} />
                 <Metric icon="options-outline" label={pc('home.mode')} value={mode} />
               </View>
               <View style={styles.authorityRow}>

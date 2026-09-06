@@ -45,4 +45,18 @@ describe('useControlAuthorityStore', () => {
     expect(useControlAuthorityStore.getState().baseOwnerId).toBe('mission-42');
     expect(mobileControlBlocksCommands()).toBe(false);
   });
+
+  it('fails closed when the typed authority heartbeat becomes stale', () => {
+    useControlAuthorityStore.getState().applyStatus({
+      state: 'acquired', ownerId: CONTROL_CLIENT_ID,
+    });
+    useControlAuthorityStore.getState().reset('stale');
+
+    expect(useControlAuthorityStore.getState()).toMatchObject({
+      status: 'stale',
+      ownerId: null,
+      baseOwnerId: null,
+    });
+    expect(mobileControlBlocksCommands()).toBe(true);
+  });
 });

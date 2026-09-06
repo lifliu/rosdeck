@@ -21,19 +21,20 @@ import {
   createMissionRequestEnvelope,
 } from '../lib/autonomy-runtime';
 import {
-  MISSION_EVENTS_TOPIC,
-  MISSION_EVENTS_TYPE,
-  MISSION_STATUS_TOPIC,
-  MISSION_STATUS_TYPE,
-  ROBOT_STATE_TOPIC,
-  ROBOT_STATE_TYPE,
+  DEFAULT_INSPECTION_COMMAND_TTL_SEC,
   cancelMission,
   dispatchMission,
   listRoutes,
   pauseMission,
   resumeMission,
 } from '../lib/mission/api';
-import { ACTIVE_MISSION_STATES, MISSION_STATE, type ControlResponse } from '../lib/mission/types';
+import {
+  ACTIVE_MISSION_STATES,
+  getRouteDispatchBlockReason,
+  MISSION_STATE,
+  type ControlResponse,
+  type RouteDispatchBlockReason,
+} from '../lib/mission/types';
 import {
   ACTIVE_NAVIGATION_STATES,
   NAVIGATION_STATE,
@@ -53,7 +54,6 @@ import { useAutonomyRuntimeStore } from '../stores/useAutonomyRuntimeStore';
 import { useMissionStore } from '../stores/useMissionStore';
 import { useNavigationStore } from '../stores/useNavigationStore';
 import { useRosStore } from '../stores/useRosStore';
-import { useAutonomyRuntimeFeed } from '../hooks/useAutonomyRuntimeFeed';
 import { useNavigationFeed } from '../hooks/useNavigationFeed';
 import type { LayoutNode, SavedLayout, WidgetConfigField, WidgetNode } from '../types/layout';
 import { cameraWidget } from '../widgets/camera';
@@ -70,9 +70,25 @@ import { PointCloud3DWidget } from '../widgets/pointcloud3d/PointCloud3DWidget';
 type Scene = 'video' | 'map';
 type PendingMapGoal = MapGoalSelection & { assetIdentityKey: string };
 
-// deadline 覆盖“运行时准备 + 整条路线执行”，不是一次网络请求超时。30 秒会让
-// 正常巡检刚起步就被 Planner 作为过期运动意图终止。
-const INSPECTION_COMMAND_TTL_SEC = 30 * 60;
+function routeDispatchBlockText(
+  reason: RouteDispatchBlockReason,
+  zh: boolean,
+): string {
+  switch (reason) {
+    case 'legacy_map_binding':
+      return zh
+        ? '旧路线缺少完整地图校验信息，请在当前已保存地图上重新录制。'
+        : 'This legacy route has no exact map checksum. Re-record it on the saved map.';
+    case 'unsupported_frame':
+      return zh
+        ? '旧路线使用了非标准坐标系，请重新录制后再巡检。'
+        : 'This route uses a non-canonical frame. Re-record it before inspection.';
+    case 'malformed_route':
+      return zh
+        ? '路线数据不完整，当前无法派发。'
+        : 'The route data is incomplete and cannot be dispatched.';
+  }
+}
 
 interface ControlCockpitProps {
   language: 'zh' | 'en';
@@ -212,6 +228,9 @@ export function ControlCockpit({
   const routesLoaded = useMissionStore((state) => state.routesLoaded);
   const selectedRouteId = useMissionStore((state) => state.selectedRouteId);
   const mission = useMissionStore((state) => state.status);
+  const robotStrip = useMissionStore((state) => state.robotStrip);
+  const missionStatusStale = useMissionStore((state) => state.missionStatusStale);
+  const robotStateStale = useMissionStore((state) => state.robotStateStale);
   const dispatching = useMissionStore((state) => state.dispatching);
   const controlling = useMissionStore((state) => state.controlling);
   const lastError = useMissionStore((state) => state.lastError);
@@ -227,7 +246,8 @@ export function ControlCockpit({
   const connected = status === 'connected' && Boolean(transport);
   const missionConnected = connected && !isDemo;
   const missionState = mission?.state ?? MISSION_STATE.NONE;
-  const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
+  const missionActive = !missionStatusStale &&
+    ACTIVE_MISSION_STATES.includes(missionState);
   const navigationReady = !runtimeStale && runtime?.mode === AUTONOMY_MODE.SINGLE_POINT_READY &&
     runtime.ready === true && runtime.phase === AUTONOMY_PHASE.READY;
   const navigationKnownActive = ACTIVE_NAVIGATION_STATES.includes(
@@ -247,8 +267,7 @@ export function ControlCockpit({
     ].join('\u0000')
     : '';
 
-  // 控制台是建图、录线、单点导航和巡检入口的共同父组件，只在这里订阅一次。
-  useAutonomyRuntimeFeed(missionConnected);
+  // 自主运行状态由应用根层持续订阅；导航目标状态只在控制台需要。
   useNavigationFeed(missionConnected);
 
   const cameraSelection = useMemo(
@@ -355,27 +374,17 @@ export function ControlCockpit({
     };
   }, []);
 
-  useEffect(() => {
-    if (!missionConnected || !transport) {
-      useMissionStore.getState().resetFeed();
-      return;
-    }
-    const subscriptions = [
-      transport.subscribe(MISSION_STATUS_TOPIC, MISSION_STATUS_TYPE, (message) => useMissionStore.getState().onStatus(message)),
-      transport.subscribe(MISSION_EVENTS_TOPIC, MISSION_EVENTS_TYPE, (message) => useMissionStore.getState().onEvent(message)),
-      transport.subscribe(ROBOT_STATE_TOPIC, ROBOT_STATE_TYPE, (message) => useMissionStore.getState().onRobotState(message)),
-    ];
-    return () => {
-      subscriptions.forEach((subscription) => subscription.unsubscribe());
-    };
-  }, [missionConnected, transport]);
-
   const refreshRoutes = useCallback(() => {
     if (!transport || !missionConnected) return;
+    useMissionStore.getState().beginRoutesRefresh();
     useMissionStore.getState().setError(null);
     listRoutes(transport)
       .then((items) => useMissionStore.getState().setRoutes(items))
-      .catch((error: any) => useMissionStore.getState().setError(error?.message || String(error)));
+      .catch((error: any) => {
+        // 拉取失败时结束加载态，并继续保持“空目录”这一失败关闭状态。
+        useMissionStore.getState().setRoutes([]);
+        useMissionStore.getState().setError(error?.message || String(error));
+      });
   }, [missionConnected, transport]);
 
   useEffect(() => {
@@ -389,8 +398,33 @@ export function ControlCockpit({
 
   const dispatchSelectedRoute = useCallback(() => {
     if (!transport || !selectedRouteId) return;
+    const store = useMissionStore.getState();
     const selectedRoute = routes.find((route) => route.routeId === selectedRouteId);
-    if (!selectedRoute) return;
+    if (!selectedRoute) {
+      store.setError(zh ? '路线不存在，请刷新后重试。' : 'Route not found. Refresh and try again.');
+      return;
+    }
+    const routeBlockReason = getRouteDispatchBlockReason(selectedRoute);
+    if (routeBlockReason) {
+      store.setError(routeDispatchBlockText(routeBlockReason, zh));
+      return;
+    }
+    if (store.robotStateStale || !store.robotStrip) {
+      store.setError(zh ? '尚未收到机器人安全状态，暂不能下发巡检。' : 'Robot safety state is unavailable.');
+      return;
+    }
+    if (store.missionStatusStale) {
+      store.setError(zh ? 'Mission Manager 状态已过期，暂不能下发巡检。' : 'Mission Manager state is stale.');
+      return;
+    }
+    if (store.status && ACTIVE_MISSION_STATES.includes(store.status.state)) {
+      store.setError(zh ? '已有任务正在执行，请先完成或取消当前任务。' : 'Finish or cancel the active mission first.');
+      return;
+    }
+    if (store.robotStrip.estop_latched) {
+      store.setError(zh ? '急停已锁定，复位后才能下发巡检。' : 'Reset the latched E-stop before dispatch.');
+      return;
+    }
     Alert.alert(
       zh ? '开始巡检任务？' : 'Start inspection mission?',
       zh ? `将派发路线「${selectedRouteId}」，机器人会进入自主巡检。` : `Dispatch route “${selectedRouteId}” for autonomous inspection.`,
@@ -400,12 +434,43 @@ export function ControlCockpit({
           text: zh ? '确认开始' : 'Start',
           onPress: async () => {
             const store = useMissionStore.getState();
+            // 二次确认弹窗可能停留数秒；真正发送前必须再评估最新安全快照。
+            if (store.robotStateStale || !store.robotStrip) {
+              store.setError(zh ? '机器人状态已过期，本次派发已取消。' : 'Robot state became stale; dispatch was canceled.');
+              return;
+            }
+            if (store.missionStatusStale) {
+              store.setError(zh ? 'Mission Manager 状态已过期，本次派发已取消。' : 'Mission state became stale; dispatch was canceled.');
+              return;
+            }
+            if (store.status && ACTIVE_MISSION_STATES.includes(store.status.state)) {
+              store.setError(zh ? '已有任务开始执行，本次派发已取消。' : 'Another mission became active; dispatch was canceled.');
+              return;
+            }
+            if (store.robotStrip.estop_latched) {
+              store.setError(zh ? '急停已锁定，本次派发已取消。' : 'E-stop is latched; dispatch was canceled.');
+              return;
+            }
+            // 路线目录也可能在确认期间刷新。必须使用当前 Store 中仍有效的
+            // 资产身份，绝不能发送弹窗打开前捕获的旧 map/checksum。
+            const currentRoute = store.routes.find(
+              (route) => route.routeId === selectedRouteId,
+            );
+            if (!currentRoute) {
+              store.setError(zh ? '路线目录已变化，本次派发已取消。' : 'The route catalog changed; dispatch was canceled.');
+              return;
+            }
+            const currentRouteBlock = getRouteDispatchBlockReason(currentRoute);
+            if (currentRouteBlock) {
+              store.setError(routeDispatchBlockText(currentRouteBlock, zh));
+              return;
+            }
             const pending = store.pendingDispatch?.routeId === selectedRouteId
               ? store.pendingDispatch
               : {
                 ...createMissionRequestEnvelope(
                   'inspection',
-                  INSPECTION_COMMAND_TTL_SEC,
+                  DEFAULT_INSPECTION_COMMAND_TTL_SEC,
                 ),
                 routeId: selectedRouteId,
               };
@@ -420,10 +485,10 @@ export function ControlCockpit({
                 source: pending.source,
                 requestedAt: pending.requestedAt,
                 deadline: pending.deadline,
-                mapId: selectedRoute.mapId,
-                mapVersion: selectedRoute.mapVersion,
-                mapChecksum: selectedRoute.mapChecksum,
-                routeChecksum: selectedRoute.routeChecksum,
+                mapId: currentRoute.mapId,
+                mapVersion: currentRoute.mapVersion,
+                mapChecksum: currentRoute.mapChecksum,
+                routeChecksum: currentRoute.routeChecksum,
               });
               if (response.accepted) {
                 store.setPendingDispatch(null);
@@ -441,6 +506,14 @@ export function ControlCockpit({
       ],
     );
   }, [routes, selectedRouteId, transport, zh]);
+
+  const selectedRoute = routes.find((route) => route.routeId === selectedRouteId);
+  const selectedRouteBlocked = selectedRoute
+    ? getRouteDispatchBlockReason(selectedRoute) !== null
+    : false;
+  const inspectionDispatchBlocked = !selectedRouteId || selectedRouteBlocked ||
+    missionStatusStale || robotStateStale || !robotStrip ||
+    robotStrip.estop_latched || missionActive || dispatching;
 
   const runMissionControl = useCallback(async (call: (missionId?: string) => Promise<ControlResponse>) => {
     const store = useMissionStore.getState();
@@ -951,13 +1024,21 @@ export function ControlCockpit({
                 <ScrollView style={styles.routesList} contentContainerStyle={styles.routesContent} showsVerticalScrollIndicator={false}>
                   {!routesLoaded ? <Text style={styles.routeEmpty}>{zh ? '正在读取路线…' : 'Loading routes…'}</Text> : null}
                   {routesLoaded && routes.length === 0 ? <Text style={styles.routeEmpty}>{zh ? '机器人上还没有可用巡检路线' : 'No inspection routes found on the robot'}</Text> : null}
-                  {routes.map((route) => {
-                    const selected = selectedRouteId === route.routeId;
+                  {routesLoaded ? routes.map((route) => {
+                    const blockReason = getRouteDispatchBlockReason(route);
+                    const blocked = blockReason !== null;
+                    const selected = !blocked && selectedRouteId === route.routeId;
                     return (
-                      <TouchableOpacity key={route.routeId} style={[styles.routeRow, selected && styles.routeRowSelected]} onPress={() => useMissionStore.getState().selectRoute(selected ? null : route.routeId)}>
-                        <View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name="git-branch-outline" size={20} color={selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View>
+                      <TouchableOpacity key={route.routeId} accessibilityState={{ disabled: blocked, selected }} style={[styles.routeRow, selected && styles.routeRowSelected, blocked && styles.routeRowBlocked]} onPress={() => {
+                        if (blockReason) {
+                          useMissionStore.getState().setError(routeDispatchBlockText(blockReason, zh));
+                          return;
+                        }
+                        useMissionStore.getState().selectRoute(selected ? null : route.routeId);
+                      }}>
+                        <View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name={blocked ? 'warning-outline' : 'git-branch-outline'} size={20} color={blocked ? theme.colors.statusConnecting : selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View>
                         <View style={styles.routeCopy}>
-                          <Text style={styles.routeName}>{route.routeId}</Text>
+                          <Text style={[styles.routeName, blocked && styles.routeNameBlocked]}>{route.routeId}</Text>
                           <Text style={styles.routeMeta} numberOfLines={1}>
                             {route.mapId
                               ? `${zh ? '地图' : 'Map'}: ${route.mapId}${route.mapVersion ? ` · ${route.mapVersion.startsWith('v') ? route.mapVersion : `v${route.mapVersion}`}` : ''}`
@@ -965,16 +1046,20 @@ export function ControlCockpit({
                             {route.pointCount > 0 ? ` · ${route.pointCount}${zh ? '点' : ' pts'}` : ''}
                             {route.distanceM > 0 ? ` · ${route.distanceM.toFixed(1)} m` : ''}
                           </Text>
+                          {blockReason ? <Text style={styles.routeBlockReason}>{routeDispatchBlockText(blockReason, zh)}</Text> : null}
                         </View>
-                        <Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selected ? theme.colors.accentPrimary : theme.colors.borderDefault} />
+                        <Ionicons name={selected ? 'checkmark-circle' : blocked ? 'alert-circle-outline' : 'ellipse-outline'} size={22} color={selected ? theme.colors.accentPrimary : blocked ? theme.colors.statusConnecting : theme.colors.borderDefault} />
                       </TouchableOpacity>
                     );
-                  })}
+                  }) : null}
                 </ScrollView>
-                <TouchableOpacity disabled={!selectedRouteId || dispatching} style={[styles.dispatchButton, (!selectedRouteId || dispatching) && styles.dispatchButtonDisabled]} onPress={dispatchSelectedRoute}>
+                <TouchableOpacity disabled={inspectionDispatchBlocked} style={[styles.dispatchButton, inspectionDispatchBlocked && styles.dispatchButtonDisabled]} onPress={dispatchSelectedRoute}>
                   <Ionicons name={dispatching ? 'hourglass-outline' : 'send'} size={18} color="#061014" />
                   <Text style={styles.dispatchButtonText}>{dispatching ? (zh ? '正在下发…' : 'Dispatching…') : (zh ? '开始巡检任务' : 'Start inspection')}</Text>
                 </TouchableOpacity>
+                {robotStateStale || !robotStrip ? <Text style={styles.dispatchBlockReason}>{zh ? '等待机器人安全状态…' : 'Waiting for robot safety state…'}</Text> : null}
+                {missionStatusStale ? <Text style={styles.dispatchBlockReason}>{zh ? '等待 Mission Manager 新心跳…' : 'Waiting for a fresh Mission Manager heartbeat…'}</Text> : null}
+                {robotStrip?.estop_latched ? <Text style={styles.dispatchBlockReason}>{zh ? '急停已锁定，复位后才能开始巡检。' : 'Reset the latched E-stop before inspection.'}</Text> : null}
               </>
             )}
             {controlling ? <Text style={styles.panelNotice}>{zh ? '正在等待任务管理器响应…' : 'Waiting for Mission Manager…'}</Text> : null}
@@ -1048,14 +1133,18 @@ const styles = StyleSheet.create({
   routeEmpty: { color: theme.colors.textMuted, fontSize: 12, textAlign: 'center', paddingVertical: 35 },
   routeRow: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 7, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.borderSubtle, backgroundColor: '#FFFFFF08' },
   routeRowSelected: { borderColor: theme.colors.accentPrimary + '99', backgroundColor: theme.colors.accentPrimaryMuted },
+  routeRowBlocked: { opacity: 0.72 },
   routeIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.bgSurface },
   routeIconSelected: { backgroundColor: theme.colors.accentPrimaryMuted },
   routeCopy: { flex: 1, minWidth: 0 },
   routeName: { color: theme.colors.textValue, fontSize: 13, fontWeight: '700' },
+  routeNameBlocked: { color: theme.colors.textSecondary },
   routeMeta: { color: theme.colors.textMuted, fontSize: 10, marginTop: 3 },
+  routeBlockReason: { color: theme.colors.statusConnecting, fontSize: 10, lineHeight: 14, marginTop: 3 },
   dispatchButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 13, backgroundColor: theme.colors.accentPrimary },
   dispatchButtonDisabled: { opacity: 0.4 },
   dispatchButtonText: { color: '#061014', fontSize: 13, fontWeight: '800' },
+  dispatchBlockReason: { color: theme.colors.textMuted, fontSize: 10, lineHeight: 14, textAlign: 'center' },
   activeMissionCard: { marginTop: 18, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.colors.accentPrimary + '66', backgroundColor: theme.colors.accentPrimaryMuted },
   activeMissionEyebrow: { color: theme.colors.accentPrimary, fontSize: 9, fontWeight: '800', letterSpacing: 1 },
   activeMissionRoute: { color: theme.colors.textPrimary, fontSize: 18, fontWeight: '700', marginTop: 8 },

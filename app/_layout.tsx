@@ -27,6 +27,8 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { ControlAuthoritySession } from '../components/ControlAuthority';
 import { bestEffortReleaseControl } from '../lib/control-authority';
 import { useControlAuthorityStore } from '../stores/useControlAuthorityStore';
+import { useAutonomyRuntimeFeed } from '../hooks/useAutonomyRuntimeFeed';
+import { useMissionFeed } from '../hooks/useMissionFeed';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -64,11 +66,18 @@ export default function RootLayout() {
 }
 
 function RootLayoutNav() {
+  // 自主运行模式属于全局机器人状态，不能依赖“控制”页面是否挂载。否则切换到
+  // 首页或任务页后，模式按钮和总览会继续显示上一张过期快照。
+  useAutonomyRuntimeFeed();
+  useMissionFeed();
+
   useEffect(() => {
-    useRosStore.getState().loadSavedConnections();
-    useOnboardingStore.getState().loadOnboarding();
-    useSettingsStore.getState().load();
-    usePairingStore.getState().load();
+    // 先恢复认证资料，再连接最近设备；否则 wss 首帧可能缺少网关登录凭据。
+    void Promise.all([
+      useOnboardingStore.getState().loadOnboarding(),
+      useSettingsStore.getState().load(),
+      usePairingStore.getState().load(),
+    ]).then(() => useRosStore.getState().restoreMostRecentConnection());
 
     const handleAppState = (nextState: AppStateStatus) => {
       const store = useRosStore.getState();

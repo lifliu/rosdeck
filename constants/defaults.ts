@@ -13,7 +13,8 @@ export const DEFAULTS = {
   maxAngularVel: 1.0,
   publishRateHz: 10,
   connectionTimeoutMs: 5000,
-  maxReconnectAttempts: 10,
+  // 重连不会在固定次数后永久停止；该值只限制指数退避级数，避免等待时间无限增长。
+  maxReconnectBackoffExponent: 10,
   reconnectBackoffBase: 1000,
   reconnectBackoffMax: 30000,
 } as const;

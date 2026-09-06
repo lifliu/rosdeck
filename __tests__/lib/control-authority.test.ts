@@ -6,6 +6,8 @@ import {
   CONTROL_AUTHORITY_STATE,
   CONTROL_AUTHORITY_STATUS_TOPIC,
   CONTROL_AUTHORITY_STATUS_TYPE,
+  CONTROL_AUTHORITY_STATUS_STALE_MS,
+  createControlAuthorityStatusWatchdog,
   parseControlStatus,
   parseTypedControlStatus,
   requestControlAuthority,
@@ -123,5 +125,24 @@ describe('mobile control authority protocol', () => {
     expect(parseControlStatus({ data: 'acquired' })).toBeNull();
     expect(parseControlStatus({ data: 'cooldown:nope' })).toBeNull();
     expect(parseControlStatus({ data: 3 })).toBeNull();
+  });
+
+  it('expires a frozen authority snapshot and resets the deadline on heartbeat', () => {
+    jest.useFakeTimers();
+    const onStale = jest.fn();
+    const watchdog = createControlAuthorityStatusWatchdog(onStale);
+
+    watchdog.arm();
+    jest.advanceTimersByTime(CONTROL_AUTHORITY_STATUS_STALE_MS - 1);
+    expect(onStale).not.toHaveBeenCalled();
+
+    watchdog.arm();
+    jest.advanceTimersByTime(CONTROL_AUTHORITY_STATUS_STALE_MS - 1);
+    expect(onStale).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(onStale).toHaveBeenCalledTimes(1);
+
+    watchdog.dispose();
+    jest.useRealTimers();
   });
 });

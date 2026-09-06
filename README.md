@@ -37,6 +37,11 @@
 - **2D/3D map** — render `OccupancyGrid`, `LaserScan` or Matrix registered point clouds and show the robot pose from the canonical Omni TF tree
 - **Managed point navigation** — long-press either a grid map or verified `omni_map` point cloud, fine-tune X/Y on the phone, then submit only through Mission Manager's typed navigation API
 - **Authoritative map picker** — refresh `/omni/maps/list` from Mission Manager before navigation or route recording and carry the selected ID/version/SHA-256 tuple unchanged; phone cache is never treated as an asset source
+- **Inspection asset gate** — keep legacy routes visible for diagnosis, but disable dispatch until a route has been re-recorded with canonical `omni_map` coordinates and an exact map ID/version/SHA-256 binding
+- **Robot-scoped mission state** — subscribe to Mission/Robot state once at the application root, deduplicate durable events, and refresh the authoritative route catalog whenever the mission tab regains focus so cached tabs never reuse another robot's assets
+- **Consistent inspection intent** — both mission entry points use the same 30-minute end-to-end command lifetime and the same route, robot-state, active-mission and E-stop gates
+- **Fail-closed mission heartbeat** — expire MissionStatus and RobotState independently after 3.5 seconds, hide stale telemetry and re-check route identity and safety after confirmation immediately before dispatch
+- **Fail-closed authority heartbeat** — clear the local control owner and disable teleop/posture commands when the Bridge's 500 ms authority stream is silent for 2 seconds; a connected WebSocket alone never proves ownership
 - **Rosbridge & Foxglove** — connect via `rosbridge_server` (port 9090) or `foxglove_bridge` (port 8765), no DDS configuration needed
 - **Customizable layouts** — tmux-style split panes, swap and resize widgets, save/load per robot
 - **Auto-layout** — detects available topics on connect and suggests a matching layout

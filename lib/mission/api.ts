@@ -41,7 +41,15 @@ export const MISSION_EVENTS_TOPIC = '/omni/mission/events';
 export const MISSION_EVENTS_TYPE = 'omni_robot_interfaces/msg/MissionEvent';
 export const ROBOT_STATE_TOPIC = '/omni/robot_state';
 export const ROBOT_STATE_TYPE = 'omni_robot_interfaces/msg/RobotState';
-export const DEFAULT_INSPECTION_DEADLINE_MS = 30 * 60 * 1000;
+/**
+ * 巡检命令的端到端有效期，覆盖依赖准备与整条路线执行。
+ *
+ * UI 生成幂等请求信封和 API 缺省 deadline 必须共用这一处定义，避免不同入口
+ * 对同一条路线采用不同超时语义。
+ */
+export const DEFAULT_INSPECTION_COMMAND_TTL_SEC = 30 * 60;
+export const DEFAULT_INSPECTION_DEADLINE_MS =
+  DEFAULT_INSPECTION_COMMAND_TTL_SEC * 1000;
 
 // rosbridge and foxglove both deliver IDL field names as-is (snake_case);
 // the camelCase fallback guards against a bridge that re-cases fields.

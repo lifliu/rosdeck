@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { RosTime } from '../lib/autonomy-runtime';
 import {
+  getRouteDispatchBlockReason,
   MISSION_STATE,
   type MissionEventMessage,
   type MissionStatusMessage,
@@ -30,6 +31,8 @@ interface MissionStore {
   status: MissionStatusMessage | null;
   events: MissionEventMessage[]; // newest first, capped at MAX_EVENTS_SHOWN
   robotStrip: RobotStateStrip | null;
+  missionStatusStale: boolean;
+  robotStateStale: boolean;
 
   // in-flight dispatch intent: same (requestId, route) reuses the key, so
   // a retry after a WS flake is an idempotent replay, not a re-dispatch
@@ -38,6 +41,7 @@ interface MissionStore {
   controlling: boolean;
   lastError: string | null;
 
+  beginRoutesRefresh: () => void;
   setRoutes: (routes: RouteEntry[]) => void;
   selectRoute: (routeId: string | null) => void;
   setPendingDispatch: (pending: PendingDispatch | null) => void;
@@ -48,6 +52,8 @@ interface MissionStore {
   onStatus: (message: MissionStatusMessage) => void;
   onEvent: (message: MissionEventMessage) => void;
   onRobotState: (message: Record<string, unknown>) => void;
+  markMissionStatusStale: () => void;
+  markRobotStateStale: () => void;
 
   // connection dropped: the feed is stale; drop it
   resetFeed: () => void;
@@ -61,14 +67,46 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
   status: null,
   events: [],
   robotStrip: null,
+  missionStatusStale: true,
+  robotStateStale: true,
 
   pendingDispatch: null,
   dispatching: false,
   controlling: false,
   lastError: null,
 
-  setRoutes: (routes) => set({ routes, routesLoaded: true }),
-  selectRoute: (routeId) => set({ selectedRouteId: routeId }),
+  beginRoutesRefresh: () => set({
+    // 路线属于当前机器人的权威资产目录。重连或切换设备后，在新
+    // ListRoutes 快照到达前不得继续展示、选中或派发上一台机器人的路线。
+    routes: [],
+    routesLoaded: false,
+    selectedRouteId: null,
+  }),
+  setRoutes: (routes) =>
+    set((state) => {
+      // 路线资产可能在刷新期间被替换或降级；选择状态必须跟随最新快照收敛，
+      // 不能让底部派发按钮继续引用已经不可执行的旧条目。
+      const selected = routes.find(
+        (route) => route.routeId === state.selectedRouteId,
+      );
+      return {
+        routes,
+        routesLoaded: true,
+        selectedRouteId:
+          selected && !getRouteDispatchBlockReason(selected)
+            ? state.selectedRouteId
+            : null,
+      };
+    }),
+  selectRoute: (routeId) =>
+    set((state) => {
+      if (!routeId) return { selectedRouteId: null };
+      const route = state.routes.find((entry) => entry.routeId === routeId);
+      return {
+        selectedRouteId:
+          route && !getRouteDispatchBlockReason(route) ? routeId : null,
+      };
+    }),
   setPendingDispatch: (pendingDispatch) => set({ pendingDispatch }),
   setDispatching: (dispatching) => set({ dispatching }),
   setControlling: (controlling) => set({ controlling }),
@@ -89,13 +127,25 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
           next = null;
         }
       }
-      return { status: message, pendingDispatch: next };
+      return {
+        status: message,
+        pendingDispatch: next,
+        missionStatusStale: false,
+      };
     }),
 
   onEvent: (message) =>
-    set((state) => ({
-      events: [message, ...state.events].slice(0, MAX_EVENTS_SHOWN),
-    })),
+    set((state) => {
+      // (mission_id, sequence) 是 Mission 持久化事件的稳定身份。传输层
+      // 重连、重放或短暂重复订阅都不应在时间线里制造重复记录。
+      const withoutDuplicate = state.events.filter(
+        (event) => event.mission_id !== message.mission_id ||
+          event.sequence !== message.sequence,
+      );
+      return {
+        events: [message, ...withoutDuplicate].slice(0, MAX_EVENTS_SHOWN),
+      };
+    }),
 
   onRobotState: (message) =>
     set({
@@ -108,13 +158,19 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
         mission_state: Number(message.mission_state ?? 0),
         battery_percentage: Number(message.battery_percentage ?? NaN),
       },
+      robotStateStale: false,
     }),
+
+  markMissionStatusStale: () => set({ missionStatusStale: true }),
+  markRobotStateStale: () => set({ robotStateStale: true }),
 
   resetFeed: () =>
     set({
       status: null,
       events: [],
       robotStrip: null,
+      missionStatusStale: true,
+      robotStateStale: true,
       pendingDispatch: null,
       dispatching: false,
       controlling: false,

@@ -13,6 +13,8 @@ function resetStore() {
     status: null,
     events: [],
     robotStrip: null,
+    missionStatusStale: true,
+    robotStateStale: true,
     pendingDispatch: null,
     dispatching: false,
     controlling: false,
@@ -72,6 +74,54 @@ describe('onEvent', () => {
     expect(events[0].sequence).toBe(push);
     expect(events[events.length - 1].sequence).toBe(6);
   });
+
+  it('deduplicates a replayed durable event identity', () => {
+    useMissionStore.getState().onEvent(event(7));
+    useMissionStore.getState().onEvent({ ...event(7), reason_text: 'replayed' });
+
+    expect(useMissionStore.getState().events).toEqual([
+      expect.objectContaining({ sequence: 7, reason_text: 'replayed' }),
+    ]);
+  });
+});
+
+describe('route selection safety', () => {
+  const validRoute = {
+    routeId: 'route-a', mapId: 'map-a', frameId: 'omni_map', createdAt: '',
+    mapVersion: '1', mapChecksum: 'a'.repeat(64), routeChecksum: 'digest',
+    pointCount: 3, distanceM: 2.5,
+  };
+
+  it('does not select a legacy route without an exact map checksum', () => {
+    useMissionStore.getState().setRoutes([
+      { ...validRoute, mapChecksum: '' },
+    ]);
+    useMissionStore.getState().selectRoute('route-a');
+    expect(useMissionStore.getState().selectedRouteId).toBeNull();
+  });
+
+  it('clears selection when a refreshed asset becomes non-dispatchable', () => {
+    useMissionStore.getState().setRoutes([validRoute]);
+    useMissionStore.getState().selectRoute('route-a');
+    expect(useMissionStore.getState().selectedRouteId).toBe('route-a');
+
+    useMissionStore.getState().setRoutes([
+      { ...validRoute, mapChecksum: '' },
+    ]);
+    expect(useMissionStore.getState().selectedRouteId).toBeNull();
+  });
+
+  it('clears the previous robot catalog before requesting a fresh snapshot', () => {
+    useMissionStore.getState().setRoutes([validRoute]);
+    useMissionStore.getState().selectRoute('route-a');
+
+    useMissionStore.getState().beginRoutesRefresh();
+
+    const state = useMissionStore.getState();
+    expect(state.routes).toEqual([]);
+    expect(state.routesLoaded).toBe(false);
+    expect(state.selectedRouteId).toBeNull();
+  });
 });
 
 describe('onStatus pendingDispatch rules', () => {
@@ -101,6 +151,14 @@ describe('onStatus pendingDispatch rules', () => {
     seed();
     useMissionStore.getState().onStatus(status({ state: MISSION_STATE.NONE }));
     expect(useMissionStore.getState().pendingDispatch).toBeNull();
+  });
+
+  it('marks MissionStatus fresh on receipt and stale on heartbeat timeout', () => {
+    useMissionStore.getState().onStatus(status());
+    expect(useMissionStore.getState().missionStatusStale).toBe(false);
+
+    useMissionStore.getState().markMissionStatusStale();
+    expect(useMissionStore.getState().missionStatusStale).toBe(true);
   });
 });
 
@@ -132,14 +190,22 @@ describe('onRobotState', () => {
     expect(Number.isNaN(strip?.battery_percentage)).toBe(true);
     expect(strip?.localization_state).toBe(0);
   });
+
+  it('marks RobotState fresh on receipt and stale on heartbeat timeout', () => {
+    useMissionStore.getState().onRobotState({});
+    expect(useMissionStore.getState().robotStateStale).toBe(false);
+
+    useMissionStore.getState().markRobotStateStale();
+    expect(useMissionStore.getState().robotStateStale).toBe(true);
+  });
 });
 
 describe('resetFeed', () => {
   it('drops feed state but keeps lastError', () => {
     const store = useMissionStore.getState();
     store.setRoutes([{
-      routeId: 'a', mapId: 'm', frameId: '', createdAt: '',
-      mapVersion: '1', mapChecksum: 'map-sha', routeChecksum: 'route-sha',
+      routeId: 'a', mapId: 'm', frameId: 'omni_map', createdAt: '',
+      mapVersion: '1', mapChecksum: 'a'.repeat(64), routeChecksum: 'route-sha',
       pointCount: 3, distanceM: 2.5,
     }]);
     store.selectRoute('a');
@@ -159,6 +225,8 @@ describe('resetFeed', () => {
     expect(after.status).toBeNull();
     expect(after.events).toEqual([]);
     expect(after.robotStrip).toBeNull();
+    expect(after.missionStatusStale).toBe(true);
+    expect(after.robotStateStale).toBe(true);
     expect(after.pendingDispatch).toBeNull();
     expect(after.dispatching).toBe(false);
     expect(after.controlling).toBe(false);

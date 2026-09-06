@@ -79,8 +79,8 @@ export type LocalizationState =
 
 // --- message shapes (CDR-decoded plain objects, IDL field names) ---
 
-// /omni/mission/status (reliable + transient_local: late subscribers get
-// the current snapshot, so no "waiting for first message" logic is needed)
+// /omni/mission/status 使用 reliable + transient_local：晚加入订阅者先取得当前
+// 快照，随后仍必须用周期 heartbeat 判定新鲜度，不能无限沿用缓存状态。
 export interface MissionStatusMessage {
   state: number;
   mission_id: string;
@@ -130,6 +130,38 @@ export interface RouteEntry {
   routeChecksum: string;
   pointCount: number;
   distanceM: number;
+}
+
+export type RouteDispatchBlockReason =
+  | 'legacy_map_binding'
+  | 'unsupported_frame'
+  | 'malformed_route';
+
+const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/;
+
+/**
+ * 返回路线不能安全派发的原因；null 表示路线具备完整、不可变的执行身份。
+ *
+ * 历史路线的空地图校验和只能用于展示和迁移，不能表示“匹配任意当前地图”。
+ * 否则同名地图重建后，旧路线可能被错误地投放到新的坐标系中。
+ */
+export function getRouteDispatchBlockReason(
+  route: RouteEntry,
+): RouteDispatchBlockReason | null {
+  if (
+    !route.mapId ||
+    !route.mapVersion ||
+    !LOWERCASE_SHA256.test(route.mapChecksum)
+  ) {
+    return 'legacy_map_binding';
+  }
+  if (route.frameId !== 'omni_map') {
+    return 'unsupported_frame';
+  }
+  if (!route.routeChecksum || route.pointCount < 2) {
+    return 'malformed_route';
+  }
+  return null;
 }
 
 // /omni/mission/dispatch response

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_INSPECTION_COMMAND_TTL_SEC,
   MISSION_CONTROL_SERVICE,
   MISSION_CONTROL_SERVICE_TYPE,
   MISSION_DISPATCH_SERVICE,
@@ -125,6 +126,7 @@ describe('dispatchMission', () => {
   });
 
   it('uses an execution-sized default deadline instead of a network timeout', async () => {
+    expect(DEFAULT_INSPECTION_COMMAND_TTL_SEC).toBe(30 * 60);
     jest.spyOn(Date, 'now').mockReturnValue(100_000);
     const { transport, calls } = makeTransport(() => ({ accepted: false }));
     await dispatchMission(transport, { routeId: 'r', requestId: 'req-default' });

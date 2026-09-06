@@ -12,13 +12,23 @@ describe('ControlCockpit inspection entry', () => {
     expect(source).toContain('if (missionsOpen && missionConnected) refreshRoutes()');
     expect(source).not.toContain('/rosdeck/');
     expect(source).not.toContain('commandInspectionRuntime');
-    expect(source).toContain('INSPECTION_COMMAND_TTL_SEC = 30 * 60');
+    expect(source).toContain('DEFAULT_INSPECTION_COMMAND_TTL_SEC');
   });
 
   it('derives the active patrol presentation from MissionStatus only', () => {
     expect(source).toContain('ACTIVE_MISSION_STATES.includes(missionState)');
     expect(source).toContain('active={missionActive}');
     expect(source).not.toContain('mission_active');
+  });
+
+  it('applies the same route and robot safety gates as the mission page', () => {
+    expect(source).toContain('getRouteDispatchBlockReason(route)');
+    expect(source).toContain('routeDispatchBlockText(blockReason, zh)');
+    expect(source).toContain('robotStrip.estop_latched');
+    expect(source).toContain('inspectionDispatchBlocked');
+    expect(source).toContain('ACTIVE_MISSION_STATES.includes(store.status.state)');
+    expect(source).toContain('const currentRoute = store.routes.find(');
+    expect(source).toContain('mapChecksum: currentRoute.mapChecksum');
   });
 
   it('submits and cancels map goals only through the typed Mission facade', () => {

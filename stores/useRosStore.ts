@@ -33,8 +33,9 @@ interface RosStore {
   addSavedConnection: (url: string, name?: string) => void;
   removeSavedConnection: (url: string) => void;
   loadSavedConnections: () => Promise<void>;
+  restoreMostRecentConnection: () => Promise<void>;
   persistSavedConnections: () => Promise<void>;
-  connectToUrl: (url: string, isReconnect?: boolean) => void;
+  connectToUrl: (url: string, isReconnect?: boolean) => Promise<void>;
   handleDisconnect: () => void;
   disconnect: () => void;
   reset: () => void;
@@ -167,6 +168,23 @@ export const useRosStore = create<RosStore>((set, get) => ({
     } catch {}
   },
 
+  restoreMostRecentConnection: async () => {
+    await get().loadSavedConnections();
+
+    const state = get();
+    // 异步读取存储期间，用户可能已经手动发起连接；此时绝不能用旧记录覆盖当前选择。
+    if (state.connection.url || state.transport) return;
+
+    const mostRecent = [...state.savedConnections]
+      .filter((item) => item.transport !== 'demo')
+      .sort((left, right) => right.lastUsed - left.lastUsed)[0];
+    if (!mostRecent) return;
+
+    set({ transportType: mostRecent.transport ?? 'rosbridge' });
+    // 启动恢复属于自动连接。首次失败后继续走退避重连，网关晚于 APP 启动也能自行恢复。
+    await get().connectToUrl(mostRecent.url, true);
+  },
+
   persistSavedConnections: async () => {
     try {
       await AsyncStorage.setItem(STORAGE_KEY_CONNECTIONS, JSON.stringify(get().savedConnections));
@@ -267,22 +285,36 @@ export const useRosStore = create<RosStore>((set, get) => ({
 
   handleDisconnect: () => {
     const state = get();
-    // Don't auto-reconnect demo connections
-    if (state.connection.url.startsWith('demo://')) return;
-    if (state.reconnectAttempts >= DEFAULTS.maxReconnectAttempts) {
-      set({ reconnectAttempts: 0 });
-      state.setConnectionStatus('error', 'Connection lost — max reconnect attempts reached');
-      return;
-    }
+    // 演示连接不重连；空地址或已有定时器时也不重复调度，防止并发创建 WebSocket。
+    if (!state.connection.url || state.connection.url.startsWith('demo://') || state.reconnectTimer) return;
+    const exponent = Math.min(
+      state.reconnectAttempts,
+      DEFAULTS.maxReconnectBackoffExponent,
+    );
     const delay = Math.min(
-      DEFAULTS.reconnectBackoffBase * Math.pow(2, state.reconnectAttempts),
+      DEFAULTS.reconnectBackoffBase * Math.pow(2, exponent),
       DEFAULTS.reconnectBackoffMax
     );
     const timer = setTimeout(() => {
-      set((s) => ({ reconnectAttempts: s.reconnectAttempts + 1 }));
+      // 先清掉已触发的定时器，失败回调才能为下一轮重新调度。
+      set((s) => ({
+        reconnectAttempts: Math.min(
+          s.reconnectAttempts + 1,
+          DEFAULTS.maxReconnectBackoffExponent,
+        ),
+        reconnectTimer: null,
+      }));
       get().connectToUrl(state.connection.url, true);
     }, delay);
-    set({ reconnectTimer: timer });
+    set((current) => ({
+      reconnectTimer: timer,
+      connection: {
+        ...current.connection,
+        status: 'disconnected',
+        error: null,
+        ros: null,
+      },
+    }));
   },
 
   disconnect: () => {

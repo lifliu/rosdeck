@@ -7,6 +7,10 @@ export const CONTROL_AUTHORITY_STATUS_TOPIC = '/omni/control/authority/status';
 export const CONTROL_AUTHORITY_STATUS_TYPE =
   'omni_robot_interfaces/msg/ControlAuthorityStatus';
 
+// Bridge 每 500 ms 发布一次控制权心跳；2 秒可容忍短暂调度抖动，同时
+// 保证租约状态丢失时 APP 先于 5 秒租约上限收紧所有控制入口。
+export const CONTROL_AUTHORITY_STATUS_STALE_MS = 2000;
+
 export const CONTROL_AUTHORITY_OPERATION = {
   ACQUIRE: 0,
   RELEASE: 1,
@@ -43,6 +47,29 @@ export type ParsedControlStatus =
 export const CONTROL_CLIENT_ID = `app-${Date.now().toString(36)}-${Math.random()
   .toString(36)
   .slice(2, 10)}`;
+
+export interface ControlAuthorityStatusWatchdog {
+  arm: () => void;
+  dispose: () => void;
+}
+
+/** 创建可重置的控制权心跳看门狗，便于 React 生命周期和单元测试共用。 */
+export function createControlAuthorityStatusWatchdog(
+  onStale: () => void,
+  staleMs = CONTROL_AUTHORITY_STATUS_STALE_MS,
+): ControlAuthorityStatusWatchdog {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return {
+    arm: () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(onStale, staleMs);
+    },
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
 
 /**
  * 将 Bridge typed 快照映射成现有 UI 状态。base owner 与 APP 人工覆盖必须

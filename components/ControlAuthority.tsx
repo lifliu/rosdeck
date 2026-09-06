@@ -6,6 +6,7 @@ import {
   CONTROL_CLIENT_ID,
   CONTROL_AUTHORITY_STATUS_TOPIC,
   CONTROL_AUTHORITY_STATUS_TYPE,
+  createControlAuthorityStatusWatchdog,
   parseTypedControlStatus,
   requestControlAuthority,
 } from '../lib/control-authority';
@@ -17,7 +18,7 @@ import { useCmdVelStore } from '../stores/useCmdVelStore';
 const DETECTION_TIMEOUT_MS = 4000;
 const HEARTBEAT_PERIOD_MS = 1000;
 
-/** Mounted at the app root so the lease survives tab changes. */
+/** 挂载在应用根层，使控制权订阅与续租不受 Tab 切换影响。 */
 export function ControlAuthoritySession() {
   const connectionStatus = useRosStore((state) => state.connection.status);
   const transport = useRosStore((state) => state.transport);
@@ -35,6 +36,11 @@ export function ControlAuthoritySession() {
     }
 
     useControlAuthorityStore.getState().reset('detecting');
+    const watchdog = createControlAuthorityStatusWatchdog(() => {
+      // WebSocket 在线不代表 Bridge provider 仍存活。权威心跳过期后立即清除
+      // 本地 owner，阻止摇杆和姿态控制沿用旧租约快照。
+      useControlAuthorityStore.getState().reset('stale');
+    });
     const subscription = transport.subscribe(
       CONTROL_AUTHORITY_STATUS_TOPIC,
       CONTROL_AUTHORITY_STATUS_TYPE,
@@ -42,6 +48,7 @@ export function ControlAuthoritySession() {
         const parsed = parseTypedControlStatus(message);
         if (!parsed) return;
         useControlAuthorityStore.getState().applyStatus(parsed);
+        watchdog.arm();
       },
     );
     const detectionTimeout = setTimeout(() => {
@@ -53,6 +60,7 @@ export function ControlAuthoritySession() {
 
     return () => {
       clearTimeout(detectionTimeout);
+      watchdog.dispose();
       subscription.unsubscribe();
     };
   }, [connectionStatus, transport, url]);
@@ -206,10 +214,12 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
   const acquiredByThisApp = status === 'acquired' && ownerId === CONTROL_CLIENT_ID;
   const overrideByThisApp = status === 'override_acquired' && ownerId === CONTROL_CLIENT_ID;
   const disabled = connectionStatus !== 'connected' || status === 'detecting' ||
+    status === 'stale' ||
     status === 'acquiring' || status === 'releasing' || status === 'cooldown' ||
     status === 'owned_by_other';
   const label = status === 'detecting' ? t('authority.detecting')
-    : status === 'acquiring' ? t('authority.acquiring')
+    : status === 'stale' ? t('authority.stale')
+      : status === 'acquiring' ? t('authority.acquiring')
       : status === 'releasing' ? t('authority.releasing')
         : status === 'cooldown' ? t('authority.cooldown', { seconds: cooldownSeconds })
           : status === 'owned_by_other' ? t('authority.ownedByOther')

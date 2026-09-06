@@ -7,6 +7,7 @@ import {
 export type ControlAuthorityState =
   | 'disconnected'
   | 'detecting'
+  | 'stale'
   | 'unsupported'
   | 'available'
   | 'acquiring'
