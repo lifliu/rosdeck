@@ -3,6 +3,7 @@ import { MessageReader, MessageWriter } from '@foxglove/rosmsg2-serialization';
 import { parse as parseMessageDefinition } from '@foxglove/rosmsg';
 import { DEFAULTS, FOXGLOVE_WEBSOCKET_PROTOCOLS } from '../constants/defaults';
 import { canonicalizeConnectionUrl } from './connection-url';
+import { getLocalServiceSchema } from './ros-service-schemas';
 
 type ServiceSchema = {
   encoding?: string;
@@ -28,20 +29,6 @@ const AUTH_CLOSE_REASONS: Record<number, string> = {
   1008: 'Authentication failed — check the user and token in the device pairing',
   4403: 'Too many failed logins — temporarily locked out, try again later',
 };
-
-// Some Humble foxglove_bridge releases advertise only the legacy service
-// metadata. Keep the VBot service definition locally so those releases can
-// still receive and return proper ROS 2 CDR rather than JSON bytes.
-const SET_RUN_MODE_TYPE = 'function_msgs/srv/SetRunMode';
-const SET_RUN_MODE_REQUEST_SCHEMA = `uint8 target_state
-uint8 mode
-string req_id
-bool pre_check
-bool has_is_traction_user_param
-bool is_traction_user_param`;
-const SET_RUN_MODE_RESPONSE_SCHEMA = `bool success
-string message
-int32 error_code`;
 
 export class FoxgloveTransport implements Transport {
   private ws: WebSocket | null = null;
@@ -363,20 +350,20 @@ export class FoxgloveTransport implements Transport {
 
   private getServiceSchema(service: AdvertisedService, direction: 'request' | 'response'): string | undefined {
     const modern = service[direction]?.schema;
-    if (modern) return modern;
+    // 空 request 是合法 schema，不能用 truthy 判断把它当成“未提供”。
+    if (modern !== undefined) return modern;
 
     const legacy = direction === 'request' ? service.requestSchema : service.responseSchema;
-    if (legacy) {
+    if (legacy !== undefined) {
       // Be tolerant of bridges which put the complete .srv definition in both
       // legacy fields rather than advertising the two message definitions.
       const sections = legacy.split(/^---\s*$/m);
       return direction === 'request' ? sections[0]?.trim() : (sections[1] ?? sections[0])?.trim();
     }
 
-    if (service.type === SET_RUN_MODE_TYPE) {
-      return direction === 'request' ? SET_RUN_MODE_REQUEST_SCHEMA : SET_RUN_MODE_RESPONSE_SCHEMA;
-    }
-    return undefined;
+    // Humble 的部分 foxglove_bridge 只通告服务 type。固定 IDL 兜底保证安全
+    // Trigger 与 Mission 服务仍按真实 CDR 合同传输，未知类型继续 fail closed。
+    return getLocalServiceSchema(service.type, direction);
   }
 
   private getServiceRequestEncoding(service: AdvertisedService): string {
@@ -533,7 +520,7 @@ export class FoxgloveTransport implements Transport {
     if (encoding === 'cdr') {
       const requestSchema = this.getServiceSchema(service, 'request');
       responseSchema = this.getServiceSchema(service, 'response');
-      if (!requestSchema) throw new Error(`Missing CDR request schema: ${serviceType}`);
+      if (requestSchema === undefined) throw new Error(`Missing CDR request schema: ${serviceType}`);
       try {
         const definitions = parseMessageDefinition(requestSchema, { ros2: true });
         requestBytes = new MessageWriter(definitions).writeMessage(request);

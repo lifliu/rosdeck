@@ -12,7 +12,7 @@ export const cameraWidget: WidgetDefinition = {
     'foxglove_msgs/msg/CompressedVideo',
   ],
   defaultConfig: {
-    topic: '/image_left_raw/h265_undistort',
+    topic: DEFAULTS.cameraTopic,
     source: 'transport',
     mjpegPort: DEFAULTS.mjpegPort,
     maxFps: 10,

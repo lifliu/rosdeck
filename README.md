@@ -30,7 +30,7 @@
 
 ## Features
 
-- **Teleop joystick** — virtual thumbstick publishing `Twist` / `TwistStamped`; new layouts use `/omni/cmd_vel/teleop` (`TwistStamped`), while topic detection retains `/vel_cmd` (`Twist`) for older VBot deployments
+- **Teleop joystick** — virtual thumbstick publishing authenticated `/omni/control/teleop` (`TeleopCommand`, including the App lease `client_id`); topic detection retains `/vel_cmd` (`Twist`) for older VBot deployments
 - **Fail-closed safety panel** — shows live Safety Supervisor and velocity-arbiter health, rejects stale status, and requires two independent confirmations before arming the supervisor and resetting the Bridge E-stop
 - **Bluetooth gamepad support** — connect an Xbox, PS5, or generic BT controller; auto-maps sticks to joystick widgets with configurable deadzone and layout
 - **Live camera** — subscribe to `CompressedImage` topics or connect to an MJPEG stream

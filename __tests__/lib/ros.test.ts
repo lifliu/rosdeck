@@ -1,6 +1,7 @@
 import {
   buildTwistMessage,
   buildTwistStampedMessage,
+  buildTeleopCommandMessage,
   buildWebSocketUrl,
   createRosConnection,
   parseRobotIp,
@@ -29,6 +30,17 @@ describe('buildTwistStampedMessage', () => {
     expect(msg.header.stamp.sec).toBeGreaterThan(0);
     expect(msg.twist.linear.x).toBe(0.5);
     expect(msg.twist.angular.z).toBe(0.3);
+  });
+});
+
+describe('buildTeleopCommandMessage', () => {
+  it('includes the APP lease identity and monotonic sequence', () => {
+    const msg = buildTeleopCommandMessage(
+      buildTwistMessage(0.2, -0.1), 'omni_base_link', 'app-test', 42);
+    expect(msg.client_id).toBe('app-test');
+    expect(msg.sequence).toBe(42);
+    expect(msg.header.frame_id).toBe('omni_base_link');
+    expect(msg.twist.linear.x).toBe(0.2);
   });
 });
 

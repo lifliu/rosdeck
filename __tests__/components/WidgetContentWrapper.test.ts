@@ -15,8 +15,8 @@ describe('getContentDimensions', () => {
     expect(result).toEqual({ contentWidth: 200, contentHeight: 300 });
   });
 
-  it('swaps dimensions in landscape', () => {
+  it('keeps content upright with native landscape dimensions', () => {
     const result = getContentDimensions(200, 300, true);
-    expect(result).toEqual({ contentWidth: 300, contentHeight: 200 });
+    expect(result).toEqual({ contentWidth: 200, contentHeight: 300 });
   });
 });

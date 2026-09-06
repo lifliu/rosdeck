@@ -63,8 +63,8 @@ function RenderNode({ node, width, height, parentSplitId, parentDirection }: Ren
     const widgetDef = getWidget(node.widgetType);
     if (!widgetDef) return <View style={{ width, height, backgroundColor: theme.colors.bgSurface }} />;
     const Widget = widgetDef.component;
-    const contentWidth = isLandscape ? height : width;
-    const contentHeight = isLandscape ? width : height;
+    const contentWidth = width;
+    const contentHeight = height;
     return (
       <View style={{ width, height, position: 'relative' }}>
         <WidgetContentWrapper width={width} height={height}>
@@ -97,7 +97,13 @@ function RenderNode({ node, width, height, parentSplitId, parentDirection }: Ren
   }
 
   const { direction, ratio, children } = node;
-  const isVertical = direction === 'vertical';
+  // A portrait top/bottom split becomes a landscape left/right split. This
+  // keeps camera, map and drive controls usable without rotating their text,
+  // icons or gesture coordinate system.
+  const effectiveDirection = isLandscape
+    ? (direction === 'vertical' ? 'horizontal' : 'vertical')
+    : direction;
+  const isVertical = effectiveDirection === 'vertical';
 
   return (
     <View style={{ width, height, flexDirection: isVertical ? 'column' : 'row' }}>
@@ -106,11 +112,11 @@ function RenderNode({ node, width, height, parentSplitId, parentDirection }: Ren
         width={isVertical ? width : Math.round(width * ratio)}
         height={isVertical ? Math.round(height * ratio) : height}
         parentSplitId={node.id}
-        parentDirection={direction}
+        parentDirection={effectiveDirection}
       />
       <SplitDivider
         nodeId={node.id}
-        direction={direction}
+        direction={effectiveDirection}
         totalSize={isVertical ? height : width}
       />
       <RenderNode
@@ -118,7 +124,7 @@ function RenderNode({ node, width, height, parentSplitId, parentDirection }: Ren
         width={isVertical ? width : width - Math.round(width * ratio)}
         height={isVertical ? height - Math.round(height * ratio) : height}
         parentSplitId={node.id}
-        parentDirection={direction}
+        parentDirection={effectiveDirection}
       />
     </View>
   );
@@ -129,11 +135,8 @@ export function LayoutRenderer() {
   const [size, setSize] = React.useState({ width: 0, height: 0 });
   const { isLandscape } = useOrientation();
 
-  // Set delta transform for landscape touch remapping.
-  // In landscape, the grid is rotated -90deg, so screen-space deltas (dx, dy)
-  // map to portrait-space as (dy, -dx).
-  // Hit-testing uses raw screen coords (widget bounds from .measure() are screen-space).
-  // Only deltas delivered to widget callbacks need remapping.
+  // Widgets now render natively in both orientations, so touch deltas stay in
+  // screen coordinates. Reset explicitly when orientation or renderer changes.
   useEffect(() => {
     if (isLandscape) {
       setDeltaTransform((dx, dy) => ({ dx, dy }));
@@ -145,9 +148,8 @@ export function LayoutRenderer() {
 
   if (!layout) return null;
 
-  // In landscape, swap dimensions so grid renders in portrait proportions
-  const gridWidth = isLandscape ? size.height : size.width;
-  const gridHeight = isLandscape ? size.width : size.height;
+  const gridWidth = size.width;
+  const gridHeight = size.height;
 
   return (
     <View
@@ -162,28 +164,7 @@ export function LayoutRenderer() {
       onTouchCancel={(e) => dispatchTouchEnd([...e.nativeEvent.changedTouches])}
     >
       {size.width > 0 && size.height > 0 && (
-        isLandscape ? (
-          <View
-            style={{
-              width: size.width,
-              height: size.height,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <View
-              style={{
-                width: gridWidth,
-                height: gridHeight,
-                transform: [{ rotate: '-90deg' }],
-              }}
-            >
-              <RenderNode node={layout.tree} width={gridWidth} height={gridHeight} />
-            </View>
-          </View>
-        ) : (
-          <RenderNode node={layout.tree} width={gridWidth} height={gridHeight} />
-        )
+        <RenderNode node={layout.tree} width={gridWidth} height={gridHeight} />
       )}
     </View>
   );

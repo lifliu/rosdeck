@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { theme } from "../constants/theme";
 import { SetupGuide } from "./SetupGuide";
+import { useSettingsStore } from "../stores/useSettingsStore";
 
 interface Props {
   widgetType: string;
@@ -72,6 +73,7 @@ export function WidgetEmptyState({
   hint: hintOverride,
 }: Props) {
   const [showGuide, setShowGuide] = useState(false);
+  const language = useSettingsStore((s) => s.language);
   const help = WIDGET_HELP[widgetType] ?? {
     icon: "help-circle-outline",
     message: "No data on",
@@ -97,7 +99,7 @@ export function WidgetEmptyState({
         style={styles.guideButton}
         onPress={() => setShowGuide(true)}
       >
-        <Text style={styles.guideText}>SETUP GUIDE</Text>
+        <Text style={styles.guideText}>{language === 'zh' ? '查看连接帮助' : 'Connection help'}</Text>
       </TouchableOpacity>
       <SetupGuide visible={showGuide} onClose={() => setShowGuide(false)} />
     </View>
@@ -114,31 +116,31 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.bgBase,
   },
   message: {
-    fontFamily: "SpaceMono",
-    fontSize: 12,
+    fontSize: 14,
+    fontWeight: '600',
     color: theme.colors.textSecondary,
     textAlign: "center",
     marginTop: 8,
   },
   hint: {
-    fontFamily: "SpaceMono",
-    fontSize: 11,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.textMuted,
     textAlign: "center",
   },
   guideButton: {
     marginTop: 12,
-    paddingVertical: 8,
+    minHeight: 42,
+    justifyContent: 'center',
+    paddingVertical: 9,
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: theme.colors.borderDefault,
     borderRadius: theme.radius.md,
   },
   guideText: {
-    fontFamily: "SpaceMono",
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: "700",
     color: theme.colors.accentPrimary,
-    letterSpacing: 0.8,
   },
 });

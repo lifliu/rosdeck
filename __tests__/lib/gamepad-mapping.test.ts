@@ -2,6 +2,7 @@ import {
   collectJoystickWidgets,
   resolveStickMappings,
   applyDeadzone,
+  mapDualStickAxes,
   type JoystickWidgetInfo,
   type StickMapping,
 } from '../../lib/gamepad-mapping';
@@ -25,6 +26,30 @@ describe('applyDeadzone', () => {
 
   it('enforces minimum deadzone of 0.05', () => {
     expect(applyDeadzone(0.03, 0.0)).toBe(0);
+  });
+});
+
+describe('mapDualStickAxes', () => {
+  it('maps the left stick to X/Y translation and the right stick to YAW', () => {
+    const axes = mapDualStickAxes(
+      { leftX: 1, leftY: -1, rightX: -0.55 },
+      0.1,
+      0.5,
+      1.2,
+    );
+    expect(axes['linear.x']).toBeCloseTo(0.5);
+    expect(axes['linear.y']).toBeCloseTo(-0.5);
+    expect(axes['angular.z']).toBeCloseTo(0.6);
+  });
+
+  it('applies the deadzone independently to all three motion axes', () => {
+    const axes = mapDualStickAxes(
+      { leftX: 0.03, leftY: -0.04, rightX: 0.02 },
+      0.1,
+      0.5,
+      1,
+    );
+    expect(axes).toEqual({ 'linear.x': 0, 'linear.y': 0, 'angular.z': 0 });
   });
 });
 

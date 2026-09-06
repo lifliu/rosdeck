@@ -4,10 +4,11 @@ export const DEFAULTS = {
   rosbridgePort: 9090,
   foxglovePort: 8765,
   mjpegPort: 8080,
-  // Unified manual-control input consumed by cmd_vel_arbiter.
+  // 携带 APP client_id 的强类型人工控制入口。
   cmdVelTopic: OMNI_TELEOP_TOPIC,
-  cmdVelUseTwistStamped: true,
-  cameraTopic: '/camera/image_raw/compressed',
+  cmdVelUseTwistStamped: false,
+  // 上层客户端只订阅 omni_tf_manager 输出的规范相机话题，避免绑定仿真器或厂商原始命名。
+  cameraTopic: '/omni/sensors/rgb/image/compressed',
   maxLinearVel: 0.5,
   maxAngularVel: 1.0,
   publishRateHz: 10,

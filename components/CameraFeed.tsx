@@ -8,6 +8,7 @@ import { DEFAULTS } from "../constants/defaults";
 import { theme } from "../constants/theme";
 import { buildMjpegUrl, parseRobotIp } from "../lib/ros";
 import { useRosStore } from "../stores/useRosStore";
+import { useSettingsStore } from "../stores/useSettingsStore";
 import type { WidgetProps } from "../types/layout";
 import { WidgetEmptyState } from "./WidgetEmptyState";
 import {
@@ -133,6 +134,7 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
   const transport = useRosStore((s) => s.transport);
   const url = useRosStore((s) => s.connection.url);
   const status = useRosStore((s) => s.connection.status);
+  const language = useSettingsStore((s) => s.language);
 
   const [mjpegError, setMjpegError] = useState(false);
   const [fps, setFps] = useState(0);
@@ -362,13 +364,11 @@ export function CameraFeed(props?: Partial<WidgetProps>) {
     return (
       <View style={styles.container}>
         <View style={styles.demoCamera}>
-          <Ionicons
-            name="videocam-outline"
-            size={48}
-            color={theme.colors.textMuted}
-          />
-          <Text style={styles.demoCameraText}>CAMERA PREVIEW</Text>
-          <Text style={styles.demoCameraHint}>{cameraTopic}</Text>
+          <View style={styles.cameraBadge}><View style={styles.cameraBadgeDot} /><Text style={styles.cameraBadgeText}>{language === 'zh' ? '演示画面' : 'DEMO FEED'}</Text></View>
+          <View style={styles.demoCameraIcon}><Ionicons name="videocam-outline" size={35} color={theme.colors.accentPrimary} /></View>
+          <Text style={styles.demoCameraText}>{language === 'zh' ? '实时视频' : 'Live camera'}</Text>
+          <Text style={styles.demoCameraDescription}>{language === 'zh' ? '连接真实机器人后将在此显示摄像头画面' : 'Camera imagery appears here when a robot is connected'}</Text>
+          <Text style={styles.demoCameraHint} numberOfLines={1}>{cameraTopic}</Text>
         </View>
       </View>
     );
@@ -518,18 +518,23 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.bgInset,
     alignItems: "center" as const,
     justifyContent: "center" as const,
-    gap: 8,
+    gap: 7,
+    padding: 20,
   },
+  cameraBadge: { position: 'absolute', top: 12, left: 12, flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 26, paddingHorizontal: 9, borderRadius: theme.radius.pill, backgroundColor: theme.colors.bgSurface, borderWidth: 1, borderColor: theme.colors.borderSubtle },
+  cameraBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.statusConnecting },
+  cameraBadgeText: { fontSize: 9, fontWeight: '700', color: theme.colors.statusConnecting },
+  demoCameraIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.accentPrimaryMuted },
   demoCameraText: {
-    fontFamily: "SpaceMono",
-    fontSize: 12,
+    fontSize: 16,
     fontWeight: "700" as const,
-    color: theme.colors.textSecondary,
-    letterSpacing: 0.8,
+    color: theme.colors.textPrimary,
   },
+  demoCameraDescription: { fontSize: 12, lineHeight: 17, color: theme.colors.textMuted, textAlign: 'center', maxWidth: 260 },
   demoCameraHint: {
     fontFamily: "SpaceMono",
-    fontSize: 10,
+    fontSize: 9,
     color: theme.colors.textMuted,
+    maxWidth: '85%',
   },
 });

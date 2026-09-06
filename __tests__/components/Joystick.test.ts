@@ -17,7 +17,7 @@ jest.mock('react-native-reanimated', () => ({
   withSpring: jest.fn((v: number) => v),
 }));
 
-import { calculateVelocity } from '../../components/Joystick';
+import { calculateVelocity, calculateYawVelocity } from '../../components/Joystick';
 
 describe('calculateVelocity', () => {
   const radius = 60;
@@ -52,5 +52,20 @@ describe('calculateVelocity', () => {
   it('clamps to max values when pushed beyond radius', () => {
     const { ny } = calculateVelocity(0, -radius * 2, radius);
     expect(ny).toBe(1);
+  });
+});
+
+describe('calculateYawVelocity', () => {
+  const radius = 60;
+
+  it('uses only the horizontal displacement', () => {
+    expect(calculateYawVelocity(-radius, radius)).toBe(1);
+    expect(calculateYawVelocity(radius, radius)).toBe(-1);
+    expect(calculateYawVelocity(0, radius)).toBe(0);
+  });
+
+  it('clamps yaw to the normalized range', () => {
+    expect(calculateYawVelocity(-radius * 3, radius)).toBe(1);
+    expect(calculateYawVelocity(radius * 3, radius)).toBe(-1);
   });
 });

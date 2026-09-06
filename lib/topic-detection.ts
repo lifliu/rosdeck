@@ -1,5 +1,10 @@
 import type { TopicInfo } from './transport';
-import { getTeleopSafetyPolicy, selectPreferredTeleopTarget } from './teleop';
+import {
+  getTeleopSafetyPolicy,
+  OMNI_TELEOP_TOPIC,
+  selectPreferredTeleopTarget,
+  TELEOP_COMMAND_MESSAGE_TYPE,
+} from './teleop';
 
 export interface DetectedTopic {
   name: string;
@@ -50,7 +55,9 @@ export function suggestLayout(topics: TopicInfo[]): TopicSuggestion | null {
 
   const teleopTarget = selectPreferredTeleopTarget(topics);
   if (teleopTarget) {
-    const type = teleopTarget.useTwistStamped
+    const type = teleopTarget.topic === OMNI_TELEOP_TOPIC
+      ? TELEOP_COMMAND_MESSAGE_TYPE
+      : teleopTarget.useTwistStamped
       ? 'geometry_msgs/msg/TwistStamped'
       : 'geometry_msgs/msg/Twist';
     detected.push({ name: teleopTarget.topic, type, widgetType: 'joystick' });

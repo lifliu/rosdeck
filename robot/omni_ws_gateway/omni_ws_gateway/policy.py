@@ -77,6 +77,7 @@ DEFAULT_RULES: dict[str, RoleRule] = {
         ops=frozenset({"subscribe", "unsubscribe", "publish", "advertise",
                        "unadvertise", "service_call"}),
         publish_topics=(
+            "/omni/control/teleop",
             "/omni/cmd_vel/*",
             "/omni/safety/*",
             "/omni/mission/*",

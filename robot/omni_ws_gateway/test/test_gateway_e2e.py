@@ -519,15 +519,15 @@ class GatewayE2E(unittest.TestCase):
 
                 # operator publishes a teleop command
                 await client.send_json(
-                    {"op": "publish", "topic": "/omni/cmd_vel/teleop",
-                     "type": "geometry_msgs/TwistStamped",
+                    {"op": "publish", "topic": "/omni/control/teleop",
+                     "type": "omni_robot_interfaces/TeleopCommand",
                      "encoding": "json",
                      "data": {"linear": {"x": 0.5}}}
                 )
                 ok = await fake.wait_for(
                     lambda op, p: op == ws_frames.OP_TEXT
                     and json.loads(p).get("op") == "publish"
-                    and json.loads(p).get("topic") == "/omni/cmd_vel/teleop"
+                    and json.loads(p).get("topic") == "/omni/control/teleop"
                 )
                 self.assertTrue(ok, "publish not forwarded")
 
@@ -571,7 +571,7 @@ class GatewayE2E(unittest.TestCase):
                 )
                 # but publishing is not
                 await client.send_json(
-                    {"op": "publish", "topic": "/omni/cmd_vel/teleop",
+                    {"op": "publish", "topic": "/omni/control/teleop",
                      "data": {"x": 1}}
                 )
                 opcode, payload = await client.recv()

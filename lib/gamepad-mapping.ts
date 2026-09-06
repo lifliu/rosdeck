@@ -1,4 +1,5 @@
 import type { LayoutNode } from '../types/layout';
+import type { TwistField } from './ros';
 
 export interface JoystickWidgetInfo {
   nodeId: string;
@@ -34,6 +35,20 @@ export function applyDeadzone(value: number, deadzone: number): number {
   if (abs < dz) return 0;
   const rescaled = (abs - dz) / (1 - dz);
   return Math.sign(value) * rescaled;
+}
+
+/** Fixed product dual-stick mapping: left stick translates, right stick yaws. */
+export function mapDualStickAxes(
+  input: { leftX: number; leftY: number; rightX: number },
+  deadzone: number,
+  maxLinearVel: number,
+  maxAngularVel: number,
+): Partial<Record<TwistField, number>> {
+  return {
+    'linear.x': applyDeadzone(-input.leftY, deadzone) * Math.abs(maxLinearVel),
+    'linear.y': applyDeadzone(-input.leftX, deadzone) * Math.abs(maxLinearVel),
+    'angular.z': applyDeadzone(-input.rightX, deadzone) * Math.abs(maxAngularVel),
+  };
 }
 
 /** Resolve auto/manual stick mappings for a list of joystick widgets.

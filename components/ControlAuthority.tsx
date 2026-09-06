@@ -84,16 +84,19 @@ export function ControlAuthoritySession() {
   }, [connectionStatus, transport, url]);
 
   useEffect(() => {
-    const acquiredByThisApp = authorityStatus === 'acquired' && ownerId === CONTROL_CLIENT_ID;
-    if (previouslyAcquiredRef.current && !acquiredByThisApp) {
+    const controllableByThisApp =
+      (authorityStatus === 'acquired' || authorityStatus === 'override_acquired') &&
+      ownerId === CONTROL_CLIENT_ID;
+    if (previouslyAcquiredRef.current && !controllableByThisApp) {
       useCmdVelStore.getState().clearAll();
     }
-    previouslyAcquiredRef.current = acquiredByThisApp;
+    previouslyAcquiredRef.current = controllableByThisApp;
   }, [authorityStatus, ownerId]);
 
   useEffect(() => {
     if (connectionStatus !== 'connected' || !transport ||
-      authorityStatus !== 'acquired' || ownerId !== CONTROL_CLIENT_ID) return;
+      (authorityStatus !== 'acquired' && authorityStatus !== 'override_acquired') ||
+      ownerId !== CONTROL_CLIENT_ID) return;
 
     publishControlAction(transport, 'heartbeat');
     const heartbeat = setInterval(() => {
@@ -162,15 +165,30 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
 
   const confirm = useCallback(() => {
     const acquiredByThisApp = status === 'acquired' && ownerId === CONTROL_CLIENT_ID;
-    if (acquiredByThisApp) {
-      Alert.alert(t('authority.releaseTitle'), t('authority.releaseMessage'), [
+    const overrideByThisApp = status === 'override_acquired' && ownerId === CONTROL_CLIENT_ID;
+    if (acquiredByThisApp || overrideByThisApp) {
+      Alert.alert(
+        t(overrideByThisApp ? 'authority.overrideReleaseTitle' : 'authority.releaseTitle'),
+        t(overrideByThisApp ? 'authority.overrideReleaseMessage' : 'authority.releaseMessage'), [
         { text: t('authority.cancel'), style: 'cancel' },
-        { text: t('authority.releaseButton'), style: 'destructive', onPress: release },
+        {
+          text: t(overrideByThisApp ?
+            'authority.overrideReleaseButton' : 'authority.releaseButton'),
+          style: overrideByThisApp ? 'default' : 'destructive',
+          onPress: release,
+        },
       ]);
     } else {
-      Alert.alert(t('authority.acquireTitle'), t('authority.acquireMessage'), [
+      const overrideAvailable = status === 'override_available';
+      Alert.alert(
+        t(overrideAvailable ? 'authority.overrideAcquireTitle' : 'authority.acquireTitle'),
+        t(overrideAvailable ? 'authority.overrideAcquireMessage' : 'authority.acquireMessage'), [
         { text: t('authority.cancel'), style: 'cancel' },
-        { text: t('authority.acquireButton'), onPress: acquire },
+        {
+          text: t(overrideAvailable ?
+            'authority.overrideAcquireButton' : 'authority.acquireButton'),
+          onPress: acquire,
+        },
       ]);
     }
   }, [acquire, ownerId, release, status, t]);
@@ -180,6 +198,7 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
   }
 
   const acquiredByThisApp = status === 'acquired' && ownerId === CONTROL_CLIENT_ID;
+  const overrideByThisApp = status === 'override_acquired' && ownerId === CONTROL_CLIENT_ID;
   const disabled = connectionStatus !== 'connected' || status === 'detecting' ||
     status === 'acquiring' || status === 'releasing' || status === 'cooldown' ||
     status === 'owned_by_other';
@@ -188,10 +207,13 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
       : status === 'releasing' ? t('authority.releasing')
         : status === 'cooldown' ? t('authority.cooldown', { seconds: cooldownSeconds })
           : status === 'owned_by_other' ? t('authority.ownedByOther')
-            : acquiredByThisApp ? t('authority.releaseButton')
+            : overrideByThisApp ? t('authority.overrideReleaseButton')
+              : status === 'override_available' ? t('authority.overrideAcquireButton')
+                : acquiredByThisApp ? t('authority.releaseButton')
               : status === 'error' ? t('authority.retryButton')
                 : t('authority.acquireButton');
   const color = acquiredByThisApp ? theme.colors.statusError
+    : overrideByThisApp ? theme.colors.statusConnecting
     : disabled ? theme.colors.textMuted : theme.colors.statusConnecting;
 
   return (
@@ -210,7 +232,8 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
         ]}
       >
         <Ionicons
-          name={disabled ? 'hourglass-outline' : acquiredByThisApp ? 'lock-open-outline' : 'key-outline'}
+          name={disabled ? 'hourglass-outline' : acquiredByThisApp ?
+            'lock-open-outline' : overrideByThisApp ? 'hand-left-outline' : 'key-outline'}
           size={compact ? 20 : 16}
           color={color}
         />

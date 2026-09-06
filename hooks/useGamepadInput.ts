@@ -8,6 +8,7 @@ import {
   collectJoystickWidgets,
   resolveStickMappings,
   applyDeadzone,
+  mapDualStickAxes,
   type StickMapping,
 } from '../lib/gamepad-mapping';
 import type { TwistField } from '../lib/ros';
@@ -91,6 +92,19 @@ export function useGamepadInput() {
 
       const topic = config.topic || DEFAULTS.cmdVelTopic;
       trackedTopicsRef.current.add(topic);
+
+      // The product control widget mirrors the touchscreen scheme: the left
+      // stick owns robot-frame X/Y translation and the right stick owns YAW.
+      // `single` is retained only as an explicit legacy escape hatch.
+      if (config.controlScheme !== 'single') {
+        setAxes(topic, mapDualStickAxes(
+          event,
+          deadzone,
+          config.maxLinearVel ?? config.yAxisScale ?? DEFAULTS.maxLinearVel,
+          config.maxAngularVel ?? config.xAxisScale ?? DEFAULTS.maxAngularVel,
+        ));
+        continue;
+      }
 
       const xField = `${config.xAxisGroup ?? 'angular'}.${config.xAxisComponent ?? 'z'}` as TwistField;
       const yField = `${config.yAxisGroup ?? 'linear'}.${config.yAxisComponent ?? 'x'}` as TwistField;

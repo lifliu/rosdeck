@@ -1,17 +1,20 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
-import React, { useEffect, useRef, useState } from "react";
+import * as ScreenOrientation from "expo-screen-orientation";
+import { StatusBar } from "expo-status-bar";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Modal,
   Platform,
+  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { LayoutManager } from "../../components/LayoutManager";
-import { LayoutRenderer } from "../../components/LayoutRenderer";
 import { TopicSuggestionModal } from "../../components/TopicSuggestionModal";
 import { theme } from "../../constants/theme";
 import { suggestLayout, type TopicSuggestion } from "../../lib/topic-detection";
@@ -36,6 +39,7 @@ import { PostureControl } from "../../components/PostureControl";
 import { ControlAuthorityButton } from "../../components/ControlAuthority";
 import { SafetyControl } from "../../components/SafetyControl";
 import { useTranslation } from "../../lib/i18n";
+import { ControlCockpit } from "../../components/ControlCockpit";
 
 function ConnectionDot() {
   const status = useRosStore((s) => s.connection.status);
@@ -146,7 +150,17 @@ export default function ControlScreen() {
   const { isLandscape } = useOrientation();
   const isDemo = url?.startsWith("demo://");
   useGamepadInput();
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
+  const [actionsOpen, setActionsOpen] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+      return () => {
+        void ScreenOrientation.unlockAsync().catch(() => {});
+      };
+    }, []),
+  );
 
   const [suggestion, setSuggestion] = useState<TopicSuggestion | null>(null);
   const [showSuggestion, setShowSuggestion] = useState(false);
@@ -159,8 +173,12 @@ export default function ControlScreen() {
 
   const handleExitDemo = () => {
     disconnect();
-    router.push("/(tabs)");
+    router.replace("/(tabs)");
   };
+
+  const handleExitControl = useCallback(() => {
+    router.replace('/(tabs)' as any);
+  }, [router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -311,68 +329,60 @@ export default function ControlScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={isLandscape ? [] : ["top"]}>
-      {isLandscape ? (
-        // In landscape, LayoutManager is invisible but still renders its modals.
-        // The rail button triggers it via layoutListOpen store flag.
-        <View style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}>
-          <LayoutManager />
-        </View>
-      ) : (
-        <View style={styles.topBar}>
-          <ConnectionDot />
-          <LayoutManager />
-        </View>
-      )}
+    <SafeAreaView style={styles.container} edges={[]}>
+      <StatusBar hidden style="light" />
+      <ControlCockpit
+        language={language}
+        isDemo={Boolean(isDemo)}
+        onExit={handleExitControl}
+        onExitDemo={handleExitDemo}
+        onOpenRobotActions={() => setActionsOpen(true)}
+      />
 
-      {!isLandscape && (
-        <View style={styles.robotActions}>
-          <EmergencyStop />
-          <ControlAuthorityButton />
-          <SafetyControl />
-          <PostureControl />
-          <NavigationControl />
-          <MappingControl />
+      <Modal visible={actionsOpen} transparent animationType="slide" onRequestClose={() => setActionsOpen(false)}>
+        <View style={styles.actionSheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsOpen(false)} />
+          <View style={[styles.actionSheet, isLandscape && styles.actionSheetLandscape]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View>
+                <Text style={styles.sheetTitle}>{language === 'zh' ? '机器人动作' : 'Robot actions'}</Text>
+                <Text style={styles.sheetSubtitle}>{language === 'zh' ? '高风险操作需要二次确认' : 'High-risk actions require confirmation'}</Text>
+              </View>
+              <TouchableOpacity style={styles.sheetClose} onPress={() => setActionsOpen(false)}>
+                <Ionicons name="close" size={21} color={theme.colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetScrollContent}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+            >
+              <View style={styles.actionSection}>
+                <Text style={styles.actionSectionLabel}>{language === 'zh' ? '姿态' : 'Posture'}</Text>
+                <PostureControl />
+              </View>
+              <View style={styles.actionSection}>
+                <Text style={styles.actionSectionLabel}>{language === 'zh' ? '自主能力' : 'Autonomy'}</Text>
+                <View style={styles.actionRow}>
+                  <NavigationControl />
+                  <MappingControl />
+                </View>
+              </View>
+              {!isDemo && (
+                <View style={styles.actionSection}>
+                  <Text style={styles.actionSectionLabel}>{language === 'zh' ? '安全与控制权' : 'Safety and authority'}</Text>
+                  <View style={styles.actionRow}>
+                    <ControlAuthorityButton />
+                    <SafetyControl />
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          </View>
         </View>
-      )}
-
-      {isLandscape && (
-        <View style={styles.landscapeActions}>
-          <EmergencyStop compact />
-          <ControlAuthorityButton compact />
-          <SafetyControl compact />
-          <PostureControl compact />
-          <NavigationControl compact />
-          <MappingControl compact />
-        </View>
-      )}
-
-      {isDemo && status === "connected" && (
-        <TouchableOpacity style={styles.demoBanner} onPress={handleExitDemo}>
-          <Text style={styles.demoBannerText}>{t('control.demoMode')}</Text>
-          <Ionicons
-            name="close-circle-outline"
-            size={14}
-            color={theme.colors.statusConnecting}
-          />
-        </TouchableOpacity>
-      )}
-
-      {status !== "connected" ? (
-        <View style={styles.disconnected}>
-          <Ionicons
-            name="wifi-outline"
-            size={48}
-            color={theme.colors.textMuted}
-          />
-          <Text style={styles.disconnectedTitle}>{t('control.notConnected')}</Text>
-          <Text style={styles.disconnectedSubtext}>
-            {t('control.notConnectedHint')}
-          </Text>
-        </View>
-      ) : (
-        <LayoutRenderer />
-      )}
+      </Modal>
 
       <TopicSuggestionModal
         visible={showSuggestion}
@@ -389,34 +399,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.bgBase,
   },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    gap: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderDefault,
-  },
-  robotActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    gap: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderDefault,
-  },
-  landscapeActions: {
-    position: 'absolute',
-    top: 8,
-    right: 10,
-    zIndex: 20,
-    flexDirection: 'row',
-    gap: 8,
-  },
+  safetyStrip: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 12, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle, backgroundColor: theme.colors.bgBase },
+  safetyStatus: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  actionsButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.borderDefault, backgroundColor: theme.colors.bgElevated },
+  actionsButtonText: { fontSize: 12, fontWeight: '600', color: theme.colors.textPrimary },
   dot: {
     width: 10,
     height: 10,
@@ -449,15 +435,27 @@ const styles = StyleSheet.create({
     backgroundColor: "#FBBF2420",
     borderBottomWidth: 1,
     borderBottomColor: "#FBBF2433",
-    paddingVertical: 4,
+    paddingVertical: 6,
   },
   demoBannerText: {
-    fontFamily: "SpaceMono",
-    fontSize: 10,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "600",
     color: theme.colors.statusConnecting,
-    letterSpacing: 0.8,
+    letterSpacing: 0,
   },
+  actionSheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#00000099' },
+  actionSheet: { backgroundColor: theme.colors.bgElevated, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, borderWidth: 1, borderBottomWidth: 0, borderColor: theme.colors.borderDefault, paddingHorizontal: 20, paddingBottom: 28, height: '78%' },
+  actionSheetLandscape: { width: 430, alignSelf: 'flex-end', height: '100%', maxHeight: '100%', borderTopRightRadius: 0, borderTopLeftRadius: theme.radius.xl },
+  sheetScroll: { flex: 1 },
+  sheetScrollContent: { paddingBottom: 8 },
+  sheetHandle: { alignSelf: 'center', width: 42, height: 4, borderRadius: 2, backgroundColor: theme.colors.borderDefault, marginTop: 9, marginBottom: 10 },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 10 },
+  sheetTitle: { ...theme.typography.headingMd, color: theme.colors.textPrimary },
+  sheetSubtitle: { ...theme.typography.bodySm, color: theme.colors.textMuted, marginTop: 2 },
+  sheetClose: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: theme.radius.md, backgroundColor: theme.colors.bgSurface },
+  actionSection: { paddingVertical: 14, borderTopWidth: 1, borderTopColor: theme.colors.borderSubtle, gap: 10 },
+  actionSectionLabel: { fontSize: 12, color: theme.colors.textMuted, fontWeight: '600' },
+  actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   // Status popup
   popupOverlay: {
     flex: 1,

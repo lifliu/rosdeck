@@ -21,3 +21,9 @@ export interface TwistStampedMessage {
   };
   twist: TwistMessage;
 }
+
+/** 与 omni_robot_interfaces/msg/TeleopCommand 一一对应。 */
+export interface TeleopCommandMessage extends TwistStampedMessage {
+  client_id: string;
+  sequence: number;
+}

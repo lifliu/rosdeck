@@ -1,6 +1,8 @@
 import {
+  LEGACY_OMNI_TELEOP_TOPIC,
   LEGACY_VBOT_TELEOP_TOPIC,
   OMNI_TELEOP_TOPIC,
+  TELEOP_COMMAND_MESSAGE_TYPE,
   defaultUsesTwistStamped,
   getTeleopSafetyPolicy,
   selectPreferredTeleopTarget,
@@ -10,14 +12,14 @@ import {
 } from '../../lib/teleop';
 
 describe('teleop interface policy', () => {
-  it('prefers unified TwistStamped regardless of graph ordering', () => {
+  it('prefers the authenticated TeleopCommand regardless of graph ordering', () => {
     expect(selectPreferredTeleopTarget([
       { name: OMNI_TELEOP_TOPIC, type: 'geometry_msgs/msg/Twist' },
       { name: LEGACY_VBOT_TELEOP_TOPIC, type: 'geometry_msgs/msg/Twist' },
-      { name: OMNI_TELEOP_TOPIC, type: 'geometry_msgs/msg/TwistStamped' },
+      { name: OMNI_TELEOP_TOPIC, type: TELEOP_COMMAND_MESSAGE_TYPE },
     ])).toEqual({
       topic: OMNI_TELEOP_TOPIC,
-      useTwistStamped: true,
+      useTwistStamped: false,
     });
   });
 
@@ -27,7 +29,7 @@ describe('teleop interface policy', () => {
       { name: '/omni/cmd_vel/arbiter_status', type: 'std_msgs/msg/String' },
     ])).toEqual({
       topic: OMNI_TELEOP_TOPIC,
-      useTwistStamped: true,
+      useTwistStamped: false,
     });
   });
 
@@ -41,8 +43,9 @@ describe('teleop interface policy', () => {
     },
   );
 
-  it('defaults only the unified input to TwistStamped', () => {
-    expect(defaultUsesTwistStamped(OMNI_TELEOP_TOPIC)).toBe(true);
+  it('defaults only the legacy omni input to TwistStamped', () => {
+    expect(defaultUsesTwistStamped(OMNI_TELEOP_TOPIC)).toBe(false);
+    expect(defaultUsesTwistStamped(LEGACY_OMNI_TELEOP_TOPIC)).toBe(true);
     expect(defaultUsesTwistStamped(LEGACY_VBOT_TELEOP_TOPIC)).toBe(false);
     expect(defaultUsesTwistStamped('/custom/velocity')).toBe(false);
   });
@@ -72,6 +75,14 @@ describe('teleop interface policy', () => {
       { status: 'releasing', ownerId: 'app-owner' },
       'app-owner',
     )).toBe(true);
+  });
+
+  it('allows the owning App to publish during a Mission manual override', () => {
+    expect(teleopPublishIsBlocked(
+      OMNI_TELEOP_TOPIC,
+      { status: 'override_acquired', ownerId: 'app-owner' },
+      'app-owner',
+    )).toBe(false);
   });
 
   it('bypasses the lease only for the explicit no-hardware demo connection', () => {

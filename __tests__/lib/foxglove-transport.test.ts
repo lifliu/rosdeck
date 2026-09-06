@@ -183,6 +183,110 @@ describe('FoxgloveTransport connection', () => {
     await expect(responsePromise).resolves.toEqual({ success: true, message: 'ok', error_code: 0 });
   });
 
+  it('calls std_srvs/Trigger when Humble advertises no request or response schema', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertiseServices',
+      services: [{
+        id: 8,
+        name: '/omni/safety/arm_supervisor',
+        type: 'std_srvs/srv/Trigger',
+      }],
+    }) });
+
+    const responsePromise = transport.callService(
+      '/omni/safety/arm_supervisor',
+      'std_srvs/srv/Trigger',
+      {},
+    );
+    const request = socket.send.mock.calls.at(-1)?.[0] as Uint8Array;
+    const requestView = new DataView(request.buffer, request.byteOffset, request.byteLength);
+    expect(requestView.getUint8(0)).toBe(2);
+    expect(requestView.getUint32(1, true)).toBe(8);
+    const callId = requestView.getUint32(5, true);
+    const encodingLength = requestView.getUint32(9, true);
+    expect(new TextDecoder().decode(request.subarray(13, 13 + encodingLength))).toBe('cdr');
+    const requestReader = new MessageReader(
+      parseMessageDefinition('# Empty request.', { ros2: true }),
+    );
+    expect(requestReader.readMessage(request.subarray(13 + encodingLength))).toEqual({});
+
+    const encoding = new TextEncoder().encode('cdr');
+    const responseWriter = new MessageWriter(
+      parseMessageDefinition('bool success\nstring message', { ros2: true }),
+    );
+    const body = responseWriter.writeMessage({ success: true, message: 'supervisor_armed' });
+    const response = new Uint8Array(13 + encoding.length + body.length);
+    const responseView = new DataView(response.buffer);
+    responseView.setUint8(0, 3);
+    responseView.setUint32(1, 8, true);
+    responseView.setUint32(5, callId, true);
+    responseView.setUint32(9, encoding.length, true);
+    response.set(encoding, 13);
+    response.set(body, 13 + encoding.length);
+    socket.onmessage?.({ data: response.buffer });
+
+    await expect(responsePromise).resolves.toEqual({
+      success: true,
+      message: 'supervisor_armed',
+    });
+  });
+
+  it('decodes ListRoutes through the local Omni service schema fallback', async () => {
+    const transport = new FoxgloveTransport();
+    const connecting = transport.connect('ws://192.168.1.50:8765');
+    socket.onopen?.({});
+    await connecting;
+    socket.onmessage?.({ data: JSON.stringify({
+      op: 'advertiseServices',
+      services: [{
+        id: 10,
+        name: '/omni/routes/list',
+        type: 'omni_robot_interfaces/srv/ListRoutes',
+      }],
+    }) });
+
+    const responsePromise = transport.callService(
+      '/omni/routes/list',
+      'omni_robot_interfaces/srv/ListRoutes',
+      {},
+    );
+    const request = socket.send.mock.calls.at(-1)?.[0] as Uint8Array;
+    const requestView = new DataView(request.buffer, request.byteOffset, request.byteLength);
+    const callId = requestView.getUint32(5, true);
+
+    const encoding = new TextEncoder().encode('cdr');
+    const responseWriter = new MessageWriter(parseMessageDefinition(
+      'string[] route_ids\nstring[] map_ids\nstring[] frame_ids\nstring[] created_at',
+      { ros2: true },
+    ));
+    const body = responseWriter.writeMessage({
+      route_ids: ['matrix_patrol'],
+      map_ids: ['matrix_sim'],
+      frame_ids: ['omni_map'],
+      created_at: ['2026-09-04T19:30:00Z'],
+    });
+    const response = new Uint8Array(13 + encoding.length + body.length);
+    const responseView = new DataView(response.buffer);
+    responseView.setUint8(0, 3);
+    responseView.setUint32(1, 10, true);
+    responseView.setUint32(5, callId, true);
+    responseView.setUint32(9, encoding.length, true);
+    response.set(encoding, 13);
+    response.set(body, 13 + encoding.length);
+    socket.onmessage?.({ data: response.buffer });
+
+    await expect(responsePromise).resolves.toEqual({
+      route_ids: ['matrix_patrol'],
+      map_ids: ['matrix_sim'],
+      frame_ids: ['omni_map'],
+      created_at: ['2026-09-04T19:30:00Z'],
+    });
+  });
+
   it('rejects a failed Foxglove service call', async () => {
     const transport = new FoxgloveTransport();
     const connecting = transport.connect('ws://192.168.1.50:8765');

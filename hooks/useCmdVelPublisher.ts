@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { buildTwistStampedMessage, createCmdVelTopic } from '../lib/ros';
+import {
+  buildTeleopCommandMessage,
+  buildTwistStampedMessage,
+  createCmdVelTopic,
+} from '../lib/ros';
 import { useCmdVelStore } from '../stores/useCmdVelStore';
 import { useRosStore } from '../stores/useRosStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
@@ -17,6 +21,8 @@ import {
 import {
   defaultUsesTwistStamped,
   getTeleopSafetyPolicy,
+  OMNI_TELEOP_TOPIC,
+  TELEOP_COMMAND_MESSAGE_TYPE,
   teleopPublishIsBlockedForConnection,
 } from '../lib/teleop';
 import { CONTROL_CLIENT_ID } from '../lib/control-authority';
@@ -88,11 +94,14 @@ export function useCmdVelPublisher(
   const roslibTopicTypeRef = useRef<string | null>(null);
   const roslibTopicNameRef = useRef<string | null>(null);
   const roslibRosRef = useRef<any>(null);
+  const teleopSequenceRef = useRef(0);
   const previousTransportRef = useRef(transport);
   const safetyPolicy = getTeleopSafetyPolicy(topic, requireLocoMode);
-  // The product arbiter exposes only TwistStamped on the unified input. A
-  // stale/custom layout flag must not silently advertise the wrong schema.
-  const publishTwistStamped = defaultUsesTwistStamped(topic) || useTwistStamped;
+  const publishAuthenticatedTeleop = topic === OMNI_TELEOP_TOPIC;
+  // 旧版速度话题继续遵循布局里的 Twist/TwistStamped 配置；产品入口固定使用
+  // TeleopCommand，不能被历史布局中的 useTwistStamped 覆盖。
+  const publishTwistStamped = !publishAuthenticatedTeleop &&
+    (defaultUsesTwistStamped(topic) || useTwistStamped);
   const isDemoConnection = connectionUrl.startsWith('demo://');
   const controlBlocked = teleopPublishIsBlockedForConnection(
     topic,
@@ -118,10 +127,13 @@ export function useCmdVelPublisher(
     roslibRosRef.current = null;
 
     if (ros && status === 'connected') {
-      const messageType = publishTwistStamped
+      const messageType = publishAuthenticatedTeleop
+        ? TELEOP_COMMAND_MESSAGE_TYPE
+        : publishTwistStamped
         ? 'geometry_msgs/msg/TwistStamped'
         : 'geometry_msgs/msg/Twist';
-      roslibTopicRef.current = createCmdVelTopic(ros, topic, publishTwistStamped);
+      roslibTopicRef.current = createCmdVelTopic(
+        ros, topic, publishTwistStamped, messageType);
       roslibTopicTypeRef.current = messageType;
       roslibTopicNameRef.current = topic;
       roslibRosRef.current = ros;
@@ -134,7 +146,7 @@ export function useCmdVelPublisher(
       roslibTopicNameRef.current = null;
       roslibRosRef.current = null;
     };
-  }, [ros, status, topic, publishTwistStamped]);
+  }, [ros, status, topic, publishAuthenticatedTeleop, publishTwistStamped]);
 
   // publishRef is updated every render so the interval always calls fresh logic.
   const publishRef = useRef<() => void>(() => {});
@@ -156,8 +168,16 @@ export function useCmdVelPublisher(
 
     const axes = useCmdVelStore.getState().topics[topic] ?? {};
     const twist = buildTwistFromAxes(axes);
-    const msg = publishTwistStamped ? buildTwistStampedMessage(twist, frameId) : twist;
-    const messageType = publishTwistStamped
+    teleopSequenceRef.current += 1;
+    const msg = publishAuthenticatedTeleop
+      ? buildTeleopCommandMessage(
+        twist, frameId, CONTROL_CLIENT_ID, teleopSequenceRef.current)
+      : publishTwistStamped
+        ? buildTwistStampedMessage(twist, frameId)
+        : twist;
+    const messageType = publishAuthenticatedTeleop
+      ? TELEOP_COMMAND_MESSAGE_TYPE
+      : publishTwistStamped
       ? 'geometry_msgs/msg/TwistStamped'
       : 'geometry_msgs/msg/Twist';
 

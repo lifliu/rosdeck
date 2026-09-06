@@ -3,6 +3,8 @@ import { View, Text, TouchableOpacity, Modal, ScrollView, StyleSheet } from 'rea
 import { theme } from '../constants/theme';
 import type { TopicSuggestion } from '../lib/topic-detection';
 import { PRESET_TEMPLATES } from '../constants/presets';
+import { Ionicons } from '@expo/vector-icons';
+import { useSettingsStore } from '../stores/useSettingsStore';
 
 interface Props {
   visible: boolean;
@@ -17,6 +19,7 @@ function shortType(fullType: string): string {
 }
 
 export function TopicSuggestionModal({ visible, suggestion, onAccept, onDismiss }: Props) {
+  const language = useSettingsStore((s) => s.language);
   if (!suggestion) return null;
 
   const presetName = PRESET_TEMPLATES.find((p) => p.id === suggestion.presetId)?.name ?? suggestion.presetId;
@@ -25,7 +28,7 @@ export function TopicSuggestionModal({ visible, suggestion, onAccept, onDismiss 
     <Modal visible={visible} transparent animationType="fade">
       <View style={styles.overlay}>
         <View style={styles.container}>
-          <Text style={styles.title}>DETECTED TOPICS</Text>
+          <View style={styles.modalHeading}><View style={styles.headingIcon}><Ionicons name="sparkles-outline" size={22} color={theme.colors.accentPrimary} /></View><View><Text style={styles.title}>{language === 'zh' ? '发现机器人能力' : 'Robot capabilities found'}</Text><Text style={styles.headingHint}>{language === 'zh' ? '根据实时 Topics 推荐工作区' : 'Workspace suggested from live topics'}</Text></View></View>
 
           <ScrollView style={styles.topicList}>
             {suggestion.detectedTopics.map((topic) => (
@@ -37,16 +40,16 @@ export function TopicSuggestionModal({ visible, suggestion, onAccept, onDismiss 
           </ScrollView>
 
           <View style={styles.suggestion}>
-            <Text style={styles.suggestLabel}>SUGGESTED LAYOUT</Text>
+            <Text style={styles.suggestLabel}>{language === 'zh' ? '推荐工作区' : 'SUGGESTED WORKSPACE'}</Text>
             <Text style={styles.suggestName}>{presetName}</Text>
           </View>
 
           <View style={styles.buttonRow}>
             <TouchableOpacity style={[styles.button, styles.dismissButton]} onPress={onDismiss}>
-              <Text style={styles.dismissText}>DISMISS</Text>
+              <Text style={styles.dismissText}>{language === 'zh' ? '暂不使用' : 'Not now'}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.button, styles.acceptButton]} onPress={onAccept}>
-              <Text style={styles.acceptText}>ACCEPT</Text>
+              <Text style={styles.acceptText}>{language === 'zh' ? '应用推荐' : 'Apply'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -60,7 +63,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000CC',
     justifyContent: 'center',
-    padding: 20,
+    padding: 24,
   },
   container: {
     backgroundColor: theme.colors.bgElevated,
@@ -69,13 +72,13 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.lg,
     padding: 20,
   },
+  modalHeading: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  headingIcon: { width: 46, height: 46, borderRadius: 14, backgroundColor: theme.colors.accentPrimaryMuted, alignItems: 'center', justifyContent: 'center' },
+  headingHint: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
   title: {
-    fontFamily: 'SpaceMono',
-    fontSize: 12,
+    fontSize: 16,
     fontWeight: '700',
-    color: theme.colors.accentPrimary,
-    letterSpacing: 0.8,
-    marginBottom: 16,
+    color: theme.colors.textPrimary,
   },
   topicList: {
     maxHeight: 200,
@@ -127,7 +130,8 @@ const styles = StyleSheet.create({
   },
   button: {
     flex: 1,
-    paddingVertical: 12,
+    minHeight: 48,
+    justifyContent: 'center',
     borderRadius: theme.radius.md,
     alignItems: 'center',
   },
@@ -136,20 +140,16 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.borderDefault,
   },
   dismissText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '500',
     color: theme.colors.textSecondary,
-    letterSpacing: 0.8,
   },
   acceptButton: {
     backgroundColor: theme.colors.accentPrimary,
   },
   acceptText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: 0.8,
+    color: theme.colors.bgBase,
   },
 });

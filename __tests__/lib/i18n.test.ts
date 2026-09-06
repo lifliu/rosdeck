@@ -4,6 +4,9 @@ describe('translate', () => {
   it('returns English and Chinese strings for the selected language', () => {
     expect(translate('en', 'mapping.button')).toBe('3D Mapping');
     expect(translate('zh', 'mapping.button')).toBe('3D 建图');
+    expect(translate('zh', 'navigation.button')).toBe('单点导航');
+    expect(translate('zh', 'navigation.externalRunningButton')).toBe('单点导航运行中');
+    expect(translate('zh', 'navigation.cancelStartingButton')).toBe('取消导航启动');
   });
 
   it('replaces named parameters', () => {

@@ -7,6 +7,16 @@ export interface PresetTemplate {
   buildTree: () => LayoutNode;
 }
 
+const createDualJoystick = () => createWidgetNode('joystick', {
+  topic: DEFAULTS.cmdVelTopic,
+  useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
+  requireLocoMode: true,
+  frameId: 'base_link',
+  controlScheme: 'dual',
+  maxLinearVel: DEFAULTS.maxLinearVel,
+  maxAngularVel: DEFAULTS.maxAngularVel,
+});
+
 export const PRESET_TEMPLATES: PresetTemplate[] = [
   {
     id: 'mapping-3d',
@@ -20,40 +30,29 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
           odomTopic: '/Odometry',
           viewMeters: 20,
         }),
-        createWidgetNode('joystick', {
-          topic: DEFAULTS.cmdVelTopic,
-          useTwistStamped: DEFAULTS.cmdVelUseTwistStamped,
-          requireLocoMode: true,
-          frameId: 'base_link',
-          xAxisGroup: 'angular',
-          xAxisComponent: 'z',
-          xAxisScale: DEFAULTS.maxAngularVel,
-          yAxisGroup: 'linear',
-          yAxisComponent: 'x',
-          yAxisScale: DEFAULTS.maxLinearVel,
-        }),
+        createDualJoystick(),
         0.72,
       ),
   },
   {
     id: 'drive',
     name: 'Drive',
-    buildTree: () => createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
+    buildTree: createDualJoystick,
   },
   {
     id: 'drive-camera',
     name: 'Drive + Camera',
     buildTree: () =>
       createSplitNode('vertical',
-        createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'mjpeg', mjpegPort: DEFAULTS.mjpegPort }),
-        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
+        createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'transport', mjpegPort: DEFAULTS.mjpegPort, maxFps: 10 }),
+        createDualJoystick(),
         0.6
       ),
   },
   {
     id: 'camera-only',
     name: 'Camera Only',
-    buildTree: () => createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'mjpeg', mjpegPort: DEFAULTS.mjpegPort }),
+    buildTree: () => createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'transport', mjpegPort: DEFAULTS.mjpegPort, maxFps: 10 }),
   },
   {
     id: 'nav',
@@ -61,7 +60,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     buildTree: () =>
       createSplitNode('vertical',
         createWidgetNode('map', { topic: '/map', enableNav2Goal: false, nav2GoalTopic: '/goal_pose' }),
-        createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
+        createDualJoystick(),
         0.6
       ),
   },
@@ -80,7 +79,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
           0.6
         ),
         createSplitNode('vertical',
-          createWidgetNode('camera', { topic: '/camera/image_raw/compressed', source: 'transport', mjpegPort: DEFAULTS.mjpegPort }),
+          createWidgetNode('camera', { topic: DEFAULTS.cameraTopic, source: 'transport', mjpegPort: DEFAULTS.mjpegPort, maxFps: 10 }),
           createSplitNode('vertical',
             createWidgetNode('chart', {
               series: [
@@ -89,7 +88,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
               ],
               windowSec: 30,
             }),
-            createWidgetNode('joystick', { topic: DEFAULTS.cmdVelTopic, maxLinearVel: DEFAULTS.maxLinearVel, maxAngularVel: DEFAULTS.maxAngularVel, useTwistStamped: DEFAULTS.cmdVelUseTwistStamped, requireLocoMode: true, frameId: 'base_link' }),
+            createDualJoystick(),
             0.5
           ),
           0.35

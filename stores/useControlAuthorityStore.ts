@@ -11,6 +11,8 @@ export type ControlAuthorityState =
   | 'available'
   | 'acquiring'
   | 'acquired'
+  | 'override_available'
+  | 'override_acquired'
   | 'owned_by_other'
   | 'releasing'
   | 'cooldown'
@@ -19,6 +21,7 @@ export type ControlAuthorityState =
 interface ControlAuthorityStore {
   status: ControlAuthorityState;
   ownerId: string | null;
+  baseOwnerId: string | null;
   cooldownSeconds: number;
   error: string | null;
   reset: (status?: ControlAuthorityState) => void;
@@ -30,12 +33,14 @@ interface ControlAuthorityStore {
 export const useControlAuthorityStore = create<ControlAuthorityStore>((set) => ({
   status: 'disconnected',
   ownerId: null,
+  baseOwnerId: null,
   cooldownSeconds: 0,
   error: null,
 
   reset: (status = 'disconnected') => set({
     status,
     ownerId: null,
+    baseOwnerId: null,
     cooldownSeconds: 0,
     error: null,
   }),
@@ -43,6 +48,7 @@ export const useControlAuthorityStore = create<ControlAuthorityStore>((set) => (
   beginAcquire: () => set({
     status: 'acquiring',
     ownerId: CONTROL_CLIENT_ID,
+    baseOwnerId: null,
     cooldownSeconds: 0,
     error: null,
   }),
@@ -58,6 +64,7 @@ export const useControlAuthorityStore = create<ControlAuthorityStore>((set) => (
       set({
         status: message.state,
         ownerId: null,
+        baseOwnerId: null,
         cooldownSeconds: 0,
         error: null,
       });
@@ -67,6 +74,7 @@ export const useControlAuthorityStore = create<ControlAuthorityStore>((set) => (
       set({
         status: 'cooldown',
         ownerId: null,
+        baseOwnerId: null,
         cooldownSeconds: message.remainingSeconds,
         error: null,
       });
@@ -77,12 +85,36 @@ export const useControlAuthorityStore = create<ControlAuthorityStore>((set) => (
       return;
     }
 
+    if (message.state === 'override_available') {
+      set({
+        status: 'override_available',
+        ownerId: null,
+        baseOwnerId: message.baseOwnerId,
+        cooldownSeconds: 0,
+        error: null,
+      });
+      return;
+    }
+
+    if (message.state === 'override_acquired') {
+      const ownedByThisApp = message.ownerId === CONTROL_CLIENT_ID;
+      set({
+        status: ownedByThisApp ? 'override_acquired' : 'owned_by_other',
+        ownerId: message.ownerId,
+        baseOwnerId: message.baseOwnerId,
+        cooldownSeconds: 0,
+        error: null,
+      });
+      return;
+    }
+
     if (!('ownerId' in message)) return;
     const ownedByThisApp = message.ownerId === CONTROL_CLIENT_ID;
     set({
       status: ownedByThisApp ? message.state :
         message.state === 'releasing' ? 'releasing' : 'owned_by_other',
       ownerId: message.ownerId,
+      baseOwnerId: null,
       cooldownSeconds: 0,
       error: null,
     });
@@ -96,7 +128,8 @@ export function mobileControlIsRequired(): boolean {
 
 export function mobileControlIsAcquired(): boolean {
   const state = useControlAuthorityStore.getState();
-  return state.status === 'acquired' && state.ownerId === CONTROL_CLIENT_ID;
+  return (state.status === 'acquired' || state.status === 'override_acquired') &&
+    state.ownerId === CONTROL_CLIENT_ID;
 }
 
 export function mobileControlBlocksCommands(): boolean {

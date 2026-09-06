@@ -40,10 +40,10 @@ export function SavedConnections({ onSelect }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { marginHorizontal: 20, paddingTop: 0 },
+  container: { paddingTop: 20 },
   title: {
-    ...theme.typography.label,
-    color: theme.colors.textMuted,
+    ...theme.typography.headingSm,
+    color: theme.colors.textPrimary,
     marginBottom: 8,
   },
   item: {
@@ -53,7 +53,8 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
     backgroundColor: theme.colors.bgElevated,
-    borderRadius: theme.radius.md,
+    minHeight: 64,
+    borderRadius: theme.radius.lg,
     marginBottom: 8,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
@@ -62,7 +63,6 @@ const styles = StyleSheet.create({
   name: {
     fontSize: 15,
     fontWeight: '600',
-    fontFamily: 'SpaceMono',
     color: theme.colors.textPrimary,
   },
   url: {

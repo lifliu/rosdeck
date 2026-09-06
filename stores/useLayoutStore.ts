@@ -14,13 +14,20 @@ import { DEFAULTS } from '../constants/defaults';
 import { getWidget } from '../widgets/registry';
 import {
   LEGACY_VBOT_TELEOP_TOPIC,
+  LEGACY_OMNI_TELEOP_TOPIC,
   OMNI_TELEOP_TOPIC,
   UPSTREAM_CMD_VEL_TOPIC,
 } from '../lib/teleop';
 
 const STORAGE_KEY_PREFIX = 'ros2mobile_layouts_';
-const LAYOUT_SCHEMA_VERSION = 5;
+const LAYOUT_SCHEMA_VERSION = 8;
 let latestLayoutInitRequest = 0;
+
+const LEGACY_DEFAULT_CAMERA_TOPICS = new Set([
+  '/camera/image_raw/compressed',
+  '/image_raw/compressed',
+  '/image_left_raw/h265_undistort',
+]);
 
 async function persistLayoutSnapshot(
   robotUrl: string,
@@ -76,12 +83,13 @@ export function migrateLayoutsForUnifiedTeleop(layouts: SavedLayout[]): SavedLay
         },
       };
     }
-    if (topic === OMNI_TELEOP_TOPIC) {
+    if (topic === OMNI_TELEOP_TOPIC || topic === LEGACY_OMNI_TELEOP_TOPIC) {
       return {
         ...node,
         config: {
           ...node.config,
-          useTwistStamped: node.config?.useTwistStamped ?? DEFAULTS.cmdVelUseTwistStamped,
+          topic: OMNI_TELEOP_TOPIC,
+          useTwistStamped: false,
           requireLocoMode: true,
         },
       };
@@ -106,6 +114,39 @@ export function migrateLayoutsForUnifiedTeleop(layouts: SavedLayout[]): SavedLay
     if (mappingLayout) migrated.push(mappingLayout);
   }
   return migrated;
+}
+
+/**
+ * 将旧版本内置的相机配置迁移到产品规范话题。
+ *
+ * 这里只识别历史默认值；用户手工填写的自定义话题和传输方式必须原样保留。
+ * Foxglove 直连可直接传输 CompressedImage，不依赖容易与业务后端端口冲突的
+ * web_video_server/MJPEG 服务。
+ */
+export function migrateLayoutsForCanonicalCamera(layouts: SavedLayout[]): SavedLayout[] {
+  const migrateNode = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      return {
+        ...node,
+        children: [migrateNode(node.children[0]), migrateNode(node.children[1])],
+      };
+    }
+    if (node.widgetType !== 'camera') return node;
+
+    const topic = node.config?.topic;
+    if (topic && !LEGACY_DEFAULT_CAMERA_TOPICS.has(topic)) return node;
+    return {
+      ...node,
+      config: {
+        ...node.config,
+        topic: DEFAULTS.cameraTopic,
+        source: 'transport',
+        maxFps: node.config?.maxFps ?? 10,
+      },
+    };
+  };
+
+  return layouts.map((layout) => ({ ...layout, tree: migrateNode(layout.tree) }));
 }
 
 /** @deprecated Use migrateLayoutsForUnifiedTeleop. */
@@ -136,7 +177,7 @@ export function migrateLegacyTeleopForUnifiedRobot(
       config: {
         ...node.config,
         topic: OMNI_TELEOP_TOPIC,
-        useTwistStamped: true,
+        useTwistStamped: false,
         requireLocoMode: true,
       },
     };
@@ -168,6 +209,7 @@ interface LayoutState {
   splitPane: (nodeId: string, direction: 'horizontal' | 'vertical', widgetType: string) => void;
   removePane: (nodeId: string) => void;
   updateWidgetConfig: (nodeId: string, config: Record<string, any>) => void;
+  updateWidgetConfigInLayout: (layoutId: string, nodeId: string, config: Record<string, any>) => void;
   swapWidget: (nodeId: string, widgetType: string) => void;
   swapChildren: (splitNodeId: string) => void;
   updateSplitRatio: (nodeId: string, ratio: number) => void;
@@ -192,11 +234,14 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
         const data = JSON.parse(stored);
         const needsMigration = data.schemaVersion !== LAYOUT_SCHEMA_VERSION;
         const layouts = needsMigration
-          ? migrateLayoutsForUnifiedTeleop(data.layouts ?? [])
+          ? migrateLayoutsForCanonicalCamera(migrateLayoutsForUnifiedTeleop(data.layouts ?? []))
           : data.layouts;
-        set({ robotUrl: url, layouts, activeLayoutId: data.activeLayoutId });
+        const activeLayoutId = needsMigration && url.startsWith('demo://') && data.activeLayoutId === 'dashboard'
+          ? 'drive-camera'
+          : data.activeLayoutId;
+        set({ robotUrl: url, layouts, activeLayoutId });
         if (needsMigration) {
-          await persistLayoutSnapshot(url, layouts, data.activeLayoutId);
+          await persistLayoutSnapshot(url, layouts, activeLayoutId);
         }
         return true;
       }
@@ -291,7 +336,13 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   },
 
   updateWidgetConfig: (nodeId: string, config: Record<string, any>) => {
-    const layout = get().getActiveLayout();
+    const layoutId = get().activeLayoutId;
+    if (!layoutId) return;
+    get().updateWidgetConfigInLayout(layoutId, nodeId, config);
+  },
+
+  updateWidgetConfigInLayout: (layoutId: string, nodeId: string, config: Record<string, any>) => {
+    const layout = get().layouts.find((item) => item.id === layoutId);
     if (!layout) return;
     const updateConfig = (node: LayoutNode): LayoutNode => {
       if (node.id === nodeId && node.type === 'widget') {
@@ -302,7 +353,13 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       }
       return node;
     };
-    get().updateLayoutTree(updateConfig(layout.tree));
+    const updatedTree = updateConfig(layout.tree);
+    set((state) => ({
+      layouts: state.layouts.map((item) => (
+        item.id === layoutId ? { ...item, tree: updatedTree } : item
+      )),
+    }));
+    void get().persist();
   },
 
   swapWidget: (nodeId: string, widgetType: string) => {

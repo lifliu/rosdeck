@@ -1,4 +1,4 @@
-import type { TwistMessage, TwistStampedMessage } from '../types/ros';
+import type { TeleopCommandMessage, TwistMessage, TwistStampedMessage } from '../types/ros';
 import { DEFAULTS } from '../constants/defaults';
 import { canonicalizeConnectionUrl, parseConnectionInput } from './connection-url';
 
@@ -52,6 +52,20 @@ export function buildTwistStampedMessage(twist: TwistMessage, frameId: string): 
   };
 }
 
+/** 构造携带 APP 租约身份的强类型人工驾驶指令。 */
+export function buildTeleopCommandMessage(
+  twist: TwistMessage,
+  frameId: string,
+  clientId: string,
+  sequence: number,
+): TeleopCommandMessage {
+  return {
+    ...buildTwistStampedMessage(twist, frameId),
+    client_id: clientId,
+    sequence,
+  };
+}
+
 export function parseRobotIp(input: string): string {
   const parsed = parseConnectionInput(input);
   if (parsed.kind === 'valid') return parsed.host;
@@ -84,11 +98,17 @@ export function createRosConnection(url: string): any {
   return new ROSLIB.Ros({ url: canonicalUrl });
 }
 
-export function createCmdVelTopic(ros: any, topicName: string, stamped: boolean): any {
+export function createCmdVelTopic(
+  ros: any,
+  topicName: string,
+  stamped: boolean,
+  messageTypeOverride?: string,
+): any {
   const ROSLIB = getRoslib();
   return new ROSLIB.Topic({
     ros,
     name: topicName,
-    messageType: stamped ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist',
+    messageType: messageTypeOverride ??
+      (stamped ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist'),
   });
 }

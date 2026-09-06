@@ -77,18 +77,24 @@ describe('suggestLayout', () => {
     expect(result?.widgetConfigs.camera?.topic).toBe('/usb_cam/compressed');
   });
 
-  it('prefers the unified teleop TwistStamped input over legacy velocity topics', () => {
+  it('prefers the authenticated teleop input over legacy velocity topics', () => {
     const result = suggestLayout([
       { name: '/navigation/cmd_vel', type: 'geometry_msgs/msg/Twist' },
       { name: '/cmd_vel', type: 'geometry_msgs/msg/TwistStamped' },
       { name: '/vel_cmd', type: 'geometry_msgs/msg/Twist' },
       { name: '/omni/cmd_vel/teleop', type: 'geometry_msgs/msg/Twist' },
       { name: '/omni/cmd_vel/teleop', type: 'geometry_msgs/msg/TwistStamped' },
+      { name: '/omni/control/teleop', type: 'omni_robot_interfaces/msg/TeleopCommand' },
     ]);
     expect(result?.widgetConfigs.joystick).toEqual({
-      topic: '/omni/cmd_vel/teleop',
-      useTwistStamped: true,
+      topic: '/omni/control/teleop',
+      useTwistStamped: false,
       requireLocoMode: true,
+    });
+    expect(result?.detectedTopics).toContainEqual({
+      name: '/omni/control/teleop',
+      type: 'omni_robot_interfaces/msg/TeleopCommand',
+      widgetType: 'joystick',
     });
   });
 
@@ -110,8 +116,8 @@ describe('suggestLayout', () => {
       { name: '/omni/cmd_vel/arbiter_status', type: 'std_msgs/msg/String' },
     ]);
     expect(result?.widgetConfigs.joystick).toEqual({
-      topic: '/omni/cmd_vel/teleop',
-      useTwistStamped: true,
+      topic: '/omni/control/teleop',
+      useTwistStamped: false,
       requireLocoMode: true,
     });
   });

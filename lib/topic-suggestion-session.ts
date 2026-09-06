@@ -27,7 +27,8 @@ export function createTopicSuggestionSession(
 /**
  * Refresh an already visible suggestion only for the same live connection.
  * The canonical product input is intentionally stricter than a generic topic:
- * it must remain TwistStamped before it can replace a working VBot proposal.
+ * it must remain the authenticated TeleopCommand target before it can replace
+ * a working VBot proposal.
  */
 export function refreshTopicSuggestionSession(
   session: TopicSuggestionSession | null,
@@ -39,7 +40,7 @@ export function refreshTopicSuggestionSession(
     return session;
   }
   const joystick = suggestion.widgetConfigs.joystick;
-  if (joystick?.topic !== OMNI_TELEOP_TOPIC || joystick.useTwistStamped !== true) {
+  if (joystick?.topic !== OMNI_TELEOP_TOPIC || joystick.useTwistStamped !== false) {
     return session;
   }
   return { source: session.source, suggestion };

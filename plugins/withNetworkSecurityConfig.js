@@ -1,7 +1,7 @@
 const {
+  AndroidConfig,
   withDangerousMod,
   withAndroidManifest,
-  ensureArray,
 } = require("expo/config-plugins");
 const fs = require("fs");
 const path = require("path");
@@ -32,25 +32,14 @@ const CONFIG_XML = `<?xml version="1.0" encoding="utf-8"?>
 
 function withNetworkSecurityConfig(config) {
   config = withAndroidManifest(config, (config) => {
-    const manifest = config.modResults.manifest.manifest;
-    const application = ensureArray(manifest, "application")[0];
-    let metas = application["meta-data"];
-    if (!Array.isArray(metas)) {
-      metas = (application["meta-data"] = []);
-    }
-    const existing = metas.find(
-      (m) => m && m.$ && m.$["android:name"] === META_NAME
+    const application =
+      AndroidConfig.Manifest.getMainApplicationOrThrow(config.modResults);
+    AndroidConfig.Manifest.addMetaDataItemToMainApplication(
+      application,
+      META_NAME,
+      `@xml/${CONFIG_FILE.replace(/\.xml$/, "")}`,
+      "resource"
     );
-    if (existing) {
-      existing.$["android:resource"] = `@xml/${CONFIG_FILE.replace(/\.xml$/, "")}`;
-    } else {
-      metas.push({
-        $: {
-          "android:name": META_NAME,
-          "android:resource": `@xml/${CONFIG_FILE.replace(/\.xml$/, "")}`,
-        },
-      });
-    }
     return config;
   });
 

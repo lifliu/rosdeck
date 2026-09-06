@@ -9,21 +9,22 @@ import { theme } from "../constants/theme";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useRosStore } from "../stores/useRosStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
-import { useTranslation, type TranslationKey } from "../lib/i18n";
+import { useProductCopy, type ProductCopyKey } from "../lib/product-copy";
 
-export const RAIL_WIDTH = 48;
+export const RAIL_WIDTH = 64;
 
 const TAB_CONFIG: Record<
   string,
-  { labelKey: TranslationKey; icon: keyof typeof Ionicons.glyphMap }
+  { labelKey: ProductCopyKey; icon: keyof typeof Ionicons.glyphMap }
 > = {
-  index: { labelKey: "tabs.connect", icon: "link-outline" },
-  control: { labelKey: "tabs.control", icon: "grid-outline" },
-  mission: { labelKey: "tabs.mission", icon: "walk-outline" },
-  settings: { labelKey: "tabs.settings", icon: "settings-sharp" },
+  index: { labelKey: "tabs.home", icon: "home-outline" },
+  device: { labelKey: "tabs.device", icon: "hardware-chip-outline" },
+  control: { labelKey: "tabs.control", icon: "game-controller-outline" },
+  mission: { labelKey: "tabs.mission", icon: "clipboard-outline" },
+  settings: { labelKey: "tabs.settings", icon: "settings-outline" },
 };
 
-const TAB_ROUTES = ["index", "control", "mission", "settings"];
+const TAB_ROUTES = ["index", "device", "control", "mission", "settings"];
 
 /**
  * Portrait bottom tab bar — rendered via Tabs tabBar prop
@@ -36,7 +37,9 @@ export function CustomTabBar({
   const connectionStatus = useRosStore((s) => s.connection.status);
   const isConnected = connectionStatus === "connected";
   const insets = useSafeAreaInsets();
-  const { t } = useTranslation();
+  const { pc } = useProductCopy();
+
+  if (state.routes[state.index]?.name === 'control') return null;
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
@@ -80,8 +83,13 @@ export function CustomTabBar({
               activeOpacity={0.7}
             >
               <View style={styles.labelContainer}>
+                <Ionicons
+                  name={config?.icon ?? 'ellipse-outline'}
+                  size={21}
+                  color={color}
+                />
                 <Text style={[styles.label, { color }]} numberOfLines={1}>
-                  {config ? t(config.labelKey) : route.name}
+                  {config ? pc(config.labelKey) : route.name}
                 </Text>
                 {route.name === "index" && isConnected && (
                   <View style={styles.statusDot} />
@@ -108,6 +116,7 @@ export function LandscapeTabRail() {
   const segments = useSegments();
   const editMode = useLayoutStore((s) => s.editMode);
   const setEditMode = useLayoutStore((s) => s.setEditMode);
+  const { pc } = useProductCopy();
 
   // Determine active tab from route segments
   // (expo-router 55 types useSegments() as a 1-tuple by default; the hook
@@ -141,6 +150,7 @@ export function LandscapeTabRail() {
             key={routeName}
             accessibilityRole="button"
             accessibilityState={isFocused ? { selected: true } : {}}
+            accessibilityLabel={pc(config.labelKey)}
             onPress={() => {
               if (routeName === "index") router.push("/(tabs)");
               else router.push(`/(tabs)/${routeName}` as any);
@@ -200,39 +210,42 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.bgBase,
     borderTopWidth: 1,
     borderTopColor: theme.colors.borderSubtle,
-    paddingTop: 8,
-    paddingBottom: 8,
+    minHeight: theme.sizes.bottomBar,
+    paddingTop: 7,
+    paddingBottom: 6,
     marginHorizontal: 0,
   },
   tab: {
     flex: 1,
+    minHeight: 54,
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
   },
   labelContainer: {
-    flexDirection: "row",
+    flexDirection: "column",
     alignItems: "center",
-    gap: 5,
+    gap: 3,
   },
   statusDot: {
+    position: "absolute",
+    top: 1,
+    right: -9,
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: theme.colors.statusConnected,
   },
   label: {
-    fontSize: 14,
+    fontSize: 10,
     fontWeight: "600",
-    fontFamily: "SpaceMono",
-    letterSpacing: 0.3,
-    textTransform: "uppercase",
+    letterSpacing: 0,
   },
   activeIndicator: {
     position: "absolute",
-    top: -8,
-    width: 24,
-    height: 2,
+    top: -7,
+    width: 30,
+    height: 3,
     borderRadius: 1,
     backgroundColor: theme.colors.accentPrimary,
   },
@@ -244,9 +257,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   railTab: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
+    width: 48,
+    height: 48,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     marginVertical: 4,

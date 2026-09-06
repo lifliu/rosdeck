@@ -53,7 +53,7 @@ class Defaults(unittest.TestCase):
 
     def test_operator_allowed_ops_and_topics(self):
         self.assertTrue(self.pol.check_client_op(
-            "operator", "advertise", "/omni/cmd_vel/teleop").allowed)
+            "operator", "advertise", "/omni/control/teleop").allowed)
         self.assertTrue(self.pol.check_client_op(
             "operator", "publish", "/omni/safety/estop_request").allowed)
         self.assertTrue(self.pol.check_client_op(

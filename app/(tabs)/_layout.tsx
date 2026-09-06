@@ -1,4 +1,4 @@
-import { Tabs } from 'expo-router';
+import { Tabs, useSegments } from 'expo-router';
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CustomTabBar, LandscapeTabRail, RAIL_WIDTH } from '../../components/CustomTabBar';
@@ -9,8 +9,21 @@ export default function TabLayout() {
   const { isLandscape } = useOrientation();
   const tabRailSide = useSettingsStore((s) => s.tabRailSide);
   const insets = useSafeAreaInsets();
+  const segments = useSegments();
+  const isControl = (segments as readonly string[])[1] === 'control';
 
   if (isLandscape) {
+    if (isControl) {
+      return (
+        <Tabs tabBar={() => <View />} screenOptions={{ headerShown: false }}>
+          <Tabs.Screen name="index" />
+          <Tabs.Screen name="device" />
+          <Tabs.Screen name="control" />
+          <Tabs.Screen name="mission" />
+          <Tabs.Screen name="settings" />
+        </Tabs>
+      );
+    }
     const isLeft = tabRailSide === 'left';
     return (
       <View style={{ flex: 1, flexDirection: isLeft ? 'row' : 'row-reverse' }}>
@@ -21,6 +34,7 @@ export default function TabLayout() {
             screenOptions={{ headerShown: false }}
           >
             <Tabs.Screen name="index" />
+            <Tabs.Screen name="device" />
             <Tabs.Screen name="control" />
             <Tabs.Screen name="mission" />
             <Tabs.Screen name="settings" />
@@ -38,6 +52,7 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen name="index" />
+      <Tabs.Screen name="device" />
       <Tabs.Screen name="control" />
       <Tabs.Screen name="mission" />
       <Tabs.Screen name="settings" />

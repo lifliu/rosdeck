@@ -14,6 +14,9 @@ interface Props {
   config: Record<string, any>;
   onConfigChange: (config: Record<string, any>) => void;
   onClose: () => void;
+  language?: 'zh' | 'en';
+  description?: string;
+  recommendedConfig?: Record<string, any>;
 }
 
 function NumberField({ field, value, onChange }: { field: WidgetConfigField; value: any; onChange: (v: any) => void }) {
@@ -247,9 +250,20 @@ function AxisMappingField({ config, onChange }: { config: Record<string, any>; o
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function WidgetSettings({ visible, widgetName, configSchema, config, onConfigChange, onClose }: Props) {
+export function WidgetSettings({
+  visible,
+  widgetName,
+  configSchema,
+  config,
+  onConfigChange,
+  onClose,
+  language = 'en',
+  description,
+  recommendedConfig,
+}: Props) {
   const { isLandscape } = useOrientation();
   const [draft, setDraft] = useState(config);
+  const zh = language === 'zh';
 
   // Sync draft from prop when modal opens. config is intentionally omitted
   // from deps — we don't want external changes to clobber in-progress edits.
@@ -260,8 +274,13 @@ export function WidgetSettings({ visible, widgetName, configSchema, config, onCo
     setDraft(prev => ({ ...prev, [key]: value }));
   };
 
-  const handleClose = () => {
+  const handleSave = () => {
     onConfigChange(draft);
+    onClose();
+  };
+
+  const handleCancel = () => {
+    setDraft(config);
     onClose();
   };
 
@@ -278,6 +297,7 @@ export function WidgetSettings({ visible, widgetName, configSchema, config, onCo
               value={draft[field.key] || ''}
               filterMessageTypes={field.topicMessageTypes}
               onSelect={(topic) => updateDraft(field.key, topic)}
+              language={language}
             />
           </View>
         );
@@ -364,20 +384,54 @@ export function WidgetSettings({ visible, widgetName, configSchema, config, onCo
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleCancel}>
       <View style={[styles.overlay, isLandscape && styles.overlayLandscape]}>
         <View style={[styles.container, isLandscape && styles.containerLandscape]}>
           <View style={styles.header}>
-            <Text style={styles.title}>{widgetName.toUpperCase()} SETTINGS</Text>
-            <TouchableOpacity onPress={handleClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <View style={styles.headerCopy}>
+              <Text style={styles.title}>{zh ? `${widgetName}设置` : `${widgetName} settings`}</Text>
+              {description ? <Text style={styles.description}>{description}</Text> : null}
+            </View>
+            <TouchableOpacity
+              accessibilityLabel={zh ? '取消并关闭' : 'Cancel and close'}
+              style={styles.closeButton}
+              onPress={handleCancel}
+            >
               <Ionicons name="close" size={22} color={theme.colors.textSecondary} />
             </TouchableOpacity>
           </View>
           <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
             <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer} keyboardShouldPersistTaps="handled">
+              {recommendedConfig ? (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={styles.recommendedButton}
+                  onPress={() => setDraft((current) => ({ ...current, ...recommendedConfig }))}
+                >
+                  <View style={styles.recommendedIcon}>
+                    <Ionicons name="sparkles-outline" size={19} color={theme.colors.accentPrimary} />
+                  </View>
+                  <View style={styles.recommendedCopy}>
+                    <Text style={styles.recommendedTitle}>{zh ? '使用推荐配置' : 'Use recommended settings'}</Text>
+                    <Text style={styles.recommendedDescription}>
+                      {zh ? '自动选择规范视频话题与 Foxglove 直连。' : 'Select the canonical topic and direct Foxglove transport.'}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+                </TouchableOpacity>
+              ) : null}
               {configSchema.map(renderField)}
             </ScrollView>
           </TouchableWithoutFeedback>
+          <View style={styles.footer}>
+            <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
+              <Text style={styles.cancelButtonText}>{zh ? '取消' : 'Cancel'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
+              <Ionicons name="checkmark" size={19} color={theme.colors.bgBase} />
+              <Text style={styles.saveButtonText}>{zh ? '保存并应用' : 'Save and apply'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </Modal>
@@ -401,6 +455,7 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.borderDefault,
     borderRadius: theme.radius.lg,
     width: '100%',
+    maxWidth: 680,
     maxHeight: '80%',
   },
   containerLandscape: {
@@ -414,16 +469,25 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.borderSubtle,
   },
+  headerCopy: { flex: 1, minWidth: 0 },
   title: {
-    ...theme.typography.label,
-    color: theme.colors.textSecondary,
+    fontSize: 17,
+    fontWeight: '700',
+    color: theme.colors.textPrimary,
   },
+  description: { color: theme.colors.textMuted, fontSize: 11, lineHeight: 16, marginTop: 3 },
+  closeButton: { width: 44, height: 44, marginLeft: 12, alignItems: 'center', justifyContent: 'center', borderRadius: theme.radius.md, backgroundColor: theme.colors.bgSurface },
   content: {
     padding: 16,
   },
   contentContainer: {
     paddingBottom: 24,
   },
+  recommendedButton: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12, marginBottom: 18, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.accentPrimary + '70', backgroundColor: theme.colors.accentPrimaryMuted },
+  recommendedIcon: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: theme.colors.bgSurface },
+  recommendedCopy: { flex: 1, minWidth: 0 },
+  recommendedTitle: { color: theme.colors.textPrimary, fontSize: 13, fontWeight: '700' },
+  recommendedDescription: { color: theme.colors.textMuted, fontSize: 10, lineHeight: 15, marginTop: 2 },
   field: {
     marginBottom: 16,
   },
@@ -463,6 +527,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  footer: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: theme.colors.borderSubtle },
+  cancelButton: { minWidth: 94, minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.borderDefault, backgroundColor: theme.colors.bgSurface },
+  cancelButtonText: { color: theme.colors.textSecondary, fontSize: 13, fontWeight: '700' },
+  saveButton: { minWidth: 150, minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 18, borderRadius: theme.radius.md, backgroundColor: theme.colors.accentPrimary },
+  saveButtonText: { color: theme.colors.bgBase, fontSize: 13, fontWeight: '800' },
   selectOptionActive: {
     backgroundColor: theme.colors.accentPrimary,
     borderColor: theme.colors.accentPrimary,

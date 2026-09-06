@@ -62,8 +62,8 @@ describe('ControlScreen topic suggestion session', () => {
     const refreshedSession = session as TopicSuggestionSession | null;
     expect(refreshedSession?.source).toBe(source);
     expect(refreshedSession?.suggestion.widgetConfigs.joystick).toEqual({
-      topic: '/omni/cmd_vel/teleop',
-      useTwistStamped: true,
+      topic: '/omni/control/teleop',
+      useTwistStamped: false,
       requireLocoMode: true,
     });
     expect(getTopics).toHaveBeenCalledTimes(2);

@@ -23,6 +23,7 @@ import { SetupGuide } from '../../components/SetupGuide';
 import { useOrientation } from '../../hooks/useOrientation';
 import { theme } from '../../constants/theme';
 import { useTranslation } from '../../lib/i18n';
+import { ProductHeader } from '../../components/ProductUI';
 
 const PUBLISH_RATE_OPTIONS = [5, 10, 20, 30];
 const DEPTH_OPTIONS = [4, 6, 8, 12];
@@ -32,7 +33,7 @@ const DEADZONE_OPTIONS = [0.05, 0.1, 0.15, 0.2, 0.3];
 export default function SettingsScreen() {
   const language = useSettingsStore((s) => s.language);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
-  const { t } = useTranslation();
+  const { t, language: activeLanguage } = useTranslation();
   const hapticsEnabled = useSettingsStore((s) => s.hapticsEnabled);
   const keepAwake = useSettingsStore((s) => s.keepAwake);
   const publishRateHz = useSettingsStore((s) => s.publishRateHz);
@@ -49,8 +50,6 @@ export default function SettingsScreen() {
   const setTabRailSide = useSettingsStore((s) => s.setTabRailSide);
   const gamepadDeadzone = useSettingsStore((s) => s.gamepadDeadzone);
   const setGamepadDeadzone = useSettingsStore((s) => s.setGamepadDeadzone);
-  const gamepadAutoLayout = useSettingsStore((s) => s.gamepadAutoLayout);
-  const setGamepadAutoLayout = useSettingsStore((s) => s.setGamepadAutoLayout);
 
   const robotUrl = useLayoutStore((s) => s.robotUrl);
   const [showGuide, setShowGuide] = React.useState(false);
@@ -314,28 +313,12 @@ export default function SettingsScreen() {
         <Text style={styles.rowTitle}>{t('settings.autoStick')}</Text>
         <Text style={styles.rowSubtitle}>{t('settings.autoStickHint')}</Text>
         <View style={styles.segmentedRow}>
-          {([
-            { value: 'left-drive' as const, label: t('settings.leftDrive') },
-            { value: 'left-steer' as const, label: t('settings.leftSteer') },
-          ]).map(({ value, label }) => (
-            <TouchableOpacity
-              key={value}
-              style={[
-                styles.segmentButton,
-                gamepadAutoLayout === value && styles.segmentButtonActive,
-              ]}
-              onPress={() => setGamepadAutoLayout(value)}
-            >
-              <Text
-                style={[
-                  styles.segmentText,
-                  gamepadAutoLayout === value && styles.segmentTextActive,
-                ]}
-              >
-                {label}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          <View style={[styles.segmentButton, styles.segmentButtonActive]}>
+            <Text style={[styles.segmentText, styles.segmentTextActive]}>{t('settings.leftDrive')}</Text>
+          </View>
+          <View style={[styles.segmentButton, styles.segmentButtonActive]}>
+            <Text style={[styles.segmentText, styles.segmentTextActive]}>{t('settings.leftSteer')}</Text>
+          </View>
         </View>
         <View style={styles.divider} />
         <Text style={styles.rowTitle}>{t('settings.deadzone')}</Text>
@@ -542,6 +525,10 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={isLandscape ? [] : ['top']}>
+      <ProductHeader
+        title={activeLanguage === 'zh' ? '设置' : 'Settings'}
+        subtitle={activeLanguage === 'zh' ? '应用、控制器与连接参数' : 'App, controls and connection'}
+      />
       {isLandscape ? (
         <View style={styles.landscapeRow}>
           <ScrollView style={styles.landscapeColumn} contentContainerStyle={styles.landscapeColumnContent}>
@@ -572,7 +559,10 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.bgBase,
   },
   scrollView: {
-    padding: 20,
+    paddingHorizontal: 18,
+    width: '100%',
+    maxWidth: theme.sizes.contentMax,
+    alignSelf: 'center',
   },
   scrollContent: {
     paddingBottom: 100,
@@ -589,9 +579,9 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   sectionTitle: {
-    ...theme.typography.label,
-    color: theme.colors.textMuted,
-    marginTop: 16,
+    ...theme.typography.headingSm,
+    color: theme.colors.textPrimary,
+    marginTop: 20,
     marginBottom: 8,
   },
   card: {
@@ -599,26 +589,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
     borderRadius: theme.radius.lg,
-    padding: 16,
+    padding: 18,
     marginBottom: 8,
   },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 4,
+    minHeight: 52,
+    paddingVertical: 5,
   },
   toggleLabel: {
     flex: 1,
     paddingRight: 12,
   },
   rowTitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: theme.colors.textPrimary,
     fontWeight: '500',
   },
   rowSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 19,
     color: theme.colors.textMuted,
     marginTop: 2,
   },
@@ -631,7 +623,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: theme.radius.md,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    minHeight: 48,
+    paddingVertical: 11,
     marginTop: 6,
     marginBottom: 10,
   },
@@ -647,7 +640,9 @@ const styles = StyleSheet.create({
   },
   segmentButton: {
     flex: 1,
-    paddingVertical: 8,
+    minHeight: 44,
+    paddingVertical: 10,
+    justifyContent: 'center',
     alignItems: 'center',
     borderRadius: theme.radius.md,
     borderWidth: 1,
@@ -658,8 +653,7 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.accentPrimary,
   },
   segmentText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 12,
+    fontSize: 13,
     color: theme.colors.textSecondary,
   },
   segmentTextActive: {
@@ -670,14 +664,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingVertical: 8,
+    minHeight: 48,
+    paddingVertical: 10,
   },
   actionRowDisabled: {
     opacity: 0.4,
   },
   actionText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '600',
     color: theme.colors.accentPrimary,
   },
   actionTextDestructive: {

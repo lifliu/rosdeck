@@ -1,12 +1,14 @@
 import type { TopicInfo } from './transport';
 
-export const OMNI_TELEOP_TOPIC = '/omni/cmd_vel/teleop';
+export const OMNI_TELEOP_TOPIC = '/omni/control/teleop';
+export const LEGACY_OMNI_TELEOP_TOPIC = '/omni/cmd_vel/teleop';
 export const OMNI_ARBITER_STATUS_TOPIC = '/omni/cmd_vel/arbiter_status';
 export const LEGACY_VBOT_TELEOP_TOPIC = '/vel_cmd';
 export const UPSTREAM_CMD_VEL_TOPIC = '/cmd_vel';
 
 export const TWIST_MESSAGE_TYPE = 'geometry_msgs/msg/Twist';
 export const TWIST_STAMPED_MESSAGE_TYPE = 'geometry_msgs/msg/TwistStamped';
+export const TELEOP_COMMAND_MESSAGE_TYPE = 'omni_robot_interfaces/msg/TeleopCommand';
 
 export interface TeleopTarget {
   topic: string;
@@ -20,9 +22,8 @@ function isTwistTopic(topic: TopicInfo): boolean {
 /**
  * Select the safest product teleop input exposed by the connected ROS graph.
  *
- * The unified arbiter input is preferred and uses TwistStamped when both
- * schemas are advertised. `/vel_cmd` remains the compatibility path for VBot
- * deployments that have not installed the unified gateway yet.
+ * 优先选择携带 client_id 的强类型人工控制入口。`/vel_cmd` 和旧版
+ * `/omni/cmd_vel/teleop` 只用于尚未升级 Bridge 的兼容部署。
  */
 export function selectPreferredTeleopTarget(topics: TopicInfo[]): TeleopTarget | null {
   // Foxglove's advertised channel list may omit subscription-only inputs. The
@@ -30,22 +31,28 @@ export function selectPreferredTeleopTarget(topics: TopicInfo[]): TeleopTarget |
   if (topics.some((topic) =>
     topic.name === OMNI_ARBITER_STATUS_TOPIC && topic.type === 'std_msgs/msg/String'))
   {
-    return { topic: OMNI_TELEOP_TOPIC, useTwistStamped: true };
+    return { topic: OMNI_TELEOP_TOPIC, useTwistStamped: false };
   }
 
-  // `/omni/cmd_vel/teleop` is a product capability marker only when it
-  // advertises the canonical TwistStamped contract. An old/custom Twist topic
-  // with the same name must not trigger migration away from a working VBot.
+  if (topics.some((topic) =>
+    topic.name === OMNI_TELEOP_TOPIC && topic.type === TELEOP_COMMAND_MESSAGE_TYPE))
+  {
+    return { topic: OMNI_TELEOP_TOPIC, useTwistStamped: false };
+  }
+
+  // 旧 `/omni/cmd_vel/teleop` 只有在声明标准 TwistStamped 时才可作为兼容
+  // 候选；同名 Twist 不能触发从仍可工作的 VBot `/vel_cmd` 自动迁移。
   const twistTopics = topics.filter(
     (topic) => isTwistTopic(topic) &&
-      !(topic.name === OMNI_TELEOP_TOPIC && topic.type !== TWIST_STAMPED_MESSAGE_TYPE),
+      !(topic.name === LEGACY_OMNI_TELEOP_TOPIC &&
+      topic.type !== TWIST_STAMPED_MESSAGE_TYPE),
   );
   const find = (name: string, type?: string) => twistTopics.find(
     (topic) => topic.name === name && (!type || topic.type === type),
   );
 
   const selected =
-    find(OMNI_TELEOP_TOPIC, TWIST_STAMPED_MESSAGE_TYPE) ??
+    find(LEGACY_OMNI_TELEOP_TOPIC, TWIST_STAMPED_MESSAGE_TYPE) ??
     find(LEGACY_VBOT_TELEOP_TOPIC, TWIST_MESSAGE_TYPE) ??
     find(LEGACY_VBOT_TELEOP_TOPIC, TWIST_STAMPED_MESSAGE_TYPE) ??
     find(UPSTREAM_CMD_VEL_TOPIC, TWIST_STAMPED_MESSAGE_TYPE) ??
@@ -61,11 +68,12 @@ export function selectPreferredTeleopTarget(topics: TopicInfo[]): TeleopTarget |
 }
 
 export function isProductTeleopTopic(topic: string): boolean {
-  return topic === OMNI_TELEOP_TOPIC || topic === LEGACY_VBOT_TELEOP_TOPIC;
+  return topic === OMNI_TELEOP_TOPIC || topic === LEGACY_OMNI_TELEOP_TOPIC ||
+    topic === LEGACY_VBOT_TELEOP_TOPIC;
 }
 
 export function defaultUsesTwistStamped(topic: string): boolean {
-  return topic === OMNI_TELEOP_TOPIC;
+  return topic === LEGACY_OMNI_TELEOP_TOPIC;
 }
 
 /**
@@ -79,7 +87,8 @@ export function teleopControlIsBlocked(
   authorityUnsupported: boolean,
 ): boolean {
   if (authorityAcquired) return false;
-  return topic === OMNI_TELEOP_TOPIC || !authorityUnsupported;
+  return topic === OMNI_TELEOP_TOPIC || topic === LEGACY_OMNI_TELEOP_TOPIC ||
+    !authorityUnsupported;
 }
 
 export interface TeleopAuthoritySnapshot {
@@ -99,7 +108,8 @@ export function teleopPublishIsBlocked(
 ): boolean {
   return teleopControlIsBlocked(
     topic,
-    authority.status === 'acquired' && authority.ownerId === clientId,
+    (authority.status === 'acquired' || authority.status === 'override_acquired') &&
+      authority.ownerId === clientId,
     authority.status === 'unsupported',
   );
 }

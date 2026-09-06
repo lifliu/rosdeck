@@ -74,7 +74,8 @@ function RootLayoutNav() {
       const store = useRosStore.getState();
       if (nextState === 'background' || nextState === 'inactive') {
         bestEffortReleaseControl(store.transport);
-        if (useControlAuthorityStore.getState().status === 'acquired') {
+        if (['acquired', 'override_acquired'].includes(
+          useControlAuthorityStore.getState().status)) {
           useControlAuthorityStore.getState().beginRelease();
         }
         if (store.connection.ros) {
@@ -110,6 +111,7 @@ function RootLayoutNav() {
           <StatusBar style="light" />
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="alerts" options={{ headerShown: false, animation: 'slide_from_right' }} />
           </Stack>
         </ThemeProvider>
       </ErrorBoundary>

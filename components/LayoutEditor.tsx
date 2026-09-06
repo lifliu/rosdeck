@@ -3,7 +3,6 @@ import { View, TouchableOpacity, Text, Modal, StyleSheet } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useLayoutStore } from '../stores/useLayoutStore';
-import { useOrientation } from '../hooks/useOrientation';
 import { WidgetPicker } from './WidgetPicker';
 import { WidgetSettings } from './WidgetSettings';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -38,7 +37,6 @@ export function LayoutEditor({
   const splitPane = useLayoutStore((s) => s.splitPane);
   const removePane = useLayoutStore((s) => s.removePane);
   const swapWidget = useLayoutStore((s) => s.swapWidget);
-  const { isLandscape } = useOrientation();
 
   // Check if splitting would create panes below minimum size
   const canSplitH = paneHeight / 2 >= MIN_PANE_SIZE; // horizontal split divides height
@@ -83,7 +81,7 @@ export function LayoutEditor({
           activeOpacity={0.8}
           onPress={() => { Haptics.selectionAsync(); setMenuVisible(true); }}
         >
-          <View style={isLandscape ? styles.overlayContentRotated : undefined}>
+          <View style={styles.overlayContent}>
             <Text style={styles.overlayName}>{widgetDef?.name?.toUpperCase() || 'WIDGET'}</Text>
             <Text style={styles.overlayHint}>TAP TO EDIT</Text>
           </View>
@@ -102,37 +100,33 @@ export function LayoutEditor({
               {widgetDef?.name?.toUpperCase() || 'WIDGET'}
             </Text>
 
-            {/* Split options — labels and icons swap in landscape since grid is rotated */}
+            {/* Split options use the visible screen axes in every orientation. */}
             {canSplitH ? (
               <TouchableOpacity style={styles.menuItem} onPress={() => handleSplit('vertical')}>
-                <View style={isLandscape ? styles.iconRotated : undefined}>
-                  <Ionicons name="remove" size={18} color={theme.colors.textPrimary} />
-                </View>
-                <Text style={styles.menuText}>{isLandscape ? 'Split Vertical' : 'Split Horizontal'}</Text>
+                <Ionicons name="remove" size={18} color={theme.colors.textPrimary} />
+                <Text style={styles.menuText}>Split Horizontal</Text>
               </TouchableOpacity>
             ) : (
               <View style={[styles.menuItem, styles.menuItemDisabled]}>
-                <View style={isLandscape ? styles.iconRotated : undefined}>
-                  <Ionicons name="remove" size={18} color={theme.colors.textMuted} />
-                </View>
-                <Text style={styles.menuTextDisabled}>{isLandscape ? 'Split Vertical' : 'Split Horizontal'}</Text>
+                <Ionicons name="remove" size={18} color={theme.colors.textMuted} />
+                <Text style={styles.menuTextDisabled}>Split Horizontal</Text>
                 <Text style={styles.menuHint}>too small</Text>
               </View>
             )}
 
             {canSplitV ? (
               <TouchableOpacity style={styles.menuItem} onPress={() => handleSplit('horizontal')}>
-                <View style={isLandscape ? undefined : styles.iconRotated}>
+                <View style={styles.iconRotated}>
                   <Ionicons name="remove" size={18} color={theme.colors.textPrimary} />
                 </View>
-                <Text style={styles.menuText}>{isLandscape ? 'Split Horizontal' : 'Split Vertical'}</Text>
+                <Text style={styles.menuText}>Split Vertical</Text>
               </TouchableOpacity>
             ) : (
               <View style={[styles.menuItem, styles.menuItemDisabled]}>
-                <View style={isLandscape ? undefined : styles.iconRotated}>
+                <View style={styles.iconRotated}>
                   <Ionicons name="remove" size={18} color={theme.colors.textMuted} />
                 </View>
-                <Text style={styles.menuTextDisabled}>{isLandscape ? 'Split Horizontal' : 'Split Vertical'}</Text>
+                <Text style={styles.menuTextDisabled}>Split Vertical</Text>
                 <Text style={styles.menuHint}>too small</Text>
               </View>
             )}
@@ -199,8 +193,7 @@ const styles = StyleSheet.create({
   iconRotated: {
     transform: [{ rotate: '90deg' }],
   },
-  overlayContentRotated: {
-    transform: [{ rotate: '90deg' }],
+  overlayContent: {
     alignItems: 'center',
     gap: 6,
   },

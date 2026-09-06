@@ -11,6 +11,7 @@ jest.mock('../../widgets/registry', () => ({
 }));
 
 import {
+  migrateLayoutsForCanonicalCamera,
   migrateLayoutsForUnifiedTeleop,
   migrateLegacyTeleopForUnifiedRobot,
   useLayoutStore,
@@ -26,8 +27,62 @@ beforeEach(() => {
 });
 
 describe('useLayoutStore', () => {
+  describe('canonical camera migration', () => {
+    it('moves built-in legacy camera defaults to direct canonical transport', () => {
+      const legacy = {
+        id: 'drive-camera',
+        name: 'Drive + Camera',
+        tree: createWidgetNode('camera', {
+          topic: '/camera/image_raw/compressed',
+          source: 'mjpeg',
+          mjpegPort: 8080,
+        }),
+      };
+
+      const [migrated] = migrateLayoutsForCanonicalCamera([legacy]);
+      expect(migrated.tree.type).toBe('widget');
+      if (migrated.tree.type === 'widget') {
+        expect(migrated.tree.config).toMatchObject({
+          topic: '/omni/sensors/rgb/image/compressed',
+          source: 'transport',
+          maxFps: 10,
+        });
+      }
+    });
+
+    it('preserves a user-supplied camera topic and transport', () => {
+      const custom = {
+        id: 'custom-camera',
+        name: 'Custom Camera',
+        tree: createWidgetNode('camera', {
+          topic: '/payload/camera/compressed',
+          source: 'mjpeg',
+          mjpegPort: 9080,
+        }),
+      };
+
+      const [migrated] = migrateLayoutsForCanonicalCamera([custom]);
+      expect(migrated.tree).toEqual(custom.tree);
+    });
+
+    it('seeds every camera preset with the canonical Foxglove path', () => {
+      const cameraConfigs: Record<string, any>[] = [];
+      const collect = (node: any) => {
+        if (node.type === 'widget' && node.widgetType === 'camera') cameraConfigs.push(node.config);
+        if (node.type === 'split') node.children.forEach(collect);
+      };
+      buildDefaultLayouts().forEach((layout) => collect(layout.tree));
+
+      expect(cameraConfigs.length).toBeGreaterThan(0);
+      cameraConfigs.forEach((config) => {
+        expect(config.topic).toBe('/omni/sensors/rgb/image/compressed');
+        expect(config.source).toBe('transport');
+      });
+    });
+  });
+
   describe('unified teleop migration', () => {
-    it('moves the upstream /cmd_vel default to unified TwistStamped teleop', () => {
+    it('moves the upstream /cmd_vel default to authenticated teleop', () => {
       const legacy = {
         id: 'legacy',
         name: 'Legacy',
@@ -44,8 +99,8 @@ describe('useLayoutStore', () => {
       const [migrated] = migrateLayoutsForUnifiedTeleop([legacy]);
       expect(migrated.tree.type).toBe('widget');
       if (migrated.tree.type === 'widget') {
-        expect(migrated.tree.config.topic).toBe('/omni/cmd_vel/teleop');
-        expect(migrated.tree.config.useTwistStamped).toBe(true);
+        expect(migrated.tree.config.topic).toBe('/omni/control/teleop');
+        expect(migrated.tree.config.useTwistStamped).toBe(false);
         expect(migrated.tree.config.requireLocoMode).toBe(true);
         expect(migrated.tree.config.xAxisComponent).toBe('z');
         expect(migrated.tree.config.yAxisComponent).toBe('x');
@@ -89,8 +144,8 @@ describe('useLayoutStore', () => {
       expect(result.layouts[0].tree.type).toBe('widget');
       if (result.layouts[0].tree.type === 'widget') {
         expect(result.layouts[0].tree.config).toMatchObject({
-          topic: '/omni/cmd_vel/teleop',
-          useTwistStamped: true,
+          topic: '/omni/control/teleop',
+          useTwistStamped: false,
           requireLocoMode: true,
         });
       }
@@ -138,12 +193,12 @@ describe('useLayoutStore', () => {
       }
     });
 
-    it('seeds new layouts with unified TwistStamped teleop', () => {
+    it('seeds new layouts with authenticated teleop', () => {
       const drive = buildDefaultLayouts().find((layout) => layout.id === 'drive');
       expect(drive?.tree.type).toBe('widget');
       if (drive?.tree.type === 'widget') {
-        expect(drive.tree.config.topic).toBe('/omni/cmd_vel/teleop');
-        expect(drive.tree.config.useTwistStamped).toBe(true);
+        expect(drive.tree.config.topic).toBe('/omni/control/teleop');
+        expect(drive.tree.config.useTwistStamped).toBe(false);
         expect(drive.tree.config.requireLocoMode).toBe(true);
       }
     });
@@ -190,6 +245,28 @@ describe('useLayoutStore', () => {
       useLayoutStore.getState().updateLayoutTree(newTree);
       const active = useLayoutStore.getState().getActiveLayout();
       expect(active?.tree).toBe(newTree);
+    });
+  });
+
+  describe('updateWidgetConfigInLayout', () => {
+    it('updates the selected source layout without changing the active layout', async () => {
+      await useLayoutStore.getState().initForRobot('ws://test:8765');
+      useLayoutStore.getState().setActiveLayout('drive');
+      const cameraLayout = useLayoutStore.getState().layouts.find((layout) => layout.id === 'camera-only')!;
+      expect(cameraLayout.tree.type).toBe('widget');
+      if (cameraLayout.tree.type !== 'widget') return;
+
+      useLayoutStore.getState().updateWidgetConfigInLayout(cameraLayout.id, cameraLayout.tree.id, {
+        topic: '/custom/camera/compressed',
+        source: 'transport',
+      });
+
+      const updated = useLayoutStore.getState().layouts.find((layout) => layout.id === 'camera-only')!;
+      expect(useLayoutStore.getState().activeLayoutId).toBe('drive');
+      expect(updated.tree.type).toBe('widget');
+      if (updated.tree.type === 'widget') {
+        expect(updated.tree.config.topic).toBe('/custom/camera/compressed');
+      }
     });
   });
 

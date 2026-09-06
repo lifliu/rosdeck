@@ -9,7 +9,10 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { EmptyState, InlineNotice, Metric, ProductButton, ProductCard, ProductHeader, SectionHeader, StatusPill } from '../../components/ProductUI';
 import { theme } from '../../constants/theme';
+import { useOrientation } from '../../hooks/useOrientation';
 import { useTranslation, type TranslationKey } from '../../lib/i18n';
 import {
   MISSION_EVENTS_TOPIC,
@@ -97,7 +100,9 @@ export default function MissionTab() {
   const status = useRosStore((s) => s.connection.status);
   const transport = useRosStore((s) => s.transport);
   const url = useRosStore((s) => s.connection.url);
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
+  const router = useRouter();
+  const { isLandscape } = useOrientation();
 
   const routes = useMissionStore((s) => s.routes);
   const routesLoaded = useMissionStore((s) => s.routesLoaded);
@@ -241,190 +246,52 @@ export default function MissionTab() {
     : 0;
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
-      <Text style={styles.title}>{t('mission.title')}</Text>
-
+    <SafeAreaView style={styles.safe} edges={isLandscape ? [] : ['top']}>
+      <ProductHeader title={language === 'zh' ? '巡检任务' : 'Missions'} subtitle={language === 'zh' ? '路线派发与执行状态' : 'Routes and execution status'} />
       {!connected ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>{t('mission.notConnected')}</Text>
-          <Text style={styles.emptyHint}>{t('mission.notConnectedHint')}</Text>
-        </View>
+        <EmptyState
+          icon="clipboard-outline"
+          title={t('mission.notConnected')}
+          message={url?.startsWith('demo://') ? (language === 'zh' ? '演示模式不向任务管理器发送指令，请连接真实机器人后管理巡检。' : 'Demo mode does not send commands to the Mission Manager. Connect a real robot to manage inspections.') : t('mission.notConnectedHint')}
+          actionLabel={language === 'zh' ? '连接机器人' : 'Connect a robot'}
+          onAction={() => router.push('/(tabs)/device' as any)}
+        />
       ) : (
-        <ScrollView contentContainerStyle={styles.scroll}>
-          {lastError ? (
-            <TouchableOpacity
-              style={styles.errorBanner}
-              activeOpacity={0.8}
-              onPress={() => useMissionStore.getState().setError(null)}
-            >
-              <Text style={styles.errorText}>{lastError}</Text>
-            </TouchableOpacity>
-          ) : null}
+        <ScrollView contentContainerStyle={[styles.scroll, isLandscape && styles.scrollLandscape]} showsVerticalScrollIndicator={false}>
+          {lastError ? <InlineNotice title={language === 'zh' ? '任务操作失败' : 'Mission action failed'} message={lastError} tone="danger" actionLabel={language === 'zh' ? '关闭' : 'Dismiss'} onAction={() => useMissionStore.getState().setError(null)} /> : null}
 
-          {/* ---- route picker ---- */}
-          <Text style={styles.section}>{t('mission.routes')}</Text>
-          {!routesLoaded ? (
-            <Text style={styles.muted}>{t('mission.routesLoading')}</Text>
-          ) : routes.length === 0 ? (
-            <Text style={styles.muted}>{t('mission.noRoutes')}</Text>
-          ) : (
-            routes.map((route) => {
-              const selected = route.routeId === selectedRouteId;
-              return (
-                <TouchableOpacity
-                  key={route.routeId}
-                  style={[styles.routeRow, selected && styles.routeRowSelected]}
-                  activeOpacity={0.75}
-                  onPress={() =>
-                    useMissionStore
-                      .getState()
-                      .selectRoute(selected ? null : route.routeId)
-                  }
-                >
-                  <View style={styles.routeMain}>
-                    <Text style={styles.routeId}>{route.routeId}</Text>
-                    <Text style={styles.muted}>
-                      {route.mapId
-                        ? t('mission.routeMap', { map: route.mapId })
-                        : t('mission.routeUnbound')}
-                    </Text>
-                  </View>
-                  {selected && (
-                    <Ionicons
-                      name="checkmark"
-                      size={18}
-                      color={theme.colors.accentPrimary}
-                    />
-                  )}
-                </TouchableOpacity>
-              );
-            })
-          )}
-          <TouchableOpacity
-            style={[styles.dispatchButton, (!selectedRouteId || dispatching) && styles.disabled]}
-            disabled={!selectedRouteId || dispatching}
-            activeOpacity={0.75}
-            onPress={onDispatchPress}
-          >
-            <Ionicons
-              name={dispatching ? 'hourglass-outline' : 'send-outline'}
-              size={16}
-              color={theme.colors.bgBase}
-            />
-            <Text style={styles.dispatchText}>
-              {dispatching ? t('mission.dispatching') : t('mission.dispatch')}
-            </Text>
-          </TouchableOpacity>
-
-          {/* ---- active mission card ---- */}
-          <Text style={styles.section}>{t('mission.missionCard')}</Text>
+          <SectionHeader title={t('mission.missionCard')} />
           {missionState === MISSION_STATE.NONE ? (
-            <Text style={styles.muted}>{t('mission.noActiveMission')}</Text>
+            <ProductCard><View style={styles.noMissionRow}><View style={styles.routeIcon}><Ionicons name="checkmark-circle-outline" size={22} color={theme.colors.statusConnected} /></View><View style={styles.routeMain}><Text style={styles.noMissionTitle}>{t('mission.noActiveMission')}</Text><Text style={styles.muted}>{language === 'zh' ? '选择下方路线即可开始新的巡检。' : 'Choose a route below to start a new inspection.'}</Text></View></View></ProductCard>
           ) : (
-            <View style={styles.card}>
-              <View style={styles.cardRow}>
-                <View
-                  style={[styles.badge, { borderColor: stateColor(missionState) + '88' }]}
-                >
-                  <Text style={[styles.badgeText, { color: stateColor(missionState) }]}>
-                    {t(STATE_LABELS[missionState] ?? 'mission.state.none')}
-                  </Text>
-                </View>
-                <Text style={styles.muted} numberOfLines={1}>
-                  {mission?.route_id}
-                </Text>
-              </View>
-              <View style={styles.progressTrack}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    { width: `${progress * 100}%`, backgroundColor: stateColor(missionState) },
-                  ]}
-                />
-              </View>
-              <View style={styles.cardRow}>
-                <Text style={styles.muted}>{Math.round(progress * 100)}%</Text>
-                <Text style={styles.muted} numberOfLines={1}>
-                  {mission?.mission_id}
-                </Text>
-              </View>
-              {mission?.reason_text ? (
-                <Text style={styles.cardReason}>{mission.reason_text}</Text>
-              ) : null}
-              {missionActive ? (
-                <View style={styles.controlRow}>
-                  <TouchableOpacity
-                    style={[styles.controlButton, controlling && styles.disabled]}
-                    disabled={controlling || missionState === MISSION_STATE.PAUSED}
-                    activeOpacity={0.75}
-                    onPress={() => void runControl((mid) => pauseMission(transport!, mid))}
-                  >
-                    <Ionicons name="pause-outline" size={15} color={theme.colors.textValue} />
-                    <Text style={styles.controlText}>{t('mission.pause')}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.controlButton, controlling && styles.disabled]}
-                    disabled={controlling || missionState !== MISSION_STATE.PAUSED}
-                    activeOpacity={0.75}
-                    onPress={() => void runControl((mid) => resumeMission(transport!, mid))}
-                  >
-                    <Ionicons name="play-outline" size={15} color={theme.colors.textValue} />
-                    <Text style={styles.controlText}>{t('mission.resume')}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.controlButton, styles.controlCancel]}
-                    disabled={controlling}
-                    activeOpacity={0.75}
-                    onPress={onCancelPress}
-                  >
-                    <Ionicons name="close-outline" size={15} color={theme.colors.statusError} />
-                    <Text style={[styles.controlText, { color: theme.colors.statusError }]}>
-                      {t('mission.cancel')}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              ) : null}
-            </View>
+            <ProductCard emphasized>
+              <View style={styles.cardRow}><View style={styles.routeMain}><Text style={styles.activeRoute}>{mission?.route_id || mission?.mission_id}</Text><Text style={styles.activeMeta} numberOfLines={1}>{mission?.mission_id}</Text></View><StatusPill label={t(STATE_LABELS[missionState] ?? 'mission.state.none')} tone={missionState === MISSION_STATE.PAUSED ? 'warning' : missionState === MISSION_STATE.FAILED ? 'danger' : missionState === MISSION_STATE.SUCCEEDED ? 'success' : 'primary'} /></View>
+              <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: stateColor(missionState) }]} /></View>
+              <View style={styles.cardRow}><Text style={styles.progressLabel}>{language === 'zh' ? '巡检进度' : 'Inspection progress'}</Text><Text style={styles.progressValue}>{Math.round(progress * 100)}%</Text></View>
+              {mission?.reason_text ? <Text style={styles.cardReason}>{mission.reason_text}</Text> : null}
+              {missionActive ? <View style={styles.controlRow}><ProductButton label={t('mission.pause')} icon="pause" variant="secondary" disabled={controlling || missionState === MISSION_STATE.PAUSED} onPress={() => void runControl((mid) => pauseMission(transport!, mid))} /><ProductButton label={t('mission.resume')} icon="play" variant="secondary" disabled={controlling || missionState !== MISSION_STATE.PAUSED} onPress={() => void runControl((mid) => resumeMission(transport!, mid))} /><ProductButton label={t('mission.cancel')} icon="stop" variant="danger" disabled={controlling} onPress={onCancelPress} /></View> : null}
+            </ProductCard>
           )}
 
-          {/* ---- robot state strip ---- */}
-          <Text style={styles.section}>{t('mission.robot')}</Text>
-          <View style={styles.card}>
-            <View style={styles.cardRow}>
-              <Text style={styles.stripLabel}>
-                {t(LOC_LABELS[robotStrip?.localization_state ?? LOCALIZATION_STATE.UNKNOWN] ?? 'mission.loc.unknown')}
-              </Text>
-              <Text style={styles.muted} numberOfLines={1}>
-                {robotStrip?.map_id || t('mission.none')}
-              </Text>
-              <Text style={styles.muted}>
-                {Number.isFinite(robotStrip?.battery_percentage ?? NaN)
-                  ? `${Math.round(robotStrip!.battery_percentage)}%`
-                  : t('mission.none')}
-              </Text>
-              {robotStrip?.estop_latched ? (
-                <Text style={styles.estopText}>{t('mission.estop')}</Text>
-              ) : null}
-            </View>
-          </View>
+          <SectionHeader title={t('mission.robot')} />
+          <ProductCard><View style={styles.robotMetrics}>
+            <Metric icon="navigate-circle-outline" label={language === 'zh' ? '定位' : 'Localization'} value={t(LOC_LABELS[robotStrip?.localization_state ?? LOCALIZATION_STATE.UNKNOWN] ?? 'mission.loc.unknown')} tone={robotStrip?.localization_state === LOCALIZATION_STATE.LOCALIZED ? 'success' : 'warning'} />
+            <Metric icon="map-outline" label={language === 'zh' ? '地图' : 'Map'} value={robotStrip?.map_id || t('mission.none')} />
+            <Metric icon="battery-half-outline" label={language === 'zh' ? '电量' : 'Battery'} value={Number.isFinite(robotStrip?.battery_percentage ?? NaN) ? `${Math.round(robotStrip!.battery_percentage <= 1 ? robotStrip!.battery_percentage * 100 : robotStrip!.battery_percentage)}%` : t('mission.none')} />
+            <Metric icon="shield-checkmark-outline" label={language === 'zh' ? '安全' : 'Safety'} value={robotStrip?.estop_latched ? t('mission.estop') : (language === 'zh' ? '正常' : 'Ready')} tone={robotStrip?.estop_latched ? 'danger' : 'success'} />
+          </View></ProductCard>
 
-          {/* ---- event log ---- */}
-          <Text style={styles.section}>{t('mission.events')}</Text>
-          {events.length === 0 ? (
-            <Text style={styles.muted}>{t('mission.noEvents')}</Text>
-          ) : (
-            events.map((event) => (
-              <View key={`${event.mission_id}-${event.sequence}`} style={styles.eventRow}>
-                <Text style={styles.eventLabel}>
-                  {t(EVENT_LABELS[event.event] ?? 'mission.event.dispatched')}
-                </Text>
-                <Text style={styles.muted} numberOfLines={1}>
-                  {event.reason_text || ''}
-                </Text>
-                <Text style={styles.eventSeq}>#{event.sequence}</Text>
-              </View>
-            ))
-          )}
+          <SectionHeader title={t('mission.routes')} />
+          <ProductCard style={styles.routesCard}>
+            {!routesLoaded ? <View style={styles.loadingRow}><Ionicons name="sync-outline" size={18} color={theme.colors.textMuted} /><Text style={styles.muted}>{t('mission.routesLoading')}</Text></View> : routes.length === 0 ? <Text style={styles.muted}>{t('mission.noRoutes')}</Text> : routes.map((route) => {
+              const selected = route.routeId === selectedRouteId;
+              return <TouchableOpacity key={route.routeId} style={[styles.routeRow, selected && styles.routeRowSelected]} activeOpacity={0.75} onPress={() => useMissionStore.getState().selectRoute(selected ? null : route.routeId)}><View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name="git-branch-outline" size={19} color={selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View><View style={styles.routeMain}><Text style={styles.routeId}>{route.routeId}</Text><Text style={styles.muted}>{route.mapId ? t('mission.routeMap', { map: route.mapId }) : t('mission.routeUnbound')}</Text></View><Ionicons name={selected ? 'checkmark-circle' : 'ellipse-outline'} size={21} color={selected ? theme.colors.accentPrimary : theme.colors.borderDefault} /></TouchableOpacity>;
+            })}
+            <ProductButton label={dispatching ? t('mission.dispatching') : t('mission.dispatch')} icon="send" loading={dispatching} disabled={!selectedRouteId || dispatching} onPress={onDispatchPress} />
+          </ProductCard>
+
+          <SectionHeader title={language === 'zh' ? '最近动态' : 'Recent activity'} />
+          {events.length === 0 ? <ProductCard><Text style={styles.muted}>{t('mission.noEvents')}</Text></ProductCard> : <ProductCard style={styles.eventsCard}>{events.map((event, index) => <View key={`${event.mission_id}-${event.sequence}`} style={[styles.eventRow, index === events.length - 1 && styles.eventRowLast]}><View style={styles.timeline}><View style={styles.timelineDot} />{index < events.length - 1 ? <View style={styles.timelineLine} /> : null}</View><View style={styles.eventCopy}><Text style={styles.eventLabel}>{t(EVENT_LABELS[event.event] ?? 'mission.event.dispatched')}</Text><Text style={styles.muted} numberOfLines={2}>{event.reason_text || event.mission_id}</Text></View><Text style={styles.eventSeq}>#{event.sequence}</Text></View>)}</ProductCard>}
         </ScrollView>
       )}
     </SafeAreaView>
@@ -432,220 +299,37 @@ export default function MissionTab() {
 }
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: theme.colors.bgBase,
-  },
-  title: {
-    fontFamily: 'SpaceMono',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    color: theme.colors.textMuted,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
-    textTransform: 'uppercase',
-  },
-  scroll: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
-  },
-  section: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1,
-    color: theme.colors.textMuted,
-    marginTop: 16,
-    marginBottom: 8,
-    textTransform: 'uppercase',
-  },
-  muted: {
-    color: theme.colors.textMuted,
-    fontSize: 12,
-    fontFamily: 'SpaceMono',
-  },
-  empty: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    padding: 24,
-  },
-  emptyTitle: {
-    fontFamily: 'SpaceMono',
-    fontSize: 15,
-    fontWeight: '700',
-    color: theme.colors.textSecondary,
-  },
-  emptyHint: {
-    fontSize: 13,
-    color: theme.colors.textMuted,
-    textAlign: 'center',
-  },
-  errorBanner: {
-    marginTop: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.statusErrorGlow,
-    borderColor: theme.colors.statusError + '66',
-    borderWidth: 1,
-  },
-  errorText: {
-    color: theme.colors.statusError,
-    fontSize: 12,
-    fontFamily: 'SpaceMono',
-  },
-  routeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 6,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.bgSurface,
-  },
-  routeRowSelected: {
-    borderColor: theme.colors.accentPrimary + '88',
-    backgroundColor: theme.colors.accentPrimaryMuted,
-  },
-  routeMain: {
-    flex: 1,
-    gap: 2,
-  },
-  routeId: {
-    fontFamily: 'SpaceMono',
-    fontSize: 13,
-    fontWeight: '600',
-    color: theme.colors.textValue,
-  },
-  dispatchButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 42,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.accentPrimary,
-    marginTop: 4,
-  },
-  disabled: {
-    opacity: 0.45,
-  },
-  dispatchText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 13,
-    fontWeight: '700',
-    color: theme.colors.bgBase,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  card: {
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.bgSurface,
-    padding: 12,
-    gap: 8,
-  },
-  cardRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-  },
-  badgeText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: theme.colors.bgInset,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  cardReason: {
-    fontSize: 12,
-    color: theme.colors.textSecondary,
-  },
-  controlRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  controlButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 8,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderDefault,
-    backgroundColor: theme.colors.bgInset,
-  },
-  controlText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    fontWeight: '600',
-    color: theme.colors.textValue,
-    textTransform: 'uppercase',
-  },
-  controlCancel: {
-    borderColor: theme.colors.statusError + '55',
-  },
-  stripLabel: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    fontWeight: '700',
-    color: theme.colors.textValue,
-    textTransform: 'uppercase',
-  },
-  estopText: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    fontWeight: '700',
-    color: theme.colors.statusError,
-    textTransform: 'uppercase',
-  },
-  eventRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderSubtle,
-  },
-  eventLabel: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    fontWeight: '600',
-    color: theme.colors.textValue,
-    textTransform: 'uppercase',
-    width: 92,
-  },
-  eventSeq: {
-    fontFamily: 'SpaceMono',
-    fontSize: 11,
-    color: theme.colors.textMuted,
-  },
+  safe: { flex: 1, backgroundColor: theme.colors.bgBase },
+  scroll: { width: '100%', maxWidth: theme.sizes.contentMax, alignSelf: 'center', paddingHorizontal: 18, paddingBottom: 32 },
+  scrollLandscape: { maxWidth: 960, paddingHorizontal: 24 },
+  muted: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 17 },
+  noMissionRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  noMissionTitle: { fontSize: 15, fontWeight: '600', color: theme.colors.textPrimary, marginBottom: 3 },
+  cardRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  activeRoute: { ...theme.typography.headingMd, color: theme.colors.textPrimary },
+  activeMeta: { ...theme.typography.monoXs, color: theme.colors.textMuted, marginTop: 3 },
+  progressTrack: { height: 8, borderRadius: 4, backgroundColor: theme.colors.bgInset, overflow: 'hidden', marginTop: 16, marginBottom: 10 },
+  progressFill: { height: '100%', borderRadius: 4 },
+  progressLabel: { ...theme.typography.bodySm, color: theme.colors.textMuted },
+  progressValue: { ...theme.typography.monoMd, color: theme.colors.textPrimary },
+  cardReason: { fontSize: 12, color: theme.colors.textSecondary, marginTop: 8 },
+  controlRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
+  robotMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  routesCard: { paddingTop: 4, gap: 12 },
+  routeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 11, borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle },
+  routeRowSelected: { backgroundColor: theme.colors.accentPrimaryMuted, borderRadius: theme.radius.md, paddingHorizontal: 10, borderBottomColor: theme.colors.accentPrimary + '55' },
+  routeIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.bgSurface },
+  routeIconSelected: { backgroundColor: theme.colors.accentPrimaryMuted },
+  routeMain: { flex: 1, minWidth: 0 },
+  routeId: { fontSize: 14, fontWeight: '600', color: theme.colors.textValue, marginBottom: 2 },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 },
+  eventsCard: { paddingVertical: 4 },
+  eventRow: { minHeight: 58, flexDirection: 'row', alignItems: 'stretch', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle },
+  eventRowLast: { borderBottomWidth: 0 },
+  eventCopy: { flex: 1, minWidth: 0, justifyContent: 'center' },
+  eventLabel: { fontSize: 12, fontWeight: '600', color: theme.colors.textValue, marginBottom: 2 },
+  eventSeq: { ...theme.typography.monoXs, color: theme.colors.textMuted, alignSelf: 'center' },
+  timeline: { width: 20, alignItems: 'center' },
+  timelineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.accentPrimary, marginTop: 8 },
+  timelineLine: { width: 1, flex: 1, backgroundColor: theme.colors.borderDefault, marginTop: 4 },
 });

@@ -10,14 +10,16 @@ interface Props {
   value: string;
   filterMessageTypes?: string[];
   onSelect: (topic: string) => void;
+  language?: 'zh' | 'en';
 }
 
-export function TopicPicker({ value, filterMessageTypes, onSelect }: Props) {
+export function TopicPicker({ value, filterMessageTypes, onSelect, language = 'en' }: Props) {
   const [topics, setTopics] = useState<TopicInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [manualEntry, setManualEntry] = useState('');
   const transport = useRosStore((s) => s.transport);
+  const zh = language === 'zh';
 
   const discover = async () => {
     if (!transport) return;
@@ -43,7 +45,7 @@ export function TopicPicker({ value, filterMessageTypes, onSelect }: Props) {
   if (!expanded) {
     return (
       <TouchableOpacity style={styles.collapsed} onPress={() => setExpanded(true)}>
-        <Text style={styles.topicValue}>{value || 'Select topic...'}</Text>
+        <Text style={styles.topicValue} numberOfLines={1}>{value || (zh ? '选择话题…' : 'Select topic...')}</Text>
         <Ionicons name="chevron-down" size={16} color={theme.colors.textMuted} />
       </TouchableOpacity>
     );
@@ -52,7 +54,7 @@ export function TopicPicker({ value, filterMessageTypes, onSelect }: Props) {
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.header} onPress={() => setExpanded(false)}>
-        <Text style={styles.topicValue}>{value || 'Select topic...'}</Text>
+        <Text style={styles.topicValue} numberOfLines={1}>{value || (zh ? '选择话题…' : 'Select topic...')}</Text>
         <Ionicons name="chevron-up" size={16} color={theme.colors.textMuted} />
       </TouchableOpacity>
 
@@ -62,7 +64,7 @@ export function TopicPicker({ value, filterMessageTypes, onSelect }: Props) {
             style={styles.manualInput}
             value={manualEntry}
             onChangeText={setManualEntry}
-            placeholder="Filter or enter /topic/name"
+            placeholder={zh ? '筛选或输入 /topic/name' : 'Filter or enter /topic/name'}
             placeholderTextColor={theme.colors.textMuted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -78,7 +80,7 @@ export function TopicPicker({ value, filterMessageTypes, onSelect }: Props) {
             }}
             disabled={!manualEntry.trim()}
           >
-            <Text style={styles.manualButtonText}>SET</Text>
+            <Text style={styles.manualButtonText}>{zh ? '确定' : 'SET'}</Text>
           </TouchableOpacity>
         </View>
 
@@ -104,14 +106,16 @@ export function TopicPicker({ value, filterMessageTypes, onSelect }: Props) {
             </ScrollView>
           ) : (
             <Text style={styles.emptyText}>
-              {topics.length > 0 ? 'No matching topics.' : 'No topics found. Enter manually above.'}
+              {topics.length > 0
+                ? (zh ? '没有匹配的话题。' : 'No matching topics.')
+                : (zh ? '没有发现话题，可在上方手工输入。' : 'No topics found. Enter manually above.')}
             </Text>
           );
         })()}
 
         <TouchableOpacity style={styles.refreshButton} onPress={discover}>
           <Ionicons name="refresh" size={14} color={theme.colors.textSecondary} />
-          <Text style={styles.refreshText}>REFRESH</Text>
+          <Text style={styles.refreshText}>{zh ? '刷新' : 'REFRESH'}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -145,6 +149,8 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.colors.borderSubtle,
   },
   topicValue: {
+    flex: 1,
+    minWidth: 0,
     fontFamily: 'SpaceMono',
     fontSize: 13,
     color: theme.colors.textValue,

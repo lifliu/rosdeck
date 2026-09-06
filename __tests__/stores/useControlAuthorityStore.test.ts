@@ -29,4 +29,20 @@ describe('useControlAuthorityStore', () => {
     useControlAuthorityStore.getState().applyStatus({ state: 'unsupported' });
     expect(mobileControlBlocksCommands()).toBe(false);
   });
+
+  it('allows teleop but preserves the Mission base owner during an override', () => {
+    useControlAuthorityStore.getState().applyStatus({
+      state: 'override_available', baseOwnerId: 'mission-42',
+    });
+    expect(useControlAuthorityStore.getState().status).toBe('override_available');
+    expect(mobileControlBlocksCommands()).toBe(true);
+
+    useControlAuthorityStore.getState().applyStatus({
+      state: 'override_acquired',
+      ownerId: CONTROL_CLIENT_ID,
+      baseOwnerId: 'mission-42',
+    });
+    expect(useControlAuthorityStore.getState().baseOwnerId).toBe('mission-42');
+    expect(mobileControlBlocksCommands()).toBe(false);
+  });
 });

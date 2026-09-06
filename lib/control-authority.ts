@@ -8,6 +8,8 @@ export type ControlAction = 'acquire' | 'release' | 'heartbeat' | 'status';
 export type ParsedControlStatus =
   | { state: 'available' | 'unsupported' }
   | { state: 'acquiring' | 'acquired' | 'releasing'; ownerId: string }
+  | { state: 'override_available'; baseOwnerId: string }
+  | { state: 'override_acquired'; ownerId: string; baseOwnerId: string }
   | { state: 'cooldown'; remainingSeconds: number }
   | { state: 'error'; action: string; clientId: string; reason: string };
 
@@ -21,6 +23,12 @@ export function parseControlStatus(message: any): ParsedControlStatus | null {
   if (state === 'available' || state === 'unsupported') return { state };
   if ((state === 'acquiring' || state === 'acquired' || state === 'releasing') && value) {
     return { state, ownerId: value };
+  }
+  if (state === 'override_available' && value) {
+    return { state, baseOwnerId: value };
+  }
+  if (state === 'override_acquired' && value && details[0]) {
+    return { state, ownerId: value, baseOwnerId: details[0] };
   }
   if (state === 'cooldown') {
     const remainingSeconds = Number.parseInt(value ?? '', 10);

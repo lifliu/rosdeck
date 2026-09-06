@@ -26,6 +26,12 @@ describe('mobile control authority protocol', () => {
     expect(parseControlStatus({ data: 'cooldown:3' })).toEqual({
       state: 'cooldown', remainingSeconds: 3,
     });
+    expect(parseControlStatus({ data: 'override_available:mission-42' })).toEqual({
+      state: 'override_available', baseOwnerId: 'mission-42',
+    });
+    expect(parseControlStatus({ data: 'override_acquired:app-123:mission-42' })).toEqual({
+      state: 'override_acquired', ownerId: 'app-123', baseOwnerId: 'mission-42',
+    });
   });
 
   it('parses errors and rejects malformed states', () => {

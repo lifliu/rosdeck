@@ -7,7 +7,7 @@ import type {
 } from "./transport";
 
 const DEMO_TOPICS: TopicInfo[] = [
-  { name: "/omni/cmd_vel/teleop", type: "geometry_msgs/msg/TwistStamped" },
+  { name: "/omni/control/teleop", type: "omni_robot_interfaces/msg/TeleopCommand" },
   { name: "/vel_cmd", type: "geometry_msgs/msg/Twist" },
   { name: "/camera/image_raw/compressed", type: "sensor_msgs/msg/CompressedImage" },
   { name: "/map", type: "nav_msgs/msg/OccupancyGrid" },
