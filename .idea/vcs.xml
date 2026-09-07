@@ -3,6 +3,5 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/sdk/vbot_ros2_msgs" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/sdk/walk-with-datou" vcs="Git" />
   </component>
 </project>

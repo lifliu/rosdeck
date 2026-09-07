@@ -1,0 +1,6 @@
+[0.042s] colcon DEBUG Command line arguments: ['/usr/bin/colcon', 'test-result', '--test-result-base', '/tmp/omni_logging_build/build/rosdeck_robot_bridge']
+[0.042s] colcon DEBUG Parsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='test-result', test_result_base='/tmp/omni_logging_build/build/rosdeck_robot_bridge', all=False, result_files_only=False, verbose=False, delete=False, delete_yes=False, verb_parser=<colcon_defaults.argument_parser.defaults.DefaultArgumentsDecorator object at 0x72b12a24fca0>, verb_extension=<colcon_test_result.verb.test_result.TestResultVerb object at 0x72b12a24e590>, main=<bound method TestResultVerb.main of <colcon_test_result.verb.test_result.TestResultVerb object at 0x72b12a24e590>>)
+[0.043s] colcon.colcon_test_result.test_result Level 1 get_test_results(ctest)
+[0.044s] colcon.colcon_test_result.test_result Level 1 get_test_results(xunit)
+[0.045s] colcon.colcon_test_result.test_result.xunit DEBUG Skipping '/tmp/omni_logging_build/build/rosdeck_robot_bridge/Testing/20260904-0603/Test.xml': the root tag is neither 'testsuite' nor 'testsuites'
+[0.045s] colcon.colcon_test_result.test_result.xunit DEBUG Skipping '/tmp/omni_logging_build/build/rosdeck_robot_bridge/Testing/20260904-0611/Test.xml': the root tag is neither 'testsuite' nor 'testsuites'
