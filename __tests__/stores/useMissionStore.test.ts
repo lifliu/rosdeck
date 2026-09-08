@@ -24,6 +24,7 @@ function resetStore() {
 
 function status(overrides: Partial<MissionStatusMessage> = {}): MissionStatusMessage {
   return {
+    header: {},
     state: MISSION_STATE.EXECUTING,
     mission_id: 'm1',
     request_id: 'req-1',
@@ -32,11 +33,15 @@ function status(overrides: Partial<MissionStatusMessage> = {}): MissionStatusMes
     map_id: '',
     map_version: '',
     progress: 0,
+    current_checkpoint_id: '',
+    status_text: '',
     reason_code: 0,
     reason_text: '',
     request_source: 'test-app',
     map_checksum: '',
     route_checksum: '',
+    requested_at: {},
+    deadline: {},
     ...overrides,
   };
 }

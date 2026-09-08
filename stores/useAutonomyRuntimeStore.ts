@@ -125,7 +125,16 @@ export const useAutonomyRuntimeStore = create<AutonomyRuntimeStore>((set, get) =
   markStale: () => set({ stale: true }),
 
   beginCommand: (command) => {
-    if (get().pendingCommand !== null) return false;
+    const state = get();
+    const pending = state.pendingCommand;
+    const finishingPreparingRecording = command.kind === 'finish_route_recording' &&
+      pending?.kind === 'set_mode' &&
+      pending.desiredMode === AUTONOMY_MODE.ROUTE_RECORDING &&
+      state.routeRecordingOperationId !== '';
+    // 路线录制启动会等待首个有效里程计，可能长时间停留在 STARTING。
+    // Manager 已在受理启动时冻结 recording_operation_id，并明确允许此时结束；
+    // 因此结束请求可以替换仍在等待的启动请求，避免 APP 出现“只能开始、不能结束”。
+    if (pending !== null && !finishingPreparingRecording) return false;
     set({ pendingCommand: command, lastError: null });
     return true;
   },

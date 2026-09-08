@@ -71,12 +71,14 @@ export function RouteRecordingControl() {
   const phase = runtime?.phase ?? AUTONOMY_PHASE.IDLE;
   const synchronized = runtime !== null && !runtimeStale;
   const recording = runtime?.mode === AUTONOMY_MODE.ROUTE_RECORDING;
-  const recordingReady = recording && runtime?.ready === true &&
-    phase === AUTONOMY_PHASE.READY;
-  const recordingFinishable = recording &&
-    (recordingReady || phase === AUTONOMY_PHASE.ERROR);
   const recordingStarting = runtime?.desired_mode === AUTONOMY_MODE.ROUTE_RECORDING &&
     phaseIsTransitioning(phase);
+  // Manager 在 STARTING 前就发布稳定的 recording_operation_id。首个里程计
+  // 尚未到达时也必须显示“结束录制”，否则用户会被困在启动等待阶段。
+  const recordingSessionActive = Boolean(recordingOperationId) &&
+    (recording || recordingStarting || phase === AUTONOMY_PHASE.ERROR);
+  const recordingFinishable = recordingSessionActive &&
+    phase !== AUTONOMY_PHASE.STOPPING && phase !== AUTONOMY_PHASE.CONFLICT;
   const runtimeFault = phase === AUTONOMY_PHASE.ERROR || phase === AUTONOMY_PHASE.CONFLICT;
   const missionActive = ACTIVE_MISSION_STATES.includes(missionState);
   const navigationActive = !navigationStale && ACTIVE_NAVIGATION_STATES.includes(navigationState);
@@ -97,7 +99,8 @@ export function RouteRecordingControl() {
     Boolean(recordingOperationId);
   const commandPending = pendingCommand?.kind === 'finish_route_recording' ||
     (pendingCommand?.kind === 'set_mode' &&
-      pendingCommand.desiredMode === AUTONOMY_MODE.ROUTE_RECORDING);
+      pendingCommand.desiredMode === AUTONOMY_MODE.ROUTE_RECORDING &&
+      !recordingSessionActive);
 
   const mapLabel = useMemo(() => {
     const identity = setupOpen ? selectedMap : currentMapIdentity;
@@ -239,7 +242,7 @@ export function RouteRecordingControl() {
           />
           <Text style={[styles.buttonText, recordingFinishable && styles.recordingText]}>{label}</Text>
         </TouchableOpacity>
-        {recording ? (
+        {recordingSessionActive ? (
           <Text style={styles.assetText} numberOfLines={1}>
             {t('routeRecording.activeRoute', { route: runtime?.route_id || routeId })}
           </Text>
@@ -247,7 +250,7 @@ export function RouteRecordingControl() {
         <Text style={styles.assetText} numberOfLines={1}>
           {t('routeRecording.boundMap', { map: mapLabel })}
         </Text>
-        {recordingFinishable ? (
+        {recordingSessionActive ? (
           <Text style={runtime?.route_has_unsaved_data ? styles.unsavedText : styles.assetText}>
             {runtime?.route_has_unsaved_data
               ? t('routeRecording.unsaved', {

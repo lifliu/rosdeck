@@ -172,6 +172,34 @@ describe('useAutonomyRuntimeStore command serialization', () => {
     expect(useAutonomyRuntimeStore.getState().routeRecordingOperationId).toBe('');
   });
 
+  it('allows finish to replace a route start waiting for its first odometry sample', () => {
+    expect(useAutonomyRuntimeStore.getState().beginCommand({
+      kind: 'set_mode',
+      desiredMode: AUTONOMY_MODE.ROUTE_RECORDING,
+    })).toBe(true);
+    useAutonomyRuntimeStore.getState().completeCommand({
+      accepted: true,
+      operation_id: 'record-route-starting',
+      reason_code: 0,
+      reason_text: '',
+      runtime_generation: 2,
+    });
+    useAutonomyRuntimeStore.getState().onStatus(runtimeStatus({
+      desired_mode: AUTONOMY_MODE.ROUTE_RECORDING,
+      phase: AUTONOMY_PHASE.STARTING,
+      operation_id: 'record-route-starting',
+      recording_operation_id: 'record-route-starting',
+      route_id: 'route-starting',
+    }));
+
+    expect(useAutonomyRuntimeStore.getState().beginCommand({
+      kind: 'finish_route_recording',
+    })).toBe(true);
+    expect(useAutonomyRuntimeStore.getState().pendingCommand).toEqual({
+      kind: 'finish_route_recording',
+    });
+  });
+
   it('cold-recovers the recording session identity from an ERROR snapshot', () => {
     useAutonomyRuntimeStore.getState().onStatus(runtimeStatus({
       mode: AUTONOMY_MODE.ROUTE_RECORDING,

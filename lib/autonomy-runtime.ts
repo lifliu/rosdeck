@@ -266,6 +266,11 @@ export function generateMappingMapId(now = new Date()): string {
   return `map-${timestamp}-${suffix}`;
 }
 
+/** 地图 ID 会成为机器人端目录名，只允许 MapStore 支持的可移植字符集合。 */
+export function isValidMapId(mapId: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(mapId);
+}
+
 /** 生成可直接用作文件资产键的默认路线 ID。 */
 export function generateRouteId(now = new Date()): string {
   // 保留毫秒，连续完成并立即开始下一次录制时也不会复用刚保存的资产键。

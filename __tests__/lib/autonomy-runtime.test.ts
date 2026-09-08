@@ -15,6 +15,7 @@ import {
   finishMapping,
   finishRouteRecording,
   generateMappingMapId,
+  isValidMapId,
   isValidAutonomyRuntimeStatus,
   normalizeAutonomyRuntimeStatus,
   setAutonomyMode,
@@ -340,5 +341,12 @@ describe('generateMappingMapId', () => {
     const mapId = generateMappingMapId(new Date('2026-09-06T12:34:56.789Z'));
     expect(mapId).toMatch(/^map-20260906T123456Z-[a-z0-9]{4}$/);
     expect(mapId).not.toContain(':');
+  });
+
+  it('validates the same path-safe map identifiers as the robot MapStore', () => {
+    expect(isValidMapId('factory_a-floor.2')).toBe(true);
+    expect(isValidMapId('工厂A')).toBe(false);
+    expect(isValidMapId('-factory-a')).toBe(false);
+    expect(isValidMapId(`m${'a'.repeat(64)}`)).toBe(false);
   });
 });

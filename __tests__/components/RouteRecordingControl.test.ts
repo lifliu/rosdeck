@@ -29,6 +29,13 @@ describe('RouteRecordingControl contract', () => {
     expect(source).toContain('phase === AUTONOMY_PHASE.ERROR');
   });
 
+  it('offers finish as soon as Manager publishes the recording session identity', () => {
+    expect(source).toContain('const recordingSessionActive = Boolean(recordingOperationId)');
+    expect(source).toContain('recording || recordingStarting');
+    expect(source).toContain('!recordingSessionActive');
+    expect(source).toContain("t('routeRecording.recording'");
+  });
+
   it('requires a fresh catalog selection when runtime has no map identity', () => {
     expect(source).toContain('<MapCatalogPicker');
     expect(source).toContain('setMapPickerOpen(true)');

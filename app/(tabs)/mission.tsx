@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { EmptyState, InlineNotice, Metric, ProductButton, ProductCard, ProductHeader, SectionHeader, StatusPill } from '../../components/ProductUI';
+import { RouteCheckpointEditor } from '../../components/RouteCheckpointEditor';
 import { theme } from '../../constants/theme';
 import { createMissionRequestEnvelope } from '../../lib/autonomy-runtime';
 import { useOrientation } from '../../hooks/useOrientation';
@@ -20,17 +21,20 @@ import {
   DEFAULT_INSPECTION_COMMAND_TTL_SEC,
   cancelMission,
   dispatchMission,
+  getCheckpointResults,
   listRoutes,
   pauseMission,
   resumeMission,
 } from '../../lib/mission/api';
 import {
   ACTIVE_MISSION_STATES,
+  CHECKPOINT_RESULT_STATUS,
   getRouteDispatchBlockReason,
   LOCALIZATION_STATE,
   MISSION_EVENT,
   MISSION_STATE,
   type ControlResponse,
+  type CheckpointEvidenceResult,
   type RouteDispatchBlockReason,
 } from '../../lib/mission/types';
 import { useMissionStore } from '../../stores/useMissionStore';
@@ -107,6 +111,7 @@ export default function MissionTab() {
   const { t, language } = useTranslation();
   const router = useRouter();
   const { isLandscape } = useOrientation();
+  const [checkpointEditorOpen, setCheckpointEditorOpen] = useState(false);
 
   const routes = useMissionStore((s) => s.routes);
   const routesLoaded = useMissionStore((s) => s.routesLoaded);
@@ -119,6 +124,10 @@ export default function MissionTab() {
   const dispatching = useMissionStore((s) => s.dispatching);
   const controlling = useMissionStore((s) => s.controlling);
   const lastError = useMissionStore((s) => s.lastError);
+  const [checkpointResults, setCheckpointResults] = useState<CheckpointEvidenceResult[]>([]);
+  const [checkpointResultsLoading, setCheckpointResultsLoading] = useState(false);
+  const [checkpointResultsError, setCheckpointResultsError] = useState('');
+  const checkpointResultsRequestSerial = useRef(0);
 
   const connected =
     status === 'connected' && !!transport && !url?.startsWith('demo://');
@@ -139,13 +148,62 @@ export default function MissionTab() {
     }
   }, [connected, transport]);
 
+  const refreshCheckpointResults = useCallback(async (
+    missionId: string,
+    showError = false,
+  ) => {
+    const serial = ++checkpointResultsRequestSerial.current;
+    if (!connected || !transport || !missionId) {
+      setCheckpointResults([]);
+      setCheckpointResultsError('');
+      setCheckpointResultsLoading(false);
+      return;
+    }
+    setCheckpointResultsLoading(true);
+    if (showError) setCheckpointResultsError('');
+    try {
+      const results = await getCheckpointResults(transport, missionId);
+      if (serial === checkpointResultsRequestSerial.current) {
+        setCheckpointResults(results);
+      }
+    } catch (error: any) {
+      if (serial === checkpointResultsRequestSerial.current) {
+        setCheckpointResults([]);
+        if (showError) setCheckpointResultsError(error?.message || String(error));
+      }
+    } finally {
+      if (serial === checkpointResultsRequestSerial.current) {
+        setCheckpointResultsLoading(false);
+      }
+    }
+  }, [connected, transport]);
+
   // Expo Tabs 会保留页面实例。录线页保存新资产后再切回本页时，
   // 必须按焦点重读机器人端目录，不能继续显示上次挂载时的缓存。
   useFocusEffect(
     useCallback(() => {
       void refreshRoutes();
-    }, [refreshRoutes]),
+      const missionId = useMissionStore.getState().status?.mission_id ?? '';
+      if (missionId) void refreshCheckpointResults(missionId);
+    }, [refreshCheckpointResults, refreshRoutes]),
   );
+
+  // 任务身份切换时立即丢弃上一任务的证据，并使仍在飞行的旧查询失效。
+  // 否则新任务执行期间可能短暂显示上一任务的照片或识别结果。
+  useEffect(() => {
+    checkpointResultsRequestSerial.current += 1;
+    setCheckpointResults([]);
+    setCheckpointResultsError('');
+    setCheckpointResultsLoading(false);
+  }, [mission?.mission_id]);
+
+  // 任务进入终态时从 SQLite 权威查询结果；不能依赖手机在线期间恰好收到 live topic。
+  useEffect(() => {
+    if (!missionStatusStale && mission?.mission_id &&
+      !ACTIVE_MISSION_STATES.includes(mission.state)) {
+      void refreshCheckpointResults(mission.mission_id);
+    }
+  }, [mission?.mission_id, mission?.state, missionStatusStale, refreshCheckpointResults]);
 
   // 派发请求以 request_id 保证幂等；确认后仍需按最新 Store 做最终门禁。
   const runDispatch = useCallback(
@@ -329,6 +387,8 @@ export default function MissionTab() {
               <View style={styles.cardRow}><View style={styles.routeMain}><Text style={styles.activeRoute}>{mission?.route_id || mission?.mission_id}</Text><Text style={styles.activeMeta} numberOfLines={1}>{mission?.mission_id}</Text></View><StatusPill label={t(STATE_LABELS[missionState] ?? 'mission.state.none')} tone={missionState === MISSION_STATE.PAUSED ? 'warning' : missionState === MISSION_STATE.FAILED ? 'danger' : missionState === MISSION_STATE.SUCCEEDED ? 'success' : 'primary'} /></View>
               <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: stateColor(missionState) }]} /></View>
               <View style={styles.cardRow}><Text style={styles.progressLabel}>{language === 'zh' ? '巡检进度' : 'Inspection progress'}</Text><Text style={styles.progressValue}>{Math.round(progress * 100)}%</Text></View>
+              {mission?.current_checkpoint_id ? <Text style={styles.checkpointNow}>{language === 'zh' ? '当前检查点' : 'Checkpoint'} · {mission.current_checkpoint_id}</Text> : null}
+              {mission?.status_text ? <Text style={styles.cardReason}>{mission.status_text}</Text> : null}
               {mission?.reason_text ? <Text style={styles.cardReason}>{mission.reason_text}</Text> : null}
               {missionActive ? <View style={styles.controlRow}><ProductButton label={t('mission.pause')} icon="pause" variant="secondary" disabled={controlling || missionState === MISSION_STATE.PAUSED} onPress={() => void runControl((mid) => pauseMission(transport!, mid))} /><ProductButton label={t('mission.resume')} icon="play" variant="secondary" disabled={controlling || missionState !== MISSION_STATE.PAUSED} onPress={() => void runControl((mid) => resumeMission(transport!, mid))} /><ProductButton label={t('mission.cancel')} icon="stop" variant="danger" disabled={controlling} onPress={onCancelPress} /></View> : null}
             </ProductCard>
@@ -370,14 +430,49 @@ export default function MissionTab() {
                 useMissionStore.getState().selectRoute(selected ? null : route.routeId);
               }}><View style={[styles.routeIcon, selected && styles.routeIconSelected]}><Ionicons name={blocked ? 'warning-outline' : 'git-branch-outline'} size={19} color={blocked ? theme.colors.statusConnecting : selected ? theme.colors.accentPrimary : theme.colors.textSecondary} /></View><View style={styles.routeMain}><Text style={[styles.routeId, blocked && styles.routeIdBlocked]}>{route.routeId}</Text><Text style={styles.muted} numberOfLines={1}>{assetMeta}</Text>{blockReason ? <Text style={styles.routeBlockReason}>{t(ROUTE_BLOCK_LABELS[blockReason])}</Text> : null}</View><Ionicons name={selected ? 'checkmark-circle' : blocked ? 'alert-circle-outline' : 'ellipse-outline'} size={21} color={selected ? theme.colors.accentPrimary : blocked ? theme.colors.statusConnecting : theme.colors.borderDefault} /></TouchableOpacity>;
             })}
-            <ProductButton label={dispatching ? t('mission.dispatching') : t('mission.dispatch')} icon="send" loading={dispatching} disabled={!selectedRouteId || !!selectedRouteBlocked || !!dispatchBlockedByRobot || dispatching} onPress={onDispatchPress} />
+            <View style={styles.routeActions}>
+              <ProductButton
+                label={language === 'zh' ? '编辑检查点' : 'Edit checkpoints'}
+                icon="create-outline"
+                variant="secondary"
+                disabled={!selectedRoute || !!selectedRouteBlocked || missionActive || dispatching}
+                onPress={() => setCheckpointEditorOpen(true)}
+              />
+              <ProductButton label={dispatching ? t('mission.dispatching') : t('mission.dispatch')} icon="send" loading={dispatching} disabled={!selectedRouteId || !!selectedRouteBlocked || !!dispatchBlockedByRobot || dispatching} onPress={onDispatchPress} />
+            </View>
             {dispatchBlockedByRobot ? <Text style={styles.dispatchBlockReason}>{t(dispatchBlockedByRobot)}</Text> : null}
           </ProductCard>
 
           <SectionHeader title={language === 'zh' ? '最近动态' : 'Recent activity'} />
           {events.length === 0 ? <ProductCard><Text style={styles.muted}>{t('mission.noEvents')}</Text></ProductCard> : <ProductCard style={styles.eventsCard}>{events.map((event, index) => <View key={`${event.mission_id}-${event.sequence}`} style={[styles.eventRow, index === events.length - 1 && styles.eventRowLast]}><View style={styles.timeline}><View style={styles.timelineDot} />{index < events.length - 1 ? <View style={styles.timelineLine} /> : null}</View><View style={styles.eventCopy}><Text style={styles.eventLabel}>{t(EVENT_LABELS[event.event] ?? 'mission.event.dispatched')}</Text><Text style={styles.muted} numberOfLines={2}>{event.reason_text || event.mission_id}</Text></View><Text style={styles.eventSeq}>#{event.sequence}</Text></View>)}</ProductCard>}
+
+          {mission?.mission_id ? <>
+            <SectionHeader
+              title={language === 'zh' ? '检查点结果' : 'Checkpoint results'}
+              actionLabel={language === 'zh' ? '刷新' : 'Refresh'}
+              onAction={() => void refreshCheckpointResults(mission.mission_id, true)}
+            />
+            <ProductCard style={styles.resultsCard}>
+              {checkpointResultsLoading ? <View style={styles.loadingRow}><Ionicons name="sync-outline" size={18} color={theme.colors.textMuted} /><Text style={styles.muted}>{language === 'zh' ? '正在读取持久结果…' : 'Loading durable results…'}</Text></View> : checkpointResultsError ? <Text style={styles.resultError}>{checkpointResultsError}</Text> : checkpointResults.length === 0 ? <Text style={styles.muted}>{language === 'zh' ? '当前任务还没有拍照、录像或识别结果。停留动作不产生证据记录。' : 'No photo, recording, or recognition results yet. Dwell actions do not create evidence records.'}</Text> : checkpointResults.map((result) => {
+                const succeeded = result.status === CHECKPOINT_RESULT_STATUS.SUCCEEDED;
+                const skipped = result.status === CHECKPOINT_RESULT_STATUS.SKIPPED;
+                const resultText = result.resultJson || result.artifactPath || result.reason;
+                return <View key={`${result.missionId}-${result.sequence}`} style={styles.resultRow}><View style={[styles.resultIcon, succeeded ? styles.resultIconSuccess : skipped ? styles.resultIconWarning : styles.resultIconDanger]}><Ionicons name={succeeded ? 'checkmark' : skipped ? 'play-skip-forward' : 'close'} size={16} color={succeeded ? theme.colors.statusConnected : skipped ? theme.colors.statusConnecting : theme.colors.statusError} /></View><View style={styles.resultMain}><Text style={styles.resultTitle}>{result.checkpointId} · {result.actionType}</Text><Text style={styles.muted}>{language === 'zh' ? `尝试 ${result.attempts} 次` : `${result.attempts} attempt(s)`}{result.poseValid ? (language === 'zh' ? ' · 位姿已记录' : ' · pose recorded') : ''}</Text>{resultText ? <Text style={styles.resultDetail} numberOfLines={2}>{resultText}</Text> : null}</View><Text style={styles.eventSeq}>#{result.sequence}</Text></View>;
+              })}
+            </ProductCard>
+          </> : null}
         </ScrollView>
       )}
+      <RouteCheckpointEditor
+        visible={checkpointEditorOpen}
+        route={selectedRoute ?? null}
+        onCancel={() => setCheckpointEditorOpen(false)}
+        onSaved={async () => {
+          const routeId = selectedRoute?.routeId ?? '';
+          await refreshRoutes(true);
+          if (routeId) useMissionStore.getState().selectRoute(routeId);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -397,9 +492,11 @@ const styles = StyleSheet.create({
   progressLabel: { ...theme.typography.bodySm, color: theme.colors.textMuted },
   progressValue: { ...theme.typography.monoMd, color: theme.colors.textPrimary },
   cardReason: { fontSize: 12, color: theme.colors.textSecondary, marginTop: 8 },
+  checkpointNow: { marginTop: 9, color: theme.colors.accentPrimary, fontSize: 12, fontWeight: '600' },
   controlRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
   robotMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   routesCard: { paddingTop: 4, gap: 12 },
+  routeActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 },
   routeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 11, borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle },
   routeRowSelected: { backgroundColor: theme.colors.accentPrimaryMuted, borderRadius: theme.radius.md, paddingHorizontal: 10, borderBottomColor: theme.colors.accentPrimary + '55' },
   routeRowBlocked: { opacity: 0.72 },
@@ -420,4 +517,14 @@ const styles = StyleSheet.create({
   timeline: { width: 20, alignItems: 'center' },
   timelineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.accentPrimary, marginTop: 8 },
   timelineLine: { width: 1, flex: 1, backgroundColor: theme.colors.borderDefault, marginTop: 4 },
+  resultsCard: { paddingVertical: 4 },
+  resultRow: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle },
+  resultIcon: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
+  resultIconSuccess: { borderColor: theme.colors.statusConnected + '66', backgroundColor: theme.colors.statusConnectedGlow },
+  resultIconWarning: { borderColor: theme.colors.statusConnecting + '66', backgroundColor: theme.colors.statusConnectingGlow },
+  resultIconDanger: { borderColor: theme.colors.statusError + '66', backgroundColor: theme.colors.statusErrorGlow },
+  resultMain: { flex: 1, minWidth: 0 },
+  resultTitle: { color: theme.colors.textValue, fontSize: 12, fontWeight: '700' },
+  resultDetail: { marginTop: 4, color: theme.colors.textSecondary, fontFamily: 'SpaceMono', fontSize: 9, lineHeight: 14 },
+  resultError: { color: theme.colors.statusError, fontSize: 11, lineHeight: 17 },
 });

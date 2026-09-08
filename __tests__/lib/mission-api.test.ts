@@ -4,16 +4,31 @@ import {
   MISSION_CONTROL_SERVICE_TYPE,
   MISSION_DISPATCH_SERVICE,
   MISSION_DISPATCH_SERVICE_TYPE,
+  MISSION_GET_ROUTE_CHECKPOINTS_SERVICE,
+  MISSION_GET_ROUTE_CHECKPOINTS_SERVICE_TYPE,
   MISSION_LIST_ROUTES_SERVICE,
   MISSION_LIST_ROUTES_SERVICE_TYPE,
+  MISSION_RESULTS_SERVICE,
+  MISSION_RESULTS_SERVICE_TYPE,
+  MISSION_UPDATE_ROUTE_CHECKPOINTS_SERVICE,
+  MISSION_UPDATE_ROUTE_CHECKPOINTS_SERVICE_TYPE,
   cancelMission,
   dispatchMission,
   generateRequestId,
+  getRouteCheckpoints,
+  getCheckpointResults,
   listRoutes,
   pauseMission,
   resumeMission,
+  updateRouteCheckpoints,
+  validateRouteCheckpointPlan,
 } from '../../lib/mission/api';
-import { MISSION_CONTROL_CMD } from '../../lib/mission/types';
+import {
+  MISSION_CONTROL_CMD,
+  ROUTE_CHECKPOINT_ACTION_TYPE,
+  ROUTE_CHECKPOINT_FAILURE,
+  type RouteCheckpointPlan,
+} from '../../lib/mission/types';
 import type { Transport } from '../../lib/transport';
 import { getLocalServiceSchema } from '../../lib/ros-service-schemas';
 import { parse as parseMessageDefinition } from '@foxglove/rosmsg';
@@ -241,5 +256,218 @@ describe('listRoutes', () => {
   it('returns [] when the response has no route_ids', async () => {
     const { transport } = makeTransport(() => ({}));
     await expect(listRoutes(transport)).resolves.toEqual([]);
+  });
+});
+
+describe('route checkpoint editor services', () => {
+  const plan: RouteCheckpointPlan = {
+    routeChecksum: 'route-digest-1',
+    pointCount: 20,
+    checkpoints: [{
+      checkpointId: 'meter-01',
+      pointIndex: 8,
+      onFailure: ROUTE_CHECKPOINT_FAILURE.FAIL_MISSION,
+      attempts: 2,
+      actions: [
+        {
+          type: ROUTE_CHECKPOINT_ACTION_TYPE.DWELL,
+          dwellMs: 1000,
+          photoCount: 0,
+          recordSeconds: 0,
+          recognizeTarget: '',
+        },
+        {
+          type: ROUTE_CHECKPOINT_ACTION_TYPE.PHOTO,
+          dwellMs: 0,
+          photoCount: 2,
+          recordSeconds: 0,
+          recognizeTarget: '',
+        },
+        {
+          type: ROUTE_CHECKPOINT_ACTION_TYPE.RECOGNIZE,
+          dwellMs: 0,
+          photoCount: 0,
+          recordSeconds: 0,
+          recognizeTarget: 'pressure-meter',
+        },
+      ],
+    }],
+  };
+
+  it('normalizes a GET response including integer values carried as strings', async () => {
+    const { transport, calls } = makeTransport(() => ({
+      success: true,
+      reason_code: 0,
+      reason_text: '',
+      route_checksum: 'route-digest-1',
+      point_count: '20',
+      checkpoints: [{
+        checkpoint_id: 'meter-01',
+        point_index: '8',
+        on_failure: 0,
+        attempts: 2n,
+        actions: [{
+          type: 1,
+          dwell_ms: 0,
+          photo_count: '2',
+          record_seconds: 0,
+          recognize_target: '',
+        }],
+      }],
+    }));
+    await expect(getRouteCheckpoints(transport, 'route-a')).resolves.toEqual({
+      routeChecksum: 'route-digest-1',
+      pointCount: 20,
+      checkpoints: [{
+        checkpointId: 'meter-01',
+        pointIndex: 8,
+        onFailure: 0,
+        attempts: 2,
+        actions: [{
+          type: 1,
+          dwellMs: 0,
+          photoCount: 2,
+          recordSeconds: 0,
+          recognizeTarget: '',
+        }],
+      }],
+    });
+    expect(calls[0]).toEqual({
+      service: MISSION_GET_ROUTE_CHECKPOINTS_SERVICE,
+      serviceType: MISSION_GET_ROUTE_CHECKPOINTS_SERVICE_TYPE,
+      request: { route_id: 'route-a' },
+    });
+  });
+
+  it('sends a canonical atomic replacement and zeroes unused action fields', async () => {
+    const { transport, calls } = makeTransport(() => ({
+      accepted: true,
+      reason_code: 0,
+      reason_text: '',
+      route_checksum: 'route-digest-2',
+    }));
+    const response = await updateRouteCheckpoints(transport, 'route-a', plan);
+    expect(calls[0].service).toBe(MISSION_UPDATE_ROUTE_CHECKPOINTS_SERVICE);
+    expect(calls[0].serviceType).toBe(MISSION_UPDATE_ROUTE_CHECKPOINTS_SERVICE_TYPE);
+    expect(calls[0].request).toEqual({
+      route_id: 'route-a',
+      expected_route_checksum: 'route-digest-1',
+      checkpoints: [{
+        checkpoint_id: 'meter-01',
+        point_index: 8,
+        on_failure: 0,
+        attempts: 2,
+        actions: [
+          { type: 0, dwell_ms: 1000, photo_count: 0, record_seconds: 0, recognize_target: '' },
+          { type: 1, dwell_ms: 0, photo_count: 2, record_seconds: 0, recognize_target: '' },
+          { type: 3, dwell_ms: 0, photo_count: 0, record_seconds: 0, recognize_target: 'pressure-meter' },
+        ],
+      }],
+    });
+    expect(response).toEqual({
+      accepted: true,
+      reasonCode: 0,
+      reasonText: '',
+      routeChecksum: 'route-digest-2',
+    });
+
+    const schema = getLocalServiceSchema(
+      MISSION_UPDATE_ROUTE_CHECKPOINTS_SERVICE_TYPE,
+      'request',
+    );
+    const writer = new MessageWriter(parseMessageDefinition(schema!, { ros2: true }));
+    expect(() => writer.writeMessage(calls[0].request)).not.toThrow();
+  });
+
+  it('allows deleting all checkpoints while rejecting invalid drafts locally', () => {
+    expect(validateRouteCheckpointPlan([], 20)).toBeNull();
+    expect(validateRouteCheckpointPlan([
+      { ...plan.checkpoints[0], checkpointId: 'bad name' },
+    ], 20)).toContain('名称格式无效');
+    expect(validateRouteCheckpointPlan([
+      { ...plan.checkpoints[0], pointIndex: 20 },
+    ], 20)).toContain('位置超出路线');
+    expect(validateRouteCheckpointPlan([
+      {
+        ...plan.checkpoints[0],
+        actions: [{
+          type: ROUTE_CHECKPOINT_ACTION_TYPE.RECOGNIZE,
+          dwellMs: 0,
+          photoCount: 0,
+          recordSeconds: 0,
+          recognizeTarget: '表'.repeat(43),
+        }],
+      },
+    ], 20)).toContain('128');
+  });
+
+  it('surfaces a failed GET reason without accepting an empty draft', async () => {
+    const { transport } = makeTransport(() => ({
+      success: false,
+      reason_code: 2,
+      reason_text: 'checkpoint sidecar malformed',
+    }));
+    await expect(getRouteCheckpoints(transport, 'route-a'))
+      .rejects.toThrow('checkpoint sidecar malformed');
+  });
+});
+
+describe('checkpoint evidence history', () => {
+  it('queries the durable mission result service and normalizes bridge values', async () => {
+    const { transport, calls } = makeTransport(() => ({
+      results: [{
+        header: { stamp: { sec: 123, nanosec: 456 }, frame_id: 'omni_map' },
+        mission_id: 'mission-1',
+        sequence: '7',
+        checkpoint_id: 'meter-01',
+        action_type: 'recognize',
+        status: 0,
+        attempts: 2,
+        reason: '',
+        artifact_path: '/userdata/omni/inspection/input.jpg',
+        result_json: '{"value":42}',
+        pose_valid: true,
+        pose: { position: { x: 1, y: 2, z: 0 } },
+        map_id: 'factory-a',
+        map_version: '3',
+        map_checksum: 'a'.repeat(64),
+        software_version: '0.1.0',
+      }],
+    }));
+    const results = await getCheckpointResults(transport, 'mission-1');
+    expect(calls[0]).toEqual({
+      service: MISSION_RESULTS_SERVICE,
+      serviceType: MISSION_RESULTS_SERVICE_TYPE,
+      request: { mission_id: 'mission-1' },
+    });
+    expect(results).toEqual([expect.objectContaining({
+      missionId: 'mission-1',
+      sequence: 7,
+      checkpointId: 'meter-01',
+      actionType: 'recognize',
+      artifactPath: '/userdata/omni/inspection/input.jpg',
+      poseValid: true,
+    })]);
+
+    const responseSchema = getLocalServiceSchema(MISSION_RESULTS_SERVICE_TYPE, 'response');
+    const writer = new MessageWriter(parseMessageDefinition(responseSchema!, { ros2: true }));
+    expect(() => writer.writeMessage({ results: [{
+      header: { stamp: { sec: 123, nanosec: 456 }, frame_id: 'omni_map' },
+      mission_id: 'mission-1', sequence: 7, checkpoint_id: 'meter-01',
+      action_type: 'recognize', status: 0, attempts: 2, reason: '',
+      artifact_path: '/tmp/input.jpg', result_json: '{}', pose_valid: true,
+      pose: {
+        position: { x: 1, y: 2, z: 0 },
+        orientation: { x: 0, y: 0, z: 0, w: 1 },
+      },
+      map_id: 'factory-a', map_version: '3', map_checksum: 'a'.repeat(64),
+      software_version: '0.1.0',
+    }] })).not.toThrow();
+  });
+
+  it('rejects an empty mission identity before sending a request', async () => {
+    const { transport, calls } = makeTransport(() => ({ results: [] }));
+    await expect(getCheckpointResults(transport, '  ')).rejects.toThrow('任务 ID');
+    expect(calls).toHaveLength(0);
   });
 });

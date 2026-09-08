@@ -82,6 +82,7 @@ export type LocalizationState =
 // /omni/mission/status 使用 reliable + transient_local：晚加入订阅者先取得当前
 // 快照，随后仍必须用周期 heartbeat 判定新鲜度，不能无限沿用缓存状态。
 export interface MissionStatusMessage {
+  header: unknown;
   state: number;
   mission_id: string;
   request_id: string;
@@ -90,11 +91,43 @@ export interface MissionStatusMessage {
   map_id: string;
   map_version: string;
   progress: number;
+  current_checkpoint_id: string;
+  status_text: string;
   reason_code: number;
   reason_text: string;
   request_source: string;
   map_checksum: string;
   route_checksum: string;
+  requested_at: unknown;
+  deadline: unknown;
+}
+
+export const CHECKPOINT_RESULT_STATUS = {
+  SUCCEEDED: 0,
+  FAILED: 1,
+  SKIPPED: 2,
+} as const;
+export type CheckpointResultStatus =
+  (typeof CHECKPOINT_RESULT_STATUS)[keyof typeof CHECKPOINT_RESULT_STATUS];
+
+/** Mission SQLite 中按 sequence 排序的持久巡检证据摘要。 */
+export interface CheckpointEvidenceResult {
+  stamp: unknown;
+  missionId: string;
+  sequence: number;
+  checkpointId: string;
+  actionType: string;
+  status: CheckpointResultStatus;
+  attempts: number;
+  reason: string;
+  artifactPath: string;
+  resultJson: string;
+  poseValid: boolean;
+  pose: unknown;
+  mapId: string;
+  mapVersion: string;
+  mapChecksum: string;
+  softwareVersion: string;
 }
 
 // /omni/mission/events (reliable)
@@ -130,6 +163,52 @@ export interface RouteEntry {
   routeChecksum: string;
   pointCount: number;
   distanceM: number;
+}
+
+export const ROUTE_CHECKPOINT_ACTION_TYPE = {
+  DWELL: 0,
+  PHOTO: 1,
+  RECORD: 2,
+  RECOGNIZE: 3,
+} as const;
+export type RouteCheckpointActionType =
+  (typeof ROUTE_CHECKPOINT_ACTION_TYPE)[keyof typeof ROUTE_CHECKPOINT_ACTION_TYPE];
+
+export const ROUTE_CHECKPOINT_FAILURE = {
+  FAIL_MISSION: 0,
+  SKIP: 1,
+} as const;
+export type RouteCheckpointFailure =
+  (typeof ROUTE_CHECKPOINT_FAILURE)[keyof typeof ROUTE_CHECKPOINT_FAILURE];
+
+/** 手机编辑器使用的检查点动作；未被 type 选中的参数始终保持零值。 */
+export interface RouteCheckpointActionConfig {
+  type: RouteCheckpointActionType;
+  dwellMs: number;
+  photoCount: number;
+  recordSeconds: number;
+  recognizeTarget: string;
+}
+
+export interface RouteCheckpointConfig {
+  checkpointId: string;
+  pointIndex: number;
+  onFailure: RouteCheckpointFailure;
+  attempts: number;
+  actions: RouteCheckpointActionConfig[];
+}
+
+export interface RouteCheckpointPlan {
+  routeChecksum: string;
+  pointCount: number;
+  checkpoints: RouteCheckpointConfig[];
+}
+
+export interface UpdateRouteCheckpointsResponse {
+  accepted: boolean;
+  reasonCode: number;
+  reasonText: string;
+  routeChecksum: string;
 }
 
 export type RouteDispatchBlockReason =

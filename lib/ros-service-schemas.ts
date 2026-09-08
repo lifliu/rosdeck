@@ -45,6 +45,48 @@ float64 y
 float64 z
 float64 w`;
 
+const CHECKPOINT_RESULT_DEPENDENCIES = `${ROS_TIME_DEPENDENCY}
+================================================================================
+MSG: omni_robot_interfaces/msg/CheckpointResult
+std_msgs/msg/Header header
+string mission_id
+uint64 sequence
+string checkpoint_id
+string action_type
+uint8 STATUS_SUCCEEDED=0
+uint8 STATUS_FAILED=1
+uint8 STATUS_SKIPPED=2
+uint8 status
+uint32 attempts
+string reason
+string artifact_path
+string result_json
+bool pose_valid
+geometry_msgs/msg/Pose pose
+string map_id
+string map_version
+string map_checksum
+string software_version
+================================================================================
+MSG: std_msgs/msg/Header
+builtin_interfaces/msg/Time stamp
+string frame_id
+================================================================================
+MSG: geometry_msgs/msg/Pose
+geometry_msgs/msg/Point position
+geometry_msgs/msg/Quaternion orientation
+================================================================================
+MSG: geometry_msgs/msg/Point
+float64 x
+float64 y
+float64 z
+================================================================================
+MSG: geometry_msgs/msg/Quaternion
+float64 x
+float64 y
+float64 z
+float64 w`;
+
 const AUTONOMY_REASON_CONSTANTS = `uint32 REASON_NONE=0
 uint32 REASON_INVALID_REQUEST=4000
 uint32 REASON_STALE_SEQUENCE=4001
@@ -77,6 +119,28 @@ uint32 REASON_STALE_SEQUENCE=9
 uint32 REASON_EXPIRED=10
 uint32 REASON_BUSY=11
 uint32 REASON_INTERRUPTED=12`;
+
+const ROUTE_CHECKPOINT_DEPENDENCIES = `
+================================================================================
+MSG: omni_robot_interfaces/msg/RouteCheckpoint
+string checkpoint_id
+uint32 point_index
+uint8 FAILURE_FAIL_MISSION=0
+uint8 FAILURE_SKIP=1
+uint8 on_failure
+uint32 attempts
+omni_robot_interfaces/msg/RouteCheckpointAction[] actions
+================================================================================
+MSG: omni_robot_interfaces/msg/RouteCheckpointAction
+uint8 TYPE_DWELL=0
+uint8 TYPE_PHOTO=1
+uint8 TYPE_RECORD=2
+uint8 TYPE_RECOGNIZE=3
+uint8 type
+uint32 dwell_ms
+uint32 photo_count
+float32 record_seconds
+string recognize_target`;
 
 const LOCAL_SERVICE_SCHEMAS: Readonly<Record<string, ServiceSchemas>> = {
   'std_srvs/srv/Trigger': {
@@ -141,6 +205,10 @@ uint64 sequence`,
 uint32 reason_code
 string reason_text`,
   },
+  'omni_robot_interfaces/srv/GetCheckpointResults': {
+    request: 'string mission_id',
+    response: `omni_robot_interfaces/msg/CheckpointResult[] results${CHECKPOINT_RESULT_DEPENDENCIES}`,
+  },
   'omni_robot_interfaces/srv/ListRoutes': {
     request: '# Empty request.',
     response: `string[] route_ids
@@ -152,6 +220,33 @@ string[] map_checksums
 string[] route_checksums
 uint32[] point_counts
 float32[] distances_m`,
+  },
+  'omni_robot_interfaces/srv/GetRouteCheckpoints': {
+    request: `string route_id`,
+    response: `bool success
+uint32 REASON_OK=0
+uint32 REASON_NOT_FOUND=1
+uint32 REASON_MALFORMED=2
+uint32 reason_code
+string reason_text
+string route_checksum
+uint32 point_count
+omni_robot_interfaces/msg/RouteCheckpoint[] checkpoints${ROUTE_CHECKPOINT_DEPENDENCIES}`,
+  },
+  'omni_robot_interfaces/srv/UpdateRouteCheckpoints': {
+    request: `string route_id
+string expected_route_checksum
+omni_robot_interfaces/msg/RouteCheckpoint[] checkpoints${ROUTE_CHECKPOINT_DEPENDENCIES}`,
+    response: `bool accepted
+uint32 REASON_OK=0
+uint32 REASON_INVALID_REQUEST=1
+uint32 REASON_NOT_FOUND=2
+uint32 REASON_CONFLICT=3
+uint32 REASON_BUSY=4
+uint32 REASON_IO=5
+uint32 reason_code
+string reason_text
+string route_checksum`,
   },
   'omni_robot_interfaces/srv/ListMaps': {
     request: '# Empty request.',
