@@ -235,6 +235,35 @@ export function migrateLegacyTeleopForUnifiedRobot(
   return { layouts: migrated, changed };
 }
 
+/** Apply the discovered legacy VBot input to built-in defaults in every layout,
+ * including the 3D mapping layout. Explicit custom topics and speed settings survive.
+ */
+export function adaptDefaultTeleopForVbot(
+  layouts: SavedLayout[],
+): { layouts: SavedLayout[]; changed: boolean } {
+  let changed = false;
+  const adapt = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      const first = adapt(node.children[0]);
+      const second = adapt(node.children[1]);
+      return first === node.children[0] && second === node.children[1]
+        ? node : { ...node, children: [first, second] };
+    }
+    if (node.widgetType !== 'joystick' ||
+      ![undefined, '', OMNI_TELEOP_TOPIC, LEGACY_OMNI_TELEOP_TOPIC, UPSTREAM_CMD_VEL_TOPIC]
+        .includes(node.config?.topic)) return node;
+    changed = true;
+    return { ...node, config: {
+      ...node.config, topic: LEGACY_VBOT_TELEOP_TOPIC,
+      useTwistStamped: false, requireLocoMode: true,
+    } };
+  };
+  return { layouts: layouts.map((layout) => {
+    const tree = adapt(layout.tree);
+    return tree === layout.tree ? layout : { ...layout, tree };
+  }), changed };
+}
+
 interface LayoutState {
   robotUrl: string | null;
   layouts: SavedLayout[];
@@ -244,6 +273,7 @@ interface LayoutState {
 
   initForRobot: (url: string) => Promise<boolean>;
   migrateLegacyTeleopForUnifiedRobot: (expectedRobotUrl: string) => Promise<boolean>;
+  adaptDefaultTeleopForVbot: (expectedRobotUrl: string) => Promise<boolean>;
   setActiveLayout: (id: string) => void;
   getActiveLayout: () => SavedLayout | undefined;
   updateLayoutTree: (tree: LayoutNode) => void;
@@ -306,6 +336,16 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   migrateLegacyTeleopForUnifiedRobot: async (expectedRobotUrl: string) => {
     if (get().robotUrl !== expectedRobotUrl) return false;
     const result = migrateLegacyTeleopForUnifiedRobot(get().layouts);
+    if (!result.changed) return false;
+    set({ layouts: result.layouts });
+    if (get().robotUrl !== expectedRobotUrl) return false;
+    await persistLayoutSnapshot(expectedRobotUrl, result.layouts, get().activeLayoutId);
+    return true;
+  },
+
+  adaptDefaultTeleopForVbot: async (expectedRobotUrl: string) => {
+    if (get().robotUrl !== expectedRobotUrl) return false;
+    const result = adaptDefaultTeleopForVbot(get().layouts);
     if (!result.changed) return false;
     set({ layouts: result.layouts });
     if (get().robotUrl !== expectedRobotUrl) return false;

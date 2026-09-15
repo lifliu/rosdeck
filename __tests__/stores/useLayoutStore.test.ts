@@ -15,6 +15,7 @@ import {
   migrateLayoutsForCanonicalFrames,
   migrateLayoutsForUnifiedTeleop,
   migrateLegacyTeleopForUnifiedRobot,
+  adaptDefaultTeleopForVbot,
   useLayoutStore,
 } from '../../stores/useLayoutStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -28,6 +29,40 @@ beforeEach(() => {
 });
 
 describe('useLayoutStore', () => {
+  describe('discovered legacy VBot profile', () => {
+    it('keeps driving available when switching to 3D mapping and retains user speeds', () => {
+      const layouts = buildDefaultLayouts();
+      const drive = layouts.find((layout) => layout.id === 'drive')!;
+      if (drive.tree.type !== 'widget') throw new Error('expected joystick');
+      drive.tree.config.maxLinearVel = 0.7;
+      drive.tree.config.maxAngularVel = 0.9;
+      const adapted = adaptDefaultTeleopForVbot(layouts);
+      expect(adapted.changed).toBe(true);
+      const mapping = adapted.layouts.find((layout) => layout.id === 'mapping-3d')!;
+      if (mapping.tree.type !== 'split') throw new Error('expected mapping split');
+      const joystick = mapping.tree.children[1];
+      if (joystick.type !== 'widget') throw new Error('expected mapping joystick');
+      expect(joystick.config).toMatchObject({
+        topic: '/vel_cmd', useTwistStamped: false, requireLocoMode: true,
+      });
+      const result = adapted.layouts.find((layout) => layout.id === 'drive')!;
+      if (result.tree.type !== 'widget') throw new Error('expected joystick');
+      expect(result.tree.config).toMatchObject({maxLinearVel: 0.7, maxAngularVel: 0.9});
+      expect(adaptDefaultTeleopForVbot(adapted.layouts).changed).toBe(false);
+    });
+
+    it('preserves custom topics and rejects a stale robot connection', async () => {
+      const custom = { id: 'custom', name: 'Custom', tree: createWidgetNode('joystick', {
+        topic: '/custom/velocity', useTwistStamped: true,
+      }) };
+      expect(adaptDefaultTeleopForVbot([custom])).toEqual({layouts: [custom], changed: false});
+      await useLayoutStore.getState().initForRobot('ws://new-robot:8765');
+      const layouts = useLayoutStore.getState().layouts;
+      expect(await useLayoutStore.getState().adaptDefaultTeleopForVbot('ws://old-robot:8765')).toBe(false);
+      expect(useLayoutStore.getState().layouts).toBe(layouts);
+    });
+  });
+
   describe('canonical camera migration', () => {
     it('moves built-in legacy camera defaults to direct canonical transport', () => {
       const legacy = {

@@ -18,7 +18,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { TopicSuggestionModal } from "../../components/TopicSuggestionModal";
 import { theme } from "../../constants/theme";
 import { suggestLayout, type TopicSuggestion } from "../../lib/topic-detection";
-import { OMNI_TELEOP_TOPIC, selectPreferredTeleopTarget } from "../../lib/teleop";
+import { LEGACY_VBOT_TELEOP_TOPIC, OMNI_TELEOP_TOPIC, selectPreferredTeleopTarget } from "../../lib/teleop";
+import { LOCOMOTION_STATUS_TOPIC } from "../../lib/locomotion-mode";
 import {
   acceptTopicSuggestionSession,
   createTopicSuggestionSession,
@@ -31,6 +32,7 @@ import { useOnboardingStore } from "../../stores/useOnboardingStore";
 import { useOrientation } from "../../hooks/useOrientation";
 import { useRosStore } from "../../stores/useRosStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
+import { useControlAuthorityStore } from "../../stores/useControlAuthorityStore";
 import { useGamepadInput } from "../../hooks/useGamepadInput";
 import { EmergencyStop } from "../../components/EmergencyStop";
 import { MappingControl } from "../../components/MappingControl";
@@ -144,6 +146,7 @@ function ConnectionDot() {
 
 export default function ControlScreen() {
   const status = useRosStore((s) => s.connection.status);
+  const authorityStatus = useControlAuthorityStore((s) => s.status);
   const url = useRosStore((s) => s.connection.url);
   const disconnect = useRosStore((s) => s.disconnect);
   const initForRobot = useLayoutStore((s) => s.initForRobot);
@@ -239,6 +242,15 @@ export default function ControlScreen() {
             suggestionSessionRef.current = nextSession;
             setSuggestion(nextSession?.suggestion ?? null);
           }
+        } else if (teleopTarget?.topic === LEGACY_VBOT_TELEOP_TOPIC &&
+          !teleopTarget.useTwistStamped &&
+          useControlAuthorityStore.getState().status === 'unsupported' &&
+          topics.some((topic) => topic.name === LOCOMOTION_STATUS_TOPIC &&
+            topic.type === 'std_msgs/msg/String')) {
+          // A verified legacy VBot connection needs /vel_cmd in every built-in
+          // layout, including the layout selected automatically when mapping starts.
+          await useLayoutStore.getState().adaptDefaultTeleopForVbot(url);
+          if (!stillCurrent()) return;
         }
 
         if (!suggestionHandled) {
@@ -269,7 +281,7 @@ export default function ControlScreen() {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [status, url, initializedUrl, autoDetectTopics, addSuggestedUrl]);
+  }, [status, url, initializedUrl, autoDetectTopics, addSuggestedUrl, authorityStatus]);
 
   const handleAcceptSuggestion = () => {
     const currentRos = useRosStore.getState();

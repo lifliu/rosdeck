@@ -170,3 +170,19 @@ types/                # TypeScript interfaces
 GPLv3 — see [LICENSE](LICENSE).
 
 You can build and use this app freely. If you distribute a modified version, you must open-source your changes under the same license.
+
+## dog1：Foxglove 遥控与建图
+
+连接 `ws://192.168.127.2:8765`，机器人端运行
+`ros2 launch rosdeck_robot_bridge dog1_mapping.launch.py`。
+发现 `/vel_cmd`、LOCO 状态且确认该 VBot 不支持控制租约后，App 会把此连接下
+所有内置默认摇杆（包括 3D 建图布局）配置到 `geometry_msgs/msg/Twist` 的 `/vel_cmd`。
+用户自定义话题及速度设置保留。
+
+摇杆先请求 LOCO，收到成功响应后发布非零速度；松手发送对应轴零速度。
+站立/卧下或控制会话变化后，App 重新请求 LOCO，避免使用失效的行走模式缓存。
+建图仍使用现有 Mission/SLAM 接口，支持开始、点云预览、保存和丢弃。
+
+2026-09-15 的验证覆盖真实雷达建图和保存，以及隔离执行器的移动消息通路。
+实际行走、断网停车和移动建图精度尚需现场验证。
+Android APK 通过 GitHub Release 分发，`build_out/` 为本地产物，不提交到 Git。

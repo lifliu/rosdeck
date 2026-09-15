@@ -111,6 +111,20 @@ export function useCmdVelPublisher(
   );
 
   useEffect(() => {
+    // LOCO approval belongs to the current authority session, not the socket.
+    // Reacquiring after a lease timeout must obtain a fresh mode approval.
+    resetLocomotionModeState();
+  }, [authorityStatus, authorityOwner]);
+
+  useEffect(() => {
+    if (!transport || status !== 'connected') return;
+    const posture = transport.subscribe('/rosdeck/posture_status', 'std_msgs/msg/String', () => {
+      resetLocomotionModeState();
+    });
+    return () => posture.unsubscribe();
+  }, [transport, status]);
+
+  useEffect(() => {
     if (previousTransportRef.current !== transport || status !== 'connected') {
       resetLocomotionModeState();
       previousTransportRef.current = transport;

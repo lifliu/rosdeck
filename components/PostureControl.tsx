@@ -6,6 +6,7 @@ import { useTranslation, type TranslationKey } from '../lib/i18n';
 import { useRosStore } from '../stores/useRosStore';
 import { CONTROL_CLIENT_ID } from '../lib/control-authority';
 import { useControlAuthorityStore } from '../stores/useControlAuthorityStore';
+import { resetLocomotionModeState } from '../lib/locomotion-mode';
 
 export const POSTURE_COMMAND_TOPIC = '/rosdeck/posture_command';
 export const POSTURE_STATUS_TOPIC = '/rosdeck/posture_status';
@@ -88,6 +89,7 @@ export function PostureControl({ compact = false }: { compact?: boolean }) {
     }
     pendingRef.current = command;
     setPending(command);
+    resetLocomotionModeState();
     transport.publish(
       POSTURE_COMMAND_TOPIC,
       POSTURE_MESSAGE_TYPE,
