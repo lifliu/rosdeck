@@ -143,6 +143,12 @@ float32 record_seconds
 string recognize_target`;
 
 const LOCAL_SERVICE_SCHEMAS: Readonly<Record<string, ServiceSchemas>> = {
+  'omni_robot_interfaces/srv/SetTravelSpeed': {
+    request: 'float64 speed_mps',
+    response: `bool accepted
+float64 speed_mps
+string reason`,
+  },
   'std_srvs/srv/Trigger': {
     // 空请求仍需生成 ROS 2 CDR encapsulation header，因此保留一个非字段注释。
     request: '# Empty request.',

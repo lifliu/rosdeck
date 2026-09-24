@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { TravelSpeedControl } from './TravelSpeed';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -847,6 +848,7 @@ export function ControlCockpit({
           onPress={openInspectionPanel}
         />
         <CockpitButton icon="options-outline" label={zh ? '机器人动作' : 'Actions'} onPress={onOpenRobotActions} />
+        <TravelSpeedControl />
       </View>
 
       {pendingMapGoal && scene === 'map' && !navigationActive ? (
@@ -1000,6 +1002,7 @@ export function ControlCockpit({
             ) : missionActive ? (
               <View style={styles.activeMissionCard}>
                 <Text style={styles.activeMissionEyebrow}>{zh ? '当前任务' : 'ACTIVE MISSION'}</Text>
+                <TravelSpeedControl />
                 <Text style={styles.activeMissionRoute}>{mission?.route_id || mission?.mission_id}</Text>
                 <Text style={styles.activeMissionState}>{missionStateLabel(missionState, zh)} · {Math.round(Math.max(0, Math.min(1, mission?.progress || 0)) * 100)}%</Text>
                 <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.max(0, Math.min(1, mission?.progress || 0)) * 100}%` }]} /></View>

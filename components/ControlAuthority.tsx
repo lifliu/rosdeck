@@ -36,6 +36,7 @@ export function ControlAuthoritySession() {
     }
 
     useControlAuthorityStore.getState().reset('detecting');
+    let active = true;
     const watchdog = createControlAuthorityStatusWatchdog(() => {
       // WebSocket 在线不代表 Bridge provider 仍存活。权威心跳过期后立即清除
       // 本地 owner，阻止摇杆和姿态控制沿用旧租约快照。
@@ -45,6 +46,7 @@ export function ControlAuthoritySession() {
       CONTROL_AUTHORITY_STATUS_TOPIC,
       CONTROL_AUTHORITY_STATUS_TYPE,
       (message) => {
+        if (!active) return;
         const parsed = parseTypedControlStatus(message);
         if (!parsed) return;
         useControlAuthorityStore.getState().applyStatus(parsed);
@@ -59,6 +61,7 @@ export function ControlAuthoritySession() {
     }, DETECTION_TIMEOUT_MS);
 
     return () => {
+      active = false;
       clearTimeout(detectionTimeout);
       watchdog.dispose();
       subscription.unsubscribe();
@@ -81,12 +84,18 @@ export function ControlAuthoritySession() {
       ownerId !== CONTROL_CLIENT_ID) return;
 
     let renewInFlight = false;
+    let active = true;
     const renew = async () => {
-      if (renewInFlight) return;
+      if (!active || renewInFlight || useRosStore.getState().transport !== transport) return;
+      // The connection effect above resets the store before this render's
+      // captured selectors catch up. Never renew the previous robot's lease.
+      const current = useControlAuthorityStore.getState();
+      if ((current.status !== 'acquired' && current.status !== 'override_acquired') ||
+        current.ownerId !== CONTROL_CLIENT_ID) return;
       renewInFlight = true;
       try {
         const response = await requestControlAuthority(transport, 'renew', 'app_lease_heartbeat');
-        if (!response.accepted) {
+        if (active && !response.accepted) {
           useControlAuthorityStore.getState().applyStatus({
             state: 'error',
             action: 'renew',
@@ -104,7 +113,7 @@ export function ControlAuthoritySession() {
     const heartbeat = setInterval(() => {
       void renew();
     }, HEARTBEAT_PERIOD_MS);
-    return () => clearInterval(heartbeat);
+    return () => { active = false; clearInterval(heartbeat); };
   }, [authorityStatus, connectionStatus, ownerId, transport]);
 
   return null;
@@ -136,6 +145,7 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
     useControlAuthorityStore.getState().beginAcquire();
     try {
       const response = await requestControlAuthority(transport, 'acquire', 'app_user_acquire');
+      if (useRosStore.getState().transport !== transport || transport.getStatus() !== 'connected') return;
       if (!response.accepted) {
         useControlAuthorityStore.getState().applyStatus({
           state: 'error',
@@ -145,6 +155,7 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
         });
       }
     } catch (requestError: any) {
+      if (useRosStore.getState().transport !== transport || transport.getStatus() !== 'connected') return;
       useControlAuthorityStore.getState().applyStatus({
         state: 'error',
         action: 'acquire',
@@ -159,6 +170,7 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
     useControlAuthorityStore.getState().beginRelease();
     try {
       const response = await requestControlAuthority(transport, 'release', 'app_user_release');
+      if (useRosStore.getState().transport !== transport || transport.getStatus() !== 'connected') return;
       if (!response.accepted) {
         useControlAuthorityStore.getState().applyStatus({
           state: 'error',
@@ -168,6 +180,7 @@ export function ControlAuthorityButton({ compact = false }: { compact?: boolean 
         });
       }
     } catch (requestError: any) {
+      if (useRosStore.getState().transport !== transport || transport.getStatus() !== 'connected') return;
       useControlAuthorityStore.getState().applyStatus({
         state: 'error',
         action: 'release',

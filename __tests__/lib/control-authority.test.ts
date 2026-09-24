@@ -86,6 +86,7 @@ describe('mobile control authority protocol', () => {
         lease_sec: 5,
         reason: 'test',
       }),
+      { timeoutMs: 8000 },
     );
 
     await requestControlAuthority(transport, 'renew');
@@ -93,6 +94,7 @@ describe('mobile control authority protocol', () => {
       CONTROL_AUTHORITY_SERVICE,
       CONTROL_AUTHORITY_SERVICE_TYPE,
       expect.objectContaining({ op: CONTROL_AUTHORITY_OPERATION.RENEW }),
+      { timeoutMs: 1500 },
     );
   });
 

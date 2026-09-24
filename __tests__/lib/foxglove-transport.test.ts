@@ -31,6 +31,44 @@ describe('FoxgloveTransport connection', () => {
     global.WebSocket = WebSocketMock as any;
   });
 
+  it('bounds lease renewal discovery and response by one deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const transport = new FoxgloveTransport();
+      const connecting = transport.connect('ws://192.168.1.50:8765');
+      socket.onopen?.({});
+      await connecting;
+      const pending = transport.callService('/test/renew', 'test/srv/Renew', {}, { timeoutMs: 1500 });
+      const rejected = expect(pending).rejects.toThrow('timed out');
+      await jest.advanceTimersByTimeAsync(500);
+      socket.onmessage?.({ data: JSON.stringify({
+        op: 'advertiseServices', services: [{
+          id: 8, name: '/test/renew', type: 'test/srv/Renew', requestSchema: '', responseSchema: '',
+        }],
+      }) });
+      await jest.advanceTimersByTimeAsync(1000);
+      await rejected;
+      expect((transport as any).pendingServiceCalls.size).toBe(0);
+      transport.disconnect();
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('does not send an old request after connection changes during discovery', async () => {
+    jest.useFakeTimers();
+    try {
+      const transport = new FoxgloveTransport();
+      const connecting = transport.connect('ws://192.168.1.50:8765');
+      socket.onopen?.({});
+      await connecting;
+      const pending = transport.callService('/not/advertised', 'test/srv/Renew', {}, { timeoutMs: 1500 });
+      const rejected = expect(pending).rejects.toThrow('Connection changed');
+      transport.disconnect();
+      await jest.advanceTimersByTimeAsync(50);
+      await rejected;
+      expect(socket.send).not.toHaveBeenCalled();
+    } finally { jest.useRealTimers(); }
+  });
+
   it('advertises both the SDK and legacy Foxglove subprotocols', async () => {
     const transport = new FoxgloveTransport();
     const connecting = transport.connect('ws://192.168.1.50:8765');

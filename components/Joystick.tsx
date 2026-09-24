@@ -18,7 +18,8 @@ import {
   unregisterTouchEntry,
   updateTouchBounds,
 } from '../lib/touch-dispatcher';
-import { defaultUsesTwistStamped, getTeleopSafetyPolicy } from '../lib/teleop';
+import { defaultUsesTwistStamped, getTeleopSafetyPolicy, OMNI_TELEOP_TOPIC } from '../lib/teleop';
+import { useTravelSpeedStore } from '../stores/useTravelSpeedStore';
 import { useCmdVelStore } from '../stores/useCmdVelStore';
 import { useGamepadStore } from '../stores/useGamepadStore';
 import type { WidgetProps } from '../types/layout';
@@ -241,6 +242,9 @@ export function Joystick(props?: Partial<WidgetProps>) {
   const maxAngularVel = Math.abs(
     props?.config?.maxAngularVel ?? props?.config?.xAxisScale ?? DEFAULTS.maxAngularVel,
   );
+  const travelSpeed = useTravelSpeedStore((s) => s.received ? s.speed : null);
+  const maxForwardVel = cmdVelTopic === OMNI_TELEOP_TOPIC && travelSpeed !== null
+    ? travelSpeed : maxLinearVel;
   const overlayMode = props?.config?.overlayMode === true;
   const requireLocoMode = getTeleopSafetyPolicy(
     cmdVelTopic,
@@ -272,11 +276,11 @@ export function Joystick(props?: Partial<WidgetProps>) {
   }, []);
 
   const updateTranslation = useCallback((sideways: number, forward: number) => {
-    const linearX = forward * maxLinearVel;
+    const linearX = forward * maxForwardVel;
     const linearY = sideways * maxLinearVel;
     setAxes(cmdVelTopic, { 'linear.x': linearX, 'linear.y': linearY });
     updateDisplay({ linearX, linearY });
-  }, [cmdVelTopic, maxLinearVel, setAxes, updateDisplay]);
+  }, [cmdVelTopic, maxLinearVel, maxForwardVel, setAxes, updateDisplay]);
 
   const updateYaw = useCallback((yaw: number) => {
     const angularZ = yaw * maxAngularVel;
@@ -334,7 +338,7 @@ export function Joystick(props?: Partial<WidgetProps>) {
           size={padSize}
           disabled={gamepadConnected}
           externalX={display.linearY / linearScale}
-          externalY={display.linearX / linearScale}
+          externalY={display.linearX / (maxForwardVel || 1)}
           label={t('joystick.translation')}
           hint={t('joystick.translationHint')}
           onStart={prepareLocomotion}

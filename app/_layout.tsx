@@ -25,6 +25,7 @@ import { useSettingsStore } from '../stores/useSettingsStore';
 import { usePairingStore } from '../stores/usePairingStore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { ControlAuthoritySession } from '../components/ControlAuthority';
+import { TravelSpeedSession } from '../components/TravelSpeed';
 import { bestEffortReleaseControl } from '../lib/control-authority';
 import { useControlAuthorityStore } from '../stores/useControlAuthorityStore';
 import { useAutonomyRuntimeFeed } from '../hooks/useAutonomyRuntimeFeed';
@@ -117,6 +118,7 @@ function RootLayoutNav() {
       <ErrorBoundary>
         <ThemeProvider value={DarkTheme}>
           <ControlAuthoritySession />
+          <TravelSpeedSession />
           <StatusBar style="light" />
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

@@ -551,13 +551,18 @@ export class FoxgloveTransport implements Transport {
     this.setStatus('disconnected');
   }
 
-  async callService(serviceName: string, serviceType: string, request: Record<string, unknown>): Promise<any> {
+  async callService(serviceName: string, serviceType: string, request: Record<string, unknown>, options?: { timeoutMs: number }): Promise<any> {
     if (!this.ws || this.status !== 'connected') throw new Error('Foxglove is not connected');
 
-    const deadline = Date.now() + 3000;
+    const socket = this.ws;
+    const requestDeadline = Date.now() + (options?.timeoutMs ?? 8000);
+    const deadline = Math.min(Date.now() + 3000, requestDeadline);
     let service = this.services.get(serviceName);
     while (!service && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
+      if (this.ws !== socket || this.status !== 'connected') {
+        throw new Error('Connection changed while waiting for service');
+      }
       service = this.services.get(serviceName);
     }
     if (!service) throw new Error(`Service not advertised: ${serviceName}`);
@@ -565,8 +570,7 @@ export class FoxgloveTransport implements Transport {
       throw new Error(`Service type mismatch: expected ${serviceType}, got ${service.type}`);
     }
 
-    const socket = this.ws;
-    if (!socket) throw new Error('Foxglove is not connected');
+    if (Date.now() >= requestDeadline) throw new Error(`Service call timed out: ${serviceName}`);
     const callId = this.nextCallId++;
     const encoding = this.getServiceRequestEncoding(service);
     const encodingBytes = new TextEncoder().encode(encoding);
@@ -600,7 +604,7 @@ export class FoxgloveTransport implements Transport {
       const timeout = setTimeout(() => {
         this.pendingServiceCalls.delete(callId);
         reject(new Error(`Service call timed out: ${serviceName}`));
-      }, 5000);
+      }, Math.min(5000, Math.max(1, requestDeadline - Date.now())));
       this.pendingServiceCalls.set(callId, {
         serviceId: service!.id,
         resolve,

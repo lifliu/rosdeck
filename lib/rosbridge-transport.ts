@@ -98,20 +98,23 @@ export class RosbridgeTransport implements Transport {
       name: topic,
       messageType,
     });
-    rosTopic.publish(new ROSLIB.Message(msg));
+    rosTopic.publish(msg);
   }
 
-  callService(service: string, serviceType: string, request: Record<string, unknown>): Promise<any> {
+  callService(service: string, serviceType: string, request: Record<string, unknown>, options?: { timeoutMs: number }): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.ros || !ROSLIB) {
         reject(new Error('Rosbridge is not connected'));
         return;
       }
       const client = new ROSLIB.Service({ ros: this.ros, name: service, serviceType });
+      const timer = setTimeout(() => reject(new Error(`Service call timed out: ${service}`)),
+        options?.timeoutMs ?? 5000);
       client.callService(
-        new ROSLIB.ServiceRequest(request),
-        (response: any) => resolve(response),
-        (error: any) => reject(new Error(error?.message || String(error || 'Service call failed'))),
+        request,
+        (response: any) => { clearTimeout(timer); resolve(response); },
+        (error: any) => { clearTimeout(timer); reject(new Error(error?.message || String(error || 'Service call failed'))); },
+        (options?.timeoutMs ?? 5000) / 1000,
       );
     });
   }

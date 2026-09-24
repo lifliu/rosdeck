@@ -188,6 +188,7 @@ export async function requestControlAuthority(
       lease_sec: CONTROL_AUTHORITY_LEASE_SEC,
       reason,
     },
+    { timeoutMs: action === 'renew' ? 1500 : 8000 },
   );
   return {
     accepted: field(raw, 'accepted') === true,
